@@ -45,6 +45,13 @@ const WRITE_ONLY_TOOL_NAMES = new Set([
   'folio_table_create',
 ]);
 
+/**
+ * MCP tools the assistant is not offered. `search` and `fetch` exist only because ChatGPT deep research accepts tools
+ * with exactly those names; they are thin wrappers over `search_pages` / `read_page` (same checks), so the model
+ * would get duplicates, and a bare `fetch` reads like a web fetch to a model that has no URL tool.
+ */
+const MCP_ONLY_TOOL_NAMES = new Set(['search', 'fetch']);
+
 export interface AssistantToolsHandle {
   tools: Record<string, SDKCustomTool>;
   close: () => Promise<void>;
@@ -162,6 +169,7 @@ export async function buildAssistantTools(user: User, runMode: AssistantRunMode,
   const { tools: mcpTools } = await client.listTools();
   const tools: Record<string, SDKCustomTool> = {};
   for (const tool of mcpTools) {
+    if (MCP_ONLY_TOOL_NAMES.has(tool.name)) continue;
     if (runMode === 'ask' && WRITE_ONLY_TOOL_NAMES.has(tool.name)) continue;
     tools[tool.name] = {
       description: tool.description,

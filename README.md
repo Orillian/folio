@@ -4,9 +4,11 @@
 Your team's wiki lives in Git. People write in the browser, together, in real
 time. AI agents read and write the same pages. One command to run it yourself.
 
-Website: <https://foliowiki.online>
+Website: <https://foliowiki.online> · Featured in [Self-Host Weekly (9 Oct 2026)](https://selfh.st/weekly/2026-10-09/)
 
-Try the public demo: <https://demo.foliowiki.online> — pick Sam on the sign-in screen. Shared login, data resets every 24 hours; don't enter personal data or API keys.
+### 👉 [Try the live demo](https://demo.foliowiki.online/?utm_source=github&utm_medium=readme&utm_campaign=repo)
+
+No install, no sign-up: open it and pick Sam on the sign-in screen. Shared login, data resets every 24 hours; don't enter personal data or API keys.
 
 ![A page in Folio](docs/images/document.png)
 
@@ -22,6 +24,8 @@ docker compose up -d
 ```
 
 Open <http://localhost:4870>, create the first account, start writing.
+
+Not ready to install? [Try the live demo](https://demo.foliowiki.online/?utm_source=github&utm_medium=readme&utm_campaign=repo) first.
 
 ---
 
@@ -531,7 +535,7 @@ gets in your way.
 ## Documentation
 
 - [Website: foliowiki.online](https://foliowiki.online)
-- [Public demo: demo.foliowiki.online](https://demo.foliowiki.online) — shared login, resets every 24 hours
+- [Public demo: demo.foliowiki.online](https://demo.foliowiki.online/?utm_source=github&utm_medium=readme&utm_campaign=repo) — shared login, resets every 24 hours
 - [Installation, HTTPS, updates, backups](docs/INSTALL.md)
 - [Features](docs/FEATURES.md)
 - [What is not there yet](docs/LIMITATIONS.md)

@@ -299,7 +299,8 @@ added to this list and to `docs/INSTALL.md`.
   create and resume): it runs without an OS sandbox, so those tools would read
   the Git repositories of every space straight from disk around the access
   checks. It sees only the in-process tools (Folio MCP,
-  `report_unanswered_question`, `read_skill`). A caller with no role in a space
+  `report_unanswered_question`, `read_skill`), minus the MCP-only `search` and
+  `fetch`. A caller with no role in a space
   or page gets "not found", identical to a missing one. `toolAccess.test.ts`
   pins every read tool against a private space, a page hidden by page access
   and `.agent`.
@@ -387,6 +388,11 @@ added to this list and to `docs/INSTALL.md`.
 - Importing a Confluence tree must never replace a page that already exists at
   the target, least of all a space's own `index.md`, which the tree does not
   list.
+- MCP-only tools (`search`/`fetch`) are not offered to the in-app assistant;
+  the assistant tool set must not contain URL/path/command-looking tools. The
+  external `/mcp` endpoint keeps all 23. The skip list is
+  `MCP_ONLY_TOOL_NAMES` in `server/assistant/tools.ts`, pinned in
+  `toolAccess.test.ts`.
 
 ## Lessons that cost something
 

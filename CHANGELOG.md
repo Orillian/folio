@@ -212,6 +212,15 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ### Fixed
 
+- **The built-in assistant no longer gets the MCP tools `search` and `fetch`.**
+  They exist only because ChatGPT deep research accepts tools with exactly
+  those names, and they duplicate `search_pages` and `read_page` (same access
+  checks), so the model saw both reading tools twice, and a bare `fetch` looks like a
+  web fetch to a model that has no way to open a URL. The assistant now sees
+  the other 21 MCP tools in Agent mode and the read-only ones in Ask mode. The
+  external `/mcp` endpoint is unchanged and still offers all 23 tools. The
+  `pageMeta` test no longer depends on the environment variables of the
+  shell that runs it.
 - **`docker-compose.yml` passes every documented setting to the app.**
   `TRUST_PROXY`, `FOLIO_DEMO_MODE` and the other `FOLIO_DEMO_*` settings,
   `FOLIO_DEFAULT_REPO_URL` and the assistant deadlines

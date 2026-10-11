@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_OG_DESCRIPTION,
   DEFAULT_OG_TITLE,
@@ -30,9 +30,13 @@ function count(html: string, needle: string): number {
 }
 
 describe('pageMeta.ts — link-preview meta in index.html', () => {
-  afterEach(() => {
+  // Clear before as well as after: a variable already set in the caller's shell or loaded from .env
+  // (FOLIO_DEMO_MODE, PUBLIC_URL, ...) must not change what the "plain instance" test sees.
+  const clearEnv = () => {
     for (const k of ENV_KEYS) delete process.env[k];
-  });
+  };
+  beforeEach(clearEnv);
+  afterEach(clearEnv);
 
   it('a plain instance gets the neutral product defaults and the generic image, with every preview tag exactly once', () => {
     const html = renderIndexHtml(BUILT_INDEX, 'https://wiki.example.com', '/');

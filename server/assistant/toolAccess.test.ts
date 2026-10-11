@@ -340,6 +340,10 @@ describe('assistant tools only return what the user may read (real PG, in-proces
         'page_history', 'read_page', 'read_skill', 'report_unanswered_question', 'resolve_folio_url', 'search_pages', 'update_board', 'update_page',
       ].sort(),
     );
+    // `search` / `fetch` are the ChatGPT-named MCP wrappers; the assistant has search_pages / read_page instead, in either mode.
+    const askNames = Object.keys((await tools(bob, 'ask')).tools);
+    expect(askNames).not.toContain('search');
+    expect(askNames).not.toContain('fetch');
   });
 
   it('read_skill returns a shipped skill and nothing else: a path is not a skill name', async () => {
