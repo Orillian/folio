@@ -536,6 +536,9 @@ gets in your way.
 
 - [Website: foliowiki.online](https://foliowiki.online)
 - [Public demo: demo.foliowiki.online](https://demo.foliowiki.online/?utm_source=github&utm_medium=readme&utm_campaign=repo) — shared login, resets every 24 hours
+- Free tools, no sign-up: [Confluence to Markdown converter](https://foliowiki.online/tools/confluence-to-markdown/) · [Mermaid live editor](https://foliowiki.online/tools/mermaid-editor/)
+- [Markdown templates](https://foliowiki.online/templates/): meeting notes, PRD, SOP, runbook, postmortem, onboarding checklist and more (CC0)
+- Alternatives, compared honestly: [Confluence](https://foliowiki.online/alternatives/confluence/) · [Notion](https://foliowiki.online/alternatives/notion/) · [self-hosted wikis](https://foliowiki.online/alternatives/self-hosted-wiki/)
 - [Installation, HTTPS, updates, backups](docs/INSTALL.md)
 - [Features](docs/FEATURES.md)
 - [What is not there yet](docs/LIMITATIONS.md)
