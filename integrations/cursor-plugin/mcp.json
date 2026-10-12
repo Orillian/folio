@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "folio": {
+      "type": "http",
+      "url": "${env:FOLIO_URL}/mcp",
+      "headers": { "Authorization": "Bearer ${env:FOLIO_TOKEN}" }
+    }
+  }
+}

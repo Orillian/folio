@@ -6,6 +6,14 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ### Added
 
+- **MCP tools declare their result shape.** All 23 tools now publish an
+  `outputSchema` and return `structuredContent` next to the JSON text they
+  always returned, so clients and catalogs that read structured output get
+  typed results (lists are wrapped in an object: `{"spaces": [...]}`,
+  `{"hits": [...]}`, ...; the text form is unchanged). Every tool parameter
+  now has a description, including `limit`/`offset` of `folio_table_query`
+  and the column fields of `folio_table_add_column`, `folio_table_create`
+  and `create_page`. Tool names are unchanged. See `docs/MCP.md`.
 - **Replace a file page with a new version.** A PDF, Word, Excel or PowerPoint
   page can now take a new file without becoming a new page: it keeps its
   link, its place in the tree, its icon, its access rules and its stars. Use

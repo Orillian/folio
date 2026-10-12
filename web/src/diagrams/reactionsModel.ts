@@ -19,8 +19,32 @@
 import * as Y from 'yjs';
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 
-/** Reaction palette offered by the picker, in display order. */
-export const REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉', '🤔', '👀', '🔥', '👏'] as const;
+/**
+ * Reaction palette offered by the picker, in display order: the three "status" marks first
+ * (yes / no / in progress), then the general-purpose ones. The stored key carries the emoji
+ * itself, so reordering or extending this list never invalidates existing reactions.
+ */
+export const REACTION_EMOJIS = ['✅', '❌', '🔧', '👍', '❤️', '😂', '🎉', '🤔', '👀', '🔥', '👏'] as const;
+
+/** i18n key (under `board.reactions.labels`) naming each palette emoji, used for tooltips and aria labels. */
+export const REACTION_LABEL_KEYS: Readonly<Record<(typeof REACTION_EMOJIS)[number], string>> = {
+  '✅': 'yes',
+  '❌': 'no',
+  '🔧': 'inProgress',
+  '👍': 'thumbsUp',
+  '❤️': 'heart',
+  '😂': 'laugh',
+  '🎉': 'party',
+  '🤔': 'thinking',
+  '👀': 'eyes',
+  '🔥': 'fire',
+  '👏': 'clap',
+};
+
+/** Label key for an emoji, or null for one outside the palette (an old or foreign reaction). */
+export function reactionLabelKey(emoji: string): string | null {
+  return (REACTION_LABEL_KEYS as Readonly<Record<string, string>>)[emoji] ?? null;
+}
 
 /** elementId -> emoji -> ids of the users who reacted (oldest reaction first). */
 export type ReactionIndex = Map<string, Map<string, string[]>>;
@@ -209,4 +233,36 @@ export function sceneToContainerPoint(
     x: (point.x + vp.scrollX) * zoom + vp.offsetLeft - containerOrigin.left,
     y: (point.y + vp.scrollY) * zoom + vp.offsetTop - containerOrigin.top,
   };
+}
+
+/** Screen-pixel gap between the visible bottom edge of an unselected shape and the reaction chips. */
+export const REACTION_CHIPS_GAP_PX = 5;
+/**
+ * Extra clearance while the shape is selected: Excalidraw draws a dashed frame a few pixels outside
+ * the shape and its resize handles straddle that frame, so chips at the plain gap would sit under them.
+ */
+export const REACTION_CHIPS_SELECTED_CLEARANCE_PX = 14;
+
+/**
+ * How far (in scene units) the drawn outline can reach past the geometric box: half of a visible
+ * stroke (the stroke is centred on the edge) plus the hand-drawn wobble of `roughness`. A
+ * transparent stroke (sticky notes) adds no half-stroke. Zoom scales this like everything else.
+ */
+export function elementVisualOutset(
+  el: Partial<Pick<ExcalidrawElement, 'strokeWidth' | 'strokeColor' | 'roughness'>>,
+): number {
+  const visibleStroke = el.strokeColor && el.strokeColor !== 'transparent' ? (el.strokeWidth ?? 0) / 2 : 0;
+  // Measured in Chrome: a roughness-2 outline strays about 1.5 scene px past the box.
+  const wobble = Math.max(0, el.roughness ?? 0) * 0.75;
+  return visibleStroke + wobble;
+}
+
+/**
+ * Container-pixel `y` of the top of the chips row hanging below a shape: the visible bottom edge
+ * (the rotated box's lowest point plus the outline outset, which scales with zoom) plus a fixed
+ * on-screen gap that does not scale with zoom. A selected shape gets extra clearance for its frame.
+ */
+export function reactionChipsTop(bottomPx: number, outsetScene: number, zoom: number, selected: boolean): number {
+  const z = zoom > 0 ? zoom : 1;
+  return bottomPx + outsetScene * z + REACTION_CHIPS_GAP_PX + (selected ? REACTION_CHIPS_SELECTED_CLEARANCE_PX : 0);
 }

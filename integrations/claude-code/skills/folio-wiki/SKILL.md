@@ -5,7 +5,7 @@ description: "Search, read and update the team's Folio wiki (pages, data tables,
 
 # Working with Folio
 
-Folio is a team wiki backed by Git. People edit pages in the browser. You read and write the same pages through the `folio` MCP server (tools named `mcp__folio__*`). Everything you write lands in Git history under the name of the token's owner, so it can be reviewed and reverted.
+Folio is a team wiki backed by Git. People edit pages in the browser. You read and write the same pages through the Folio MCP server. Your client may show the tools with a prefix, for example `mcp__folio__search_pages`; the names below are the server's own. Everything you write lands in Git history under the name of the token's owner, so it can be reviewed and reverted.
 
 ## Order of work
 
@@ -18,7 +18,7 @@ Write only when the user asked for a change in the current message. Reading is a
 
 ## Tools
 
-Reading: `list_spaces`, `list_tree`, `search_pages`, `read_page`, `resolve_folio_url`, `get_backlinks`, `page_history`, `page_at_sha`, `folio_table_list`, `folio_table_schema`, `folio_table_query`. `search` and `fetch` are read-only aliases made for ChatGPT's deep research. In Claude Code prefer `search_pages` and `read_page`.
+Reading: `list_spaces`, `list_tree`, `search_pages`, `read_page`, `resolve_folio_url`, `get_backlinks`, `page_history`, `page_at_sha`, `folio_table_list`, `folio_table_schema`, `folio_table_query`. `search` and `fetch` are read-only aliases made for ChatGPT's deep research. Prefer `search_pages` and `read_page` unless your client asks for `search` and `fetch`.
 
 Writing (needs a token with the `write` scope): `create_page`, `update_page`, `create_board`, `update_board`, `board_ops`, `folio_table_create`, `folio_table_add_column`, `folio_table_insert`, `folio_table_update`, `folio_table_delete`.
 
@@ -52,4 +52,4 @@ If a write tool is refused, the token is read-only. Say so. Do not look for a wo
 - You cannot manage access rights, invite people, or rename and delete spaces. Those exist only in the browser. If asked, say so.
 - A page you cannot open is invisible to you, and a missing page and a forbidden page look the same. Do not try to probe for either.
 - An error from a tool means the change is not confirmed. Report it. Do not pretend it worked.
-- Tool names above are what the server calls them. In Claude Code they appear with the `mcp__folio__` prefix.
+- Tool names above are what the server calls them. A client may add a prefix such as `mcp__folio__`.

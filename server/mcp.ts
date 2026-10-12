@@ -56,6 +56,7 @@ import * as tableService from './tables/service.js';
 import { encodeCell } from '../shared/tables/index.js';
 import { decodeScenePayload, extractScenePayload, renderSceneSvg, selfcheckWhiteboardSvg, type ExcalidrawElement, type ExcalidrawScene } from './confluenceWhiteboard.js';
 import { buildSceneFromSketch, boardSketchSchema } from './boardSketch.js';
+import { outputSchemas } from './mcpOutputSchemas.js';
 import { applyBoardOps, boardOpSchema, type BoardOp } from './boardOps.js';
 
 /**
@@ -139,8 +140,15 @@ export interface McpActor {
 function errorResult(message: string): CallToolResult {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
-function textResult(value: unknown): CallToolResult {
-  return { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] };
+
+/**
+ * A successful tool answer: the JSON text `textResult` always produced (kept as is for clients that only read
+ * `content`) plus the same data as `structuredContent`, which the tool's `outputSchema` validates. `structured`
+ * differs from `value` only where the schema needs an object root and the text form is a bare array. The
+ * JSON round trip makes the structured form exactly what a client would parse out of the text.
+ */
+function structuredResult(value: unknown, structured: Record<string, unknown> = value as Record<string, unknown>): CallToolResult {
+  return { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }], structuredContent: JSON.parse(JSON.stringify(structured)) as Record<string, unknown> };
 }
 
 /** For the `search`/`fetch` pair: the object as `structuredContent` plus the same value as a JSON string in `content`, which ChatGPT requires. */
@@ -370,6 +378,27 @@ function rowsToMarkdown(columns: TableColumn[], rows: TableRow[]): string {
   return [header, sep, ...body].join('\n');
 }
 
+/**
+ * A column definition as the MCP tools take it. The shared `tableColumnSchema` carries no per-field
+ * descriptions (the web app never needed them); an agent reading tools/list does, so each field is described
+ * here once and reused by create_page, folio_table_create and folio_table_add_column. `id` is separate: optional here.
+ */
+const mcpColumnShape = {
+  ...tableColumnSchema.omit({ id: true }).shape,
+  name: tableColumnSchema.shape.name.describe('Column title'),
+  type: tableColumnSchema.shape.type.describe('Column type'),
+  description: tableColumnSchema.shape.description.describe('Hint shown in the column header'),
+  width: tableColumnSchema.shape.width.describe('Column width in pixels (60-1200)'),
+  align: tableColumnSchema.shape.align.describe('Cell text alignment'),
+  multiple: tableColumnSchema.shape.multiple.describe('select or user columns: allow several values per cell'),
+  allowCreate: tableColumnSchema.shape.allowCreate.describe('select columns: allow a value that is not among the options'),
+  precision: tableColumnSchema.shape.precision.describe('number columns: digits after the decimal point (0-6)'),
+  time: tableColumnSchema.shape.time.describe('date columns: also store the time of day'),
+  default: tableColumnSchema.shape.default.describe('Value a new row gets when it omits this column'),
+  options: tableColumnSchema.shape.options.describe('select and status columns: the allowed values, each { value, color?, description? }'),
+};
+const mcpNewColumnSchema = z.object({ ...mcpColumnShape, id: tableColumnSchema.shape.id.optional().describe('Column id ([a-z0-9_]{1,32}); derived from `name` when omitted') });
+
 const cellValueSchema = z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()]);
 
 /**
@@ -383,8 +412,8 @@ const cellValueSchema = z.union([z.string(), z.number(), z.boolean(), z.array(z.
  * `limit` even for a plain rowId update). Fresh, default-free schemas here
  * avoid the ambiguity entirely — optional truly means "absent -> undefined".
  */
-const mcpFilterSchema = z.object({ op: z.enum(['and', 'or']), rules: z.array(tableFilterRuleSchema) });
-const mcpSortSchema = z.array(z.object({ column: z.string(), dir: z.enum(['asc', 'desc']) }));
+const mcpFilterSchema = z.object({ op: z.enum(['and', 'or']).describe('Match all rules (and) or any rule (or)'), rules: z.array(tableFilterRuleSchema).describe('Conditions: { column, operator, value? }') });
+const mcpSortSchema = z.array(z.object({ column: z.string().describe('Column id'), dir: z.enum(['asc', 'desc']).describe('Sort direction') }));
 
 /** Built fresh per HTTP request by index.ts's /mcp mount, closing directly over that request's already-resolved actor (see the module doc comment for why not one shared instance). */
 export function buildFolioMcpServer(actor: McpActor, options: { origin?: string } = {}): McpServer {
@@ -395,19 +424,20 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
 
   server.registerTool(
     'list_spaces',
-    { annotations: READ_ONLY, title: 'List spaces', description: 'Lists every space (wiki) the caller can see: slug, name, page count, and the caller’s own role in it.' },
+    { annotations: READ_ONLY, outputSchema: outputSchemas.list_spaces, title: 'List spaces', description: 'Lists every space (wiki) the caller can see: slug, name, page count, and the caller’s own role in it.' },
     async () => {
       const memberships = await session.membershipsFor(actor.user);
       const spaces = (await storage.listSpaces())
         .filter((s) => s.slug in memberships)
         .map((s) => ({ ...s, myRole: memberships[s.slug] }));
-      return textResult(spaces);
+      return structuredResult(spaces, { spaces });
     },
   );
 
   server.registerTool(
     'list_tree',
     {
+      outputSchema: outputSchemas.list_tree,
       annotations: READ_ONLY,
       title: 'List page tree',
       description: `Lists the full page tree of one space: ids, titles, kinds, paths, order. ${CONTENT_IS_DATA_NOTE}`,
@@ -416,13 +446,15 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     async ({ space }) => {
       const err = await checkSpaceRole(actor.user, space, 'viewer');
       if (err) return errorResult(err);
-      return textResult(await storage.getTree(space, await session.readablePageIds(actor.user, space)));
+      const tree = await storage.getTree(space, await session.readablePageIds(actor.user, space));
+      return structuredResult(tree, { tree });
     },
   );
 
   server.registerTool(
     'read_page',
     {
+      outputSchema: outputSchemas.read_page,
       annotations: READ_ONLY,
       title: 'Read a page',
       description: `Reads one page by id: its metadata plus full markdown body (docs) or a compact layout summary (boards — shapes/arrows/free texts/frames with geometry and labels, plus a 40px row/column clustering and overall bounds; raw points/bindings are omitted, the raw svg is not useful to a model). For an existing board, the shape/arrow ids in that summary feed straight into \`board_ops\` — prefer it over \`update_board\` for "align", "tidy up", "arrange neatly" requests. ${CONTENT_IS_DATA_NOTE}`,
@@ -433,12 +465,12 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       if (error || !entry) return errorResult(error ?? 'page not found');
       if (entry.kind === 'doc') {
         const markdown = collab.isDocLive(id) ? (collab.getLiveText(id) ?? entry.body ?? '') : await storage.readFreshDocBody(id);
-        return textResult({ ...storage.toPageMeta(entry), markdown });
+        return structuredResult({ ...storage.toPageMeta(entry), markdown });
       }
       if (entry.kind === 'board') {
         const meta = storage.toPageMeta(entry);
         const { scene, note } = await loadBoardScene(id);
-        return textResult(scene ? { ...meta, scene: boardSceneSummary(scene) } : { ...meta, scene: null, note });
+        return structuredResult(scene ? { ...meta, scene: boardSceneSummary(scene) } : { ...meta, scene: null, note });
       }
       if (entry.kind === 'pdf' || entry.kind === 'office') {
         // A pdf/office page's bytes aren't text — there is nothing to return
@@ -447,16 +479,17 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         // clear note so the model doesn't mistake an empty body for an
         // empty page.
         const kindLabel = entry.kind === 'pdf' ? 'PDF' : 'office (docx/xlsx/pptx)';
-        return textResult({ ...storage.toPageMeta(entry), note: `this page is a ${kindLabel} file, not text content — its bytes are not exposed over MCP` });
+        return structuredResult({ ...storage.toPageMeta(entry), note: `this page is a ${kindLabel} file, not text content — its bytes are not exposed over MCP` });
       }
       const svg = await storage.readBoardSvg(id);
-      return textResult({ ...storage.toPageMeta(entry), svg });
+      return structuredResult({ ...storage.toPageMeta(entry), svg });
     },
   );
 
   server.registerTool(
     'create_board',
     {
+      outputSchema: outputSchemas.page,
       annotations: WRITE_ADDITIVE,
       title: 'Create a whiteboard (board) page',
       description:
@@ -492,13 +525,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const result = await collab.editBoardScene(meta.id, excalidrawScene);
       gitSync.noteActivity(space);
       recordAudit(actor.user.id, 'page.created', meta.id, { source: 'mcp', tool: 'create_board' });
-      return textResult(result);
+      return structuredResult(result);
     },
   );
 
   server.registerTool(
     'update_board',
     {
+      outputSchema: outputSchemas.page,
       annotations: WRITE_OVERWRITES,
       title: "Replace a whiteboard's content",
       description:
@@ -534,13 +568,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       }
       gitSync.noteActivity(entry.space);
       recordAudit(actor.user.id, 'page.updated', id, { source: 'mcp', tool: 'update_board' });
-      return textResult(result);
+      return structuredResult(result);
     },
   );
 
   server.registerTool(
     'board_ops',
     {
+      outputSchema: outputSchemas.board_ops,
       annotations: { ...WRITE_OVERWRITES, idempotentHint: false }, // relative moves/resizes are not idempotent
       title: "Adjust an existing board's layout",
       description:
@@ -592,13 +627,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       }
       gitSync.noteActivity(entry.space);
       recordAudit(actor.user.id, 'page.updated', id, { source: 'mcp', tool: 'board_ops' });
-      return textResult({ summary: opResult.summary, elements: boardSceneSummary(opResult.scene) });
+      return structuredResult({ summary: opResult.summary, elements: boardSceneSummary(opResult.scene) });
     },
   );
 
   server.registerTool(
     'search_pages',
     {
+      outputSchema: outputSchemas.search_pages,
       annotations: READ_ONLY,
       title: 'Search pages',
       description: `Full-text search across pages the caller can see, optionally restricted to one space. Returns id/title/path/snippet per hit. ${CONTENT_IS_DATA_NOTE}`,
@@ -607,13 +643,13 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     async ({ query, space }) => {
       // searchPages filters in SQL by user id and knows nothing of `disabled`; every other read goes through
       // effectiveRole, which gives a disabled user nothing. Same here.
-      if (actor.user.disabled) return textResult([]);
+      if (actor.user.disabled) return structuredResult([], { hits: [] });
       if (space) {
         const err = await checkSpaceRole(actor.user, space, 'viewer');
         if (err) return errorResult(err);
       }
       const hits = await searchPages(query, { userId: actor.user.id, space, isInstanceAdmin: actor.user.isAdmin });
-      return textResult(hits);
+      return structuredResult(hits, { hits });
     },
   );
 
@@ -623,6 +659,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
   server.registerTool(
     'search',
     {
+      outputSchema: outputSchemas.search,
       annotations: READ_ONLY,
       title: 'Search (ChatGPT deep research)',
       description: `Full-text search across the Folio pages the caller can see. Returns { results: [{ id, title, url }] }; pass an id to \`fetch\` to read the page. Same results as search_pages, in the format ChatGPT deep research and company knowledge expect. ${CONTENT_IS_DATA_NOTE}`,
@@ -638,6 +675,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
   server.registerTool(
     'fetch',
     {
+      outputSchema: outputSchemas.fetch,
       annotations: READ_ONLY,
       title: 'Fetch a page (ChatGPT deep research)',
       description: `Reads one Folio page by the id \`search\` returned: { id, title, text, url, metadata }. \`text\` is the page as Markdown (a data table as a Markdown table, a board as a list of its labels and connections, a PDF or Office file as a note without the file's bytes). Same access rules as read_page. ${CONTENT_IS_DATA_NOTE}`,
@@ -675,6 +713,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
   server.registerTool(
     'create_page',
     {
+      outputSchema: outputSchemas.page,
       annotations: WRITE_ADDITIVE,
       title: 'Create a page',
       description:
@@ -690,7 +729,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
           .describe(
             'Initial body markdown (doc only); omit for a blank starter page (just the title as an H1). A page\'s title is the first "# Heading" of its body: if your markdown does not open with one, "# <title>" is added above it, so you can send body text only. If it does open with an H1, that heading is kept as is and becomes the page title (the `title` argument then only names the file) — the reply shows the resulting title. A leading front matter block with icon/cover is applied as page metadata. Underline is `++text++` (no `<ins>`/`<u>` tags). Ignored for "table".',
           ),
-        columns: z.array(tableColumnSchema.omit({ id: true }).extend({ id: tableColumnSchema.shape.id.optional() })).optional().describe('Table only: starter column schema. Column `id` is auto-derived from `name` when omitted.'),
+        columns: z.array(mcpNewColumnSchema).optional().describe('Table only: starter column schema. Column `id` is auto-derived from `name` when omitted.'),
       },
     },
     async ({ space, parentPath, title, kind, markdown, columns }) => {
@@ -711,7 +750,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         const meta = await storage.createPage({ space, parentPath, title, kind: 'table', columns: resolvedColumns }, undefined, resolveTextLanguage(actor.user.lang));
         gitSync.noteActivity(space);
         recordAudit(actor.user.id, 'page.created', meta.id, { source: 'mcp', tool: 'create_page', kind: 'table' });
-        return textResult(meta);
+        return structuredResult(meta);
       }
 
       const meta = await storage.createPage({ space, parentPath, title, kind: 'doc' });
@@ -729,13 +768,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       }
       gitSync.noteActivity(space);
       recordAudit(actor.user.id, 'page.created', meta.id, { source: 'mcp', tool: 'create_page' });
-      return textResult(result);
+      return structuredResult(result);
     },
   );
 
   server.registerTool(
     'update_page',
     {
+      outputSchema: outputSchemas.page,
       annotations: WRITE_OVERWRITES,
       title: 'Update a page',
       description:
@@ -752,13 +792,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const result = await collab.editDocBody(id, markdown);
       gitSync.noteActivity(entry.space);
       recordAudit(actor.user.id, 'page.updated', id, { source: 'mcp', tool: 'update_page' });
-      return textResult(result);
+      return structuredResult(result);
     },
   );
 
   server.registerTool(
     'resolve_folio_url',
     {
+      outputSchema: outputSchemas.resolve_folio_url,
       annotations: READ_ONLY,
       title: 'Resolve a Folio link to the page it shows',
       description:
@@ -792,13 +833,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const parentPathForChildren = entry.isIndex
         ? entry.relPath.replace(/\/?(index|README)\.md$/i, '')
         : entry.relPath.replace(/\.(table\.md|excalidraw\.svg|pdf|docx|xlsx|pptx|md)$/i, '');
-      return textResult({ ...storage.toPageMeta(entry), parentPathForChildren, note: 'Work within this page unless the user says otherwise.' });
+      return structuredResult({ ...storage.toPageMeta(entry), parentPathForChildren, note: 'Work within this page unless the user says otherwise.' });
     },
   );
 
   server.registerTool(
     'get_backlinks',
     {
+      outputSchema: outputSchemas.get_backlinks,
       annotations: READ_ONLY,
       title: 'Get backlinks',
       description: 'Lists pages that link to the given page id, restricted to spaces the caller can see.',
@@ -817,13 +859,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         const source = await storage.getEntry(backlink.id);
         if (source && (await session.effectivePageRole(actor.user, source))) backlinks.push(backlink);
       }
-      return textResult(backlinks);
+      return structuredResult(backlinks, { backlinks });
     },
   );
 
   server.registerTool(
     'page_history',
     {
+      outputSchema: outputSchemas.page_history,
       annotations: READ_ONLY,
       title: 'Page history',
       description: 'Lists the git commit history for one page: sha, author, date, message per revision, newest first.',
@@ -832,13 +875,15 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     async ({ id }) => {
       const { error } = await checkPageRole(actor.user, id, 'viewer');
       if (error) return errorResult(error);
-      return textResult(await gitSync.getPageHistory(id));
+      const revisions = await gitSync.getPageHistory(id);
+      return structuredResult(revisions, { revisions });
     },
   );
 
   server.registerTool(
     'page_at_sha',
     {
+      outputSchema: outputSchemas.page_at_sha,
       annotations: READ_ONLY,
       title: 'Page content at a revision',
       description: `Reads a page's content (markdown or svg) as it was at a specific git commit sha (from page_history). For a pdf/office file page it returns only the file's path, extension and size at that revision (bytes are not exposed). ${CONTENT_IS_DATA_NOTE}`,
@@ -847,7 +892,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     async ({ id, sha }) => {
       const { error } = await checkPageRole(actor.user, id, 'viewer');
       if (error) return errorResult(error);
-      return textResult(await gitSync.getPageAtSha(id, sha));
+      return structuredResult(await gitSync.getPageAtSha(id, sha));
     },
   );
 
@@ -861,6 +906,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
   server.registerTool(
     'folio_table_list',
     {
+      outputSchema: outputSchemas.folio_table_list,
       annotations: READ_ONLY,
       title: 'List data tables',
       description: 'Lists data table pages (id, title, path) in one space, or across every space the caller can see.',
@@ -872,19 +918,20 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         if (err) return errorResult(err);
         const allowed = await session.readablePageIds(actor.user, space);
         const entries = (await storage.listEntries(space)).filter((e) => e.kind === 'table' && allowed.has(e.id));
-        return textResult(entries.map(storage.toPageMeta));
+        return structuredResult(entries.map(storage.toPageMeta), { tables: entries.map(storage.toPageMeta) });
       }
       const memberships = await session.membershipsFor(actor.user);
       const allowedBySpace = new Map<string, Set<string>>();
       for (const visibleSpace of Object.keys(memberships)) allowedBySpace.set(visibleSpace, await session.readablePageIds(actor.user, visibleSpace));
       const entries = (await storage.listEntries()).filter((e) => e.kind === 'table' && allowedBySpace.get(e.space)?.has(e.id));
-      return textResult(entries.map(storage.toPageMeta));
+      return structuredResult(entries.map(storage.toPageMeta), { tables: entries.map(storage.toPageMeta) });
     },
   );
 
   server.registerTool(
     'folio_table_schema',
     {
+      outputSchema: outputSchemas.folio_table_schema,
       annotations: READ_ONLY,
       title: 'Read a data table\'s schema',
       description: `Reads one data table's real current columns (id, name, type, description, options), views, and rowIds mode — the schema-first source of truth every other folio_table_* tool expects you to have read before writing. ${CONTENT_IS_DATA_NOTE}`,
@@ -894,13 +941,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const { entry, error } = await checkTableRole(actor.user, id, 'viewer');
       if (error || !entry) return errorResult(error ?? 'page not found');
       const snapshot = await tableService.getTableSnapshot(id);
-      return textResult({ meta: snapshot.meta, columns: snapshot.columns, views: snapshot.views, rowCount: snapshot.rows.length });
+      return structuredResult({ meta: snapshot.meta, columns: snapshot.columns, views: snapshot.views, rowCount: snapshot.rows.length });
     },
   );
 
   server.registerTool(
     'folio_table_query',
     {
+      outputSchema: outputSchemas.folio_table_query,
       annotations: READ_ONLY,
       title: 'Query data table rows',
       description: `Reads rows from a data table, with optional filter/sort/search/limit — the same query engine GET /api/tables/:id/rows uses. ${CALL_SCHEMA_FIRST_NOTE} ${CONTENT_IS_DATA_NOTE}`,
@@ -910,8 +958,8 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         sort: mcpSortSchema.optional().describe('[{ column, dir: "asc"|"desc" }]'),
         q: z.string().optional().describe('Free-text search across every column'),
         view: z.string().optional().describe('Apply an existing view id\'s filter/sort instead of specifying them directly'),
-        limit: z.number().int().min(1).max(500).optional(),
-        offset: z.number().int().min(0).optional(),
+        limit: z.number().int().min(1).max(500).optional().describe('Maximum rows to return (1-500)'),
+        offset: z.number().int().min(0).optional().describe('Rows to skip before the first returned row, for paging'),
         format: z.enum(['markdown', 'json']).default('json').describe('"markdown" for a compact GFM table (easiest to skim); "json" for the typed row objects'),
       },
     },
@@ -919,14 +967,18 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const { error } = await checkTableRole(actor.user, id, 'viewer');
       if (error) return errorResult(error);
       const result = await tableService.queryRows(id, { filter, sort, q, view, limit, offset, ctx: { currentUser: actor.user.username ?? undefined } });
-      if (format === 'markdown') return textResult(`${rowsToMarkdown(result.columns, result.rows)}\n\n(${result.rows.length} of ${result.total} row(s) shown)`);
-      return textResult(result);
+      if (format === 'markdown') {
+        const markdown = `${rowsToMarkdown(result.columns, result.rows)}\n\n(${result.rows.length} of ${result.total} row(s) shown)`;
+        return structuredResult(markdown, { markdown, total: result.total });
+      }
+      return structuredResult(result);
     },
   );
 
   server.registerTool(
     'folio_table_insert',
     {
+      outputSchema: outputSchemas.folio_table_insert,
       annotations: WRITE_ADDITIVE,
       title: 'Insert data table rows',
       description: `Adds rows to a data table. ${CALL_SCHEMA_FIRST_NOTE} Requires a write-scoped token.`,
@@ -943,13 +995,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const result = await tableService.insertRows(id, rows);
       gitSync.noteActivity(entry.space);
       recordAudit(actor.user.id, 'table.rows_inserted', id, { source: 'mcp', tool: 'folio_table_insert', count: result.rows.length });
-      return textResult(result);
+      return structuredResult(result);
     },
   );
 
   server.registerTool(
     'folio_table_update',
     {
+      outputSchema: outputSchemas.folio_table_update,
       annotations: WRITE_OVERWRITES,
       title: 'Update data table cells',
       description: `Updates cell values in a data table, either one row by id, or every row matching a filter (filter usage REQUIRES limit, as a guard against an unbounded bulk edit). ${CALL_SCHEMA_FIRST_NOTE} Requires a write-scoped token.`,
@@ -973,19 +1026,20 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         const row = await tableService.updateRowCells(id, rowId, values);
         gitSync.noteActivity(entry.space);
         recordAudit(actor.user.id, 'table.row_updated', id, { source: 'mcp', tool: 'folio_table_update', rowId });
-        return textResult(row);
+        return structuredResult(row);
       }
       const matched = await tableService.queryRows(id, { filter, limit, ctx: { currentUser: actor.user.username ?? undefined } });
       const result = await tableService.bulkRows(id, matched.rows.map((r) => r.id), values);
       gitSync.noteActivity(entry.space);
       recordAudit(actor.user.id, 'table.rows_updated', id, { source: 'mcp', tool: 'folio_table_update', count: result.affected });
-      return textResult(result);
+      return structuredResult(result);
     },
   );
 
   server.registerTool(
     'folio_table_delete',
     {
+      outputSchema: outputSchemas.folio_table_delete,
       annotations: WRITE_DELETES,
       title: 'Delete data table rows',
       description: 'Deletes rows from a data table by id. Requires a write-scoped token.',
@@ -999,20 +1053,21 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const result = await tableService.bulkRows(id, rowIds);
       gitSync.noteActivity(entry.space);
       recordAudit(actor.user.id, 'table.rows_deleted', id, { source: 'mcp', tool: 'folio_table_delete', count: result.affected });
-      return textResult(result);
+      return structuredResult(result);
     },
   );
 
   server.registerTool(
     'folio_table_add_column',
     {
+      outputSchema: outputSchemas.folio_table_add_column,
       annotations: WRITE_ADDITIVE,
       title: 'Add a data table column',
       description: 'Adds a new column to a data table, with its type and (for select/status) its options. The column id is derived from `name` unless `columnId` is given. Requires a write-scoped token.',
       inputSchema: {
         id: z.string().describe('Table page id'),
         columnId: tableColumnSchema.shape.id.optional().describe('Explicit column id ([a-z0-9_]{1,32}); auto-derived from `name` when omitted'),
-        ...tableColumnSchema.omit({ id: true }).shape,
+        ...mcpColumnShape,
       },
     },
     async ({ id, columnId, ...columnInput }) => {
@@ -1023,13 +1078,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const column = await tableService.addColumn(id, { ...columnInput, id: columnId });
       gitSync.noteActivity(entry.space);
       recordAudit(actor.user.id, 'table.column_added', id, { source: 'mcp', tool: 'folio_table_add_column', columnId: column.id });
-      return textResult(column);
+      return structuredResult(column);
     },
   );
 
   server.registerTool(
     'folio_table_create',
     {
+      outputSchema: outputSchemas.folio_table_create,
       annotations: WRITE_ADDITIVE,
       title: 'Create a data table',
       description: 'Creates a new data table page in a space, from an explicit column schema (types, descriptions, select/status options). Requires a write-scoped token.',
@@ -1037,7 +1093,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         space: z.string().describe('Space slug'),
         parentPath: z.string().describe('Parent directory path relative to the space root; "" for the space root'),
         title: z.string().min(1).describe('Table title'),
-        columns: z.array(tableColumnSchema.omit({ id: true }).extend({ id: tableColumnSchema.shape.id.optional() })).optional().describe('Column schema; omit for an empty starter table. Column `id` is auto-derived from `name` when omitted.'),
+        columns: z.array(mcpNewColumnSchema).optional().describe('Column schema; omit for an empty starter table. Column `id` is auto-derived from `name` when omitted.'),
       },
     },
     async ({ space, parentPath, title, columns }) => {
@@ -1056,7 +1112,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const meta = await tableService.createTable(space, parentPath, title, resolvedColumns, resolveTextLanguage(actor.user.lang));
       gitSync.noteActivity(space);
       recordAudit(actor.user.id, 'page.created', meta.id, { source: 'mcp', tool: 'folio_table_create' });
-      return textResult(meta);
+      return structuredResult(meta);
     },
   );
 

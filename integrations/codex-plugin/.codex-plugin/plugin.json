@@ -1,0 +1,32 @@
+{
+  "name": "folio",
+  "version": "0.1.0",
+  "description": "Skills that teach Codex to search, read and update a team's Folio wiki (pages, data tables, whiteboards) through the Folio MCP server.",
+  "author": {
+    "name": "Evergreen",
+    "url": "https://github.com/evergreen-it-dev"
+  },
+  "homepage": "https://foliowiki.online/integrations/codex",
+  "repository": "https://github.com/evergreen-it-dev/folio",
+  "license": "MIT",
+  "keywords": ["folio", "wiki", "mcp", "knowledge-base", "docs"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Folio",
+    "shortDescription": "Work with your team's Folio wiki",
+    "longDescription": "Folio is a self-hosted team wiki whose pages are Markdown files in Git. This plugin adds a skill that tells the agent how to find, read and carefully update Folio pages, data tables and whiteboards through the Folio MCP server. Connect the server separately with your own Folio address (see the plugin README).",
+    "developerName": "Evergreen",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://foliowiki.online",
+    "privacyPolicyURL": "https://foliowiki.online/privacy/",
+    "termsOfServiceURL": "https://foliowiki.online/terms/",
+    "defaultPrompt": [
+      "Find the release process page in Folio and tell me which checklist items are still open.",
+      "Create a page called Release notes in Folio under Engineering with a short summary of what shipped."
+    ],
+    "brandColor": "#36C5F0",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png"
+  }
+}

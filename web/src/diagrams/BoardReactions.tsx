@@ -7,8 +7,11 @@ import { SmilePlus } from 'lucide-react';
 import {
   REACTION_EMOJIS,
   elementSceneBounds,
+  elementVisualOutset,
   indexReactions,
   isReactable,
+  reactionChipsTop,
+  reactionLabelKey,
   reactionTarget,
   sceneToContainerPoint,
   toggleReaction,
@@ -21,8 +24,6 @@ import './i18n/register';
  * (on both axes), which puts it clear of Excalidraw's corner resize handle.
  */
 const BUTTON_OFFSET_PX = 26;
-/** Chips hang this far below the bottom edge — below the selection frame and its bottom handles too. */
-const CHIPS_GAP_PX = 18;
 /** Excalidraw's selection colour, so the button reads as part of the selected shape's frame. */
 const SELECTION_COLOR = '#6965db';
 
@@ -134,6 +135,11 @@ export function BoardReactions({ api, containerRef, doc, reactions, canReact, us
     const bottomRight = sceneToContainerPoint({ x: b.right, y: b.bottom }, appState, origin);
     return { bottomLeft, bottomRight };
   };
+  /** Tooltip / accessible name of an emoji: its palette label ("Yes", "In progress", ...) or '' for one outside the palette. */
+  const labelOf = (emoji: string): string => {
+    const key = reactionLabelKey(emoji);
+    return key ? t(`board.reactions.labels.${key}`) : '';
+  };
   const inView = (x: number, y: number) =>
     x > -200 && y > -100 && x < appState.width + 200 && y < appState.height + 100 && zoom > 0;
 
@@ -146,19 +152,25 @@ export function BoardReactions({ api, containerRef, doc, reactions, canReact, us
   return (
     <div ref={rootRef} className="pointer-events-none absolute inset-0 z-[3] overflow-hidden" data-board-reactions-layer>
       {withChips.map((el) => {
-        const { bottomLeft } = anchorOf(el);
+        const { bottomLeft, bottomRight } = anchorOf(el);
         if (!inView(bottomLeft.x, bottomLeft.y)) return null;
+        const selected = !!appState.selectedElementIds[el.id];
+        // While the add button is shown next to this shape, the chips wrap inside the shape's own width
+        // so a long row never runs under the button (which sits just right of the bottom-right corner).
+        const maxWidth = target?.id === el.id ? Math.max(bottomRight.x - bottomLeft.x + 8, 64) : undefined;
         const byEmoji = index?.get(el.id) ?? new Map<string, string[]>();
         return (
           <div
             key={el.id}
             data-board-reactions
             className="pointer-events-auto absolute flex max-w-[60vw] flex-wrap gap-1"
-            style={{ left: bottomLeft.x, top: bottomLeft.y + CHIPS_GAP_PX }}
+            style={{ left: bottomLeft.x, top: reactionChipsTop(bottomLeft.y, elementVisualOutset(el), zoom, selected), maxWidth }}
           >
             {[...byEmoji.entries()].map(([emoji, ids]) => {
               const mine = ids.includes(userId);
-              const label = `${emoji} ${ids.length}`;
+              const emojiLabel = labelOf(emoji);
+              const label = `${emoji} ${emojiLabel ? `${emojiLabel} ` : ''}${ids.length}`;
+              const tip = [emojiLabel, nameList(ids)].filter(Boolean).join(' — ');
               const cls = `inline-flex select-none items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs leading-none shadow-sm ${
                 mine
                   ? 'border-blue-400 bg-blue-50 text-blue-800 dark:border-blue-500 dark:bg-blue-950 dark:text-blue-200'
@@ -174,7 +186,7 @@ export function BoardReactions({ api, containerRef, doc, reactions, canReact, us
                 <button
                   key={emoji}
                   type="button"
-                  title={nameList(ids)}
+                  title={tip}
                   aria-label={label}
                   aria-pressed={mine}
                   data-reaction-chip={emoji}
@@ -184,7 +196,7 @@ export function BoardReactions({ api, containerRef, doc, reactions, canReact, us
                   {body}
                 </button>
               ) : (
-                <span key={emoji} title={nameList(ids)} aria-label={label} data-reaction-chip={emoji} className={cls}>
+                <span key={emoji} title={tip} aria-label={label} data-reaction-chip={emoji} className={cls}>
                   {body}
                 </span>
               );
@@ -225,7 +237,7 @@ export function BoardReactions({ api, containerRef, doc, reactions, canReact, us
             aria-label={t('board.reactions.pick')}
             data-board-reactions
             data-board-reactions-popup
-            className="pointer-events-auto absolute flex gap-0.5 rounded-lg border border-neutral-300 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+            className="pointer-events-auto absolute grid grid-cols-6 gap-0.5 rounded-lg border border-neutral-300 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
             style={{ left: bottomRight.x + BUTTON_OFFSET_PX - 11, top: bottomRight.y + BUTTON_OFFSET_PX + 14 }}
           >
             {REACTION_EMOJIS.map((emoji) => (
@@ -233,7 +245,8 @@ export function BoardReactions({ api, containerRef, doc, reactions, canReact, us
                 key={emoji}
                 type="button"
                 role="menuitem"
-                aria-label={emoji}
+                aria-label={`${emoji} ${labelOf(emoji)}`}
+                title={labelOf(emoji)}
                 data-reaction-pick={emoji}
                 onClick={() => {
                   toggle(picker.id, emoji);

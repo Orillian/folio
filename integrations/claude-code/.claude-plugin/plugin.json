@@ -9,8 +9,19 @@
   },
   "homepage": "https://github.com/evergreen-it-dev/folio/tree/main/integrations/claude-code",
   "repository": "https://github.com/evergreen-it-dev/folio",
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://foliowiki.online/integrations/claude-code",
+  "supportUrl": "https://foliowiki.online/support/",
+  "privacyPolicyUrl": "https://foliowiki.online/privacy/",
+  "termsOfServiceUrl": "https://foliowiki.online/terms/",
   "license": "MIT",
-  "keywords": ["folio", "wiki", "mcp", "knowledge-base", "docs"],
+  "keywords": [
+    "folio",
+    "wiki",
+    "mcp",
+    "knowledge-base",
+    "docs"
+  ],
   "userConfig": {
     "folio_mcp_url": {
       "type": "string",

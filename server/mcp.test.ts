@@ -92,6 +92,20 @@ describe('server/mcp.ts — tool annotations and instructions', () => {
     }
   });
 
+  it('catalog hygiene: every tool declares an object outputSchema and describes every input parameter', async () => {
+    const { client, close } = await connectedClient(actor);
+    try {
+      const { tools } = await client.listTools();
+      for (const tool of tools) {
+        expect(tool.outputSchema?.type, `${tool.name} outputSchema`).toBe('object');
+        const props = (tool.inputSchema.properties ?? {}) as Record<string, { description?: string }>;
+        for (const [param, def] of Object.entries(props)) expect(def.description, `${tool.name}.${param} description`).toBeTruthy();
+      }
+    } finally {
+      await close();
+    }
+  });
+
   it('read-only annotation matches the real behaviour: every non-read-only tool refuses a read-scoped token', async () => {
     const { client, close } = await connectedClient(actor);
     try {
@@ -612,6 +626,61 @@ describe('server/mcp.ts — search and fetch (ChatGPT deep research format; real
     const denied = await call(editor, 'fetch', { id: agentDocId });
     expect(denied.isError).toBe(true);
     expect(resultText(denied)).toBe('page not found');
+  });
+
+  it('every read tool answers with structuredContent that matches its outputSchema (the client validates it) and keeps the JSON text', async () => {
+    const check = async (name: string, args: Record<string, unknown>) => {
+      const r = await call(editor, name, args);
+      expect(r.isError, `${name}: ${resultText(r)}`).toBeFalsy();
+      expect(r.structuredContent, `${name} structuredContent`).toBeTruthy();
+      expect(resultText(r), `${name} text`).toBeTruthy();
+      return r.structuredContent as Record<string, any>;
+    };
+    const spaces = await check('list_spaces', {});
+    expect(spaces.spaces.map((x: { slug: string }) => x.slug)).toContain(ownSpace);
+    const tree = await check('list_tree', { space: ownSpace });
+    expect(tree.tree.length).toBeGreaterThan(0);
+    expect(await check('read_page', { id: openDocId })).toMatchObject({ id: openDocId, markdown: expect.stringContaining(marker) });
+    expect((await check('search_pages', { query: marker })).hits.map((x: { id: string }) => x.id)).toContain(openDocId);
+    expect((await check('get_backlinks', { id: openDocId })).backlinks).toEqual([]);
+    expect(await check('resolve_folio_url', { url: `/s/${ownSpace}/p/${openDocId}` })).toMatchObject({ id: openDocId, parentPathForChildren: expect.any(String) });
+    expect((await check('folio_table_list', { space: ownSpace })).tables.map((x: { id: string }) => x.id)).toContain(tableId);
+    expect(await check('folio_table_schema', { id: tableId })).toMatchObject({ rowCount: 0, columns: [expect.objectContaining({ id: 'species' })] });
+    expect(await check('folio_table_query', { id: tableId })).toMatchObject({ total: 0, rows: [] });
+    expect(await check('folio_table_query', { id: tableId, format: 'markdown' })).toMatchObject({ total: 0, markdown: expect.stringContaining('Species') });
+    expect(await check('page_history', { id: openDocId })).toHaveProperty('revisions');
+  });
+
+  it('write tools return the changed page as structuredContent too (docs, boards, board_ops, tables)', async () => {
+    const writer: McpActor = { user: admin, scopes: ['read', 'write'], tokenId: 'test-sf-writer' };
+    const { client, close } = await connectedClient(writer);
+    const run = async (name: string, args: Record<string, unknown>) => {
+      const r = await client.callTool({ name, arguments: args });
+      expect(r.isError, `${name}: ${resultText(r)}`).toBeFalsy();
+      expect(r.structuredContent, `${name} structuredContent`).toBeTruthy();
+      return r.structuredContent as Record<string, any>;
+    };
+    try {
+      await client.listTools(); // the client validates every later result against the cached outputSchema
+      const doc = await run('create_page', { space: ownSpace, parentPath: '', title: 'Structured doc', markdown: '# Structured doc\n\nBody.\n' });
+      expect(doc).toMatchObject({ kind: 'doc', title: 'Structured doc' });
+      expect(await run('update_page', { id: doc.id, markdown: '# Structured doc\n\nChanged.\n' })).toMatchObject({ id: doc.id });
+      const board = await run('create_board', { space: ownSpace, parentPath: '', title: 'Structured board', sketch: { nodes: [{ id: 'a', type: 'rectangle', label: 'A', x: 0, y: 0 }, { id: 'b', type: 'rectangle', label: 'B', x: 300, y: 40 }], edges: [{ from: 'a', to: 'b' }] } });
+      expect(board).toMatchObject({ kind: 'board' });
+      expect(await run('update_board', { id: board.id, sketch: { nodes: [{ id: 'a', type: 'rectangle', label: 'A', x: 0, y: 0 }], edges: [] } })).toMatchObject({ id: board.id });
+      const shapeId = (await run('read_page', { id: board.id })).scene.shapes[0].id as string;
+      expect(await run('board_ops', { id: board.id, ops: [{ op: 'move', ids: [shapeId], dx: 20, dy: 0 }] })).toHaveProperty('summary');
+      const table = await run('folio_table_create', { space: ownSpace, parentPath: '', title: 'Structured table', columns: [{ name: 'Name', type: 'text' }] });
+      const added = await run('folio_table_add_column', { id: table.id, name: 'Count', type: 'number' });
+      expect(added).toMatchObject({ name: 'Count', type: 'number' });
+      const inserted = await run('folio_table_insert', { id: table.id, rows: [{ name: 'x', count: 1 }] });
+      expect(inserted.rows).toHaveLength(1);
+      expect(await run('folio_table_update', { id: table.id, rowId: inserted.rows[0].id, values: { count: 2 } })).toMatchObject({ id: inserted.rows[0].id });
+      expect(await run('folio_table_update', { id: table.id, filter: { op: 'and', rules: [] }, limit: 10, values: { count: 3 } })).toMatchObject({ affected: 1 });
+      expect(await run('folio_table_delete', { id: table.id, rowIds: [inserted.rows[0].id] })).toMatchObject({ affected: 1 });
+    } finally {
+      await close();
+    }
   });
 
   it('a disabled user searches and fetches nothing', async () => {

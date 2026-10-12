@@ -1,0 +1,16 @@
+{
+  "name": "folio",
+  "owner": {
+    "name": "Evergreen"
+  },
+  "metadata": {
+    "description": "Plugins that connect AI coding agents to a Folio wiki over MCP."
+  },
+  "plugins": [
+    {
+      "name": "folio",
+      "source": "integrations/cursor-plugin",
+      "description": "Read and update your team's Folio wiki from Cursor: the Folio MCP server, a rule and skills."
+    }
+  ]
+}

@@ -37,7 +37,20 @@
     "reactions": {
       "add": "Add reaction",
       "pick": "Pick a reaction",
-      "you": "You"
+      "you": "You",
+      "labels": {
+        "yes": "Yes",
+        "no": "No",
+        "inProgress": "In progress",
+        "thumbsUp": "Like",
+        "heart": "Love",
+        "laugh": "Funny",
+        "party": "Celebrate",
+        "thinking": "Thinking",
+        "eyes": "Looking",
+        "fire": "Hot",
+        "clap": "Applause"
+      }
     },
     "reload": "Retry",
     "loadFailed": "Couldn't load the board — saving is disabled",

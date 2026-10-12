@@ -8,13 +8,17 @@ Every config here holds placeholders only: `https://your-folio.example.com`, `${
 |---|---|---|
 | Claude Code | [claude-code](claude-code/) | Token (plugin), or OAuth with `claude mcp login` |
 | Cursor | [cursor](cursor/) | Token, from an environment variable |
+| Cursor plugin (MCP, rule, skills) | [cursor-plugin](cursor-plugin/) | Token, from environment variables |
 | VS Code (GitHub Copilot) | [vscode](vscode/) | Token, asked for once and masked |
 | Codex (CLI, desktop app, IDE) | [codex](codex/) | Token from an environment variable, or OAuth |
+| Codex plugin (skills only) | [codex-plugin](codex-plugin/) | Uses the Codex connection above |
+| Cline | [llms-install.md](../llms-install.md) | Token in the header, or OAuth |
 | n8n | [n8n](n8n/) | Token (Bearer Auth credential) |
 | Open WebUI | [open-webui](open-webui/) | Token (one read-only token for the whole chat) |
 | ChatGPT | [chatgpt](chatgpt/) | OAuth |
 | Claude (claude.ai, Claude Desktop) | [claude](claude/) | OAuth |
 | Onboarding | [onboarding](onboarding/) | The built-in assistant, or any client above with a read token |
+| Skills for any agent | [../skills](../skills/README.md) | None (instructions only); install with `npx skills add evergreen-it-dev/folio` |
 
 Which one to pick: a client that runs on your machine (Claude Code, Cursor, VS Code, Codex, a self-hosted n8n or Open WebUI) can use a token, and your Folio can sit on a private network. A chat that runs in a vendor's cloud (claude.ai, Claude Desktop, ChatGPT) makes the request from the internet, so it needs OAuth and a Folio reachable over HTTPS.
 
