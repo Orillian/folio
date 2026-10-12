@@ -1,6 +1,6 @@
 {
-  "name": "folio",
-  "displayName": "Folio",
+  "name": "foliowiki",
+  "displayName": "Folio Wiki",
   "version": "0.1.0",
   "description": "Read and update your team's Folio wiki from Cursor: the Folio MCP server, a rule that sends the agent to the wiki for conventions, and skills that explain how to work with pages, tables and boards.",
   "author": {
@@ -11,9 +11,23 @@
   "repository": "https://github.com/evergreen-it-dev/folio",
   "license": "MIT",
   "logo": "assets/logo.png",
-  "keywords": ["folio", "wiki", "mcp", "knowledge-base", "docs", "conventions"],
+  "keywords": [
+    "foliowiki",
+    "folio",
+    "wiki",
+    "mcp",
+    "knowledge-base",
+    "docs",
+    "conventions"
+  ],
   "category": "integrations",
-  "tags": ["wiki", "docs", "mcp", "knowledge", "git"],
+  "tags": [
+    "wiki",
+    "docs",
+    "mcp",
+    "knowledge",
+    "git"
+  ],
   "rules": "./rules/",
   "skills": "./skills/",
   "mcpServers": "./mcp.json"

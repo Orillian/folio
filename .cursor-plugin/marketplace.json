@@ -1,5 +1,5 @@
 {
-  "name": "folio",
+  "name": "foliowiki",
   "owner": {
     "name": "Evergreen"
   },
@@ -8,7 +8,7 @@
   },
   "plugins": [
     {
-      "name": "folio",
+      "name": "foliowiki",
       "source": "integrations/cursor-plugin",
       "description": "Read and update your team's Folio wiki from Cursor: the Folio MCP server, a rule and skills."
     }

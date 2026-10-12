@@ -1,6 +1,6 @@
 {
-  "name": "folio",
-  "displayName": "Folio",
+  "name": "foliowiki",
+  "displayName": "Folio Wiki",
   "version": "0.1.0",
   "description": "Connect Claude Code to a Folio wiki over MCP: search, read and update pages, tables and whiteboards, with a skill that explains how.",
   "author": {
@@ -16,6 +16,7 @@
   "termsOfServiceUrl": "https://foliowiki.online/terms/",
   "license": "MIT",
   "keywords": [
+    "foliowiki",
     "folio",
     "wiki",
     "mcp",

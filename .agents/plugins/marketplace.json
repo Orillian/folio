@@ -1,11 +1,11 @@
 {
-  "name": "folio",
+  "name": "foliowiki",
   "interface": {
-    "displayName": "Folio"
+    "displayName": "Folio Wiki"
   },
   "plugins": [
     {
-      "name": "folio",
+      "name": "foliowiki",
       "source": {
         "source": "local",
         "path": "./integrations/codex-plugin"

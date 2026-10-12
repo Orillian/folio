@@ -19,10 +19,10 @@ You need a Folio account and your Folio address. Claude Code runs on your machin
 
    ```bash
    claude plugin marketplace add evergreen-it-dev/folio
-   claude plugin install folio@folio
+   claude plugin install foliowiki@foliowiki
    ```
 
-   Inside a session the same thing is `/plugin marketplace add evergreen-it-dev/folio` and `/plugin install folio@folio`.
+   Inside a session the same thing is `/plugin marketplace add evergreen-it-dev/folio` and `/plugin install foliowiki@foliowiki`.
 3. Claude Code asks for two values when the plugin is enabled:
    - **Folio MCP address**: the full address, for example `https://your-folio.example.com/mcp`.
    - **Folio personal access token**: the token from step 1. It is marked sensitive and goes to the system's secure storage, not to a settings file.
@@ -30,9 +30,9 @@ You need a Folio account and your Folio address. Claude Code runs on your machin
    `claude plugin install` from a shell does not ask. Pass the values with `--config`:
 
    ```bash
-   claude plugin install folio@folio \
+   claude plugin install foliowiki@foliowiki \
      --config folio_mcp_url=https://your-folio.example.com/mcp \
-     --config folio_token="$FOLIO_TOKEN"
+     --config folio_token=<your-token>
    ```
 
 4. In a session run `/mcp`. `folio` should be connected, with 23 tools.
@@ -44,26 +44,14 @@ About a minute later the history of the page shows a normal Git commit.
 
 ## Without the plugin
 
-One command, token in the header:
+One command, token in the header (replace `<your-token>` with the token from step 1):
 
 ```bash
 claude mcp add --transport http folio https://your-folio.example.com/mcp \
-  --header "Authorization: Bearer $FOLIO_TOKEN"
+  --header "Authorization: Bearer <your-token>"
 ```
 
-For a team repository, put the connection in `.mcp.json` at the project root and keep the token in an environment variable, so it never reaches Git. Each person sets `FOLIO_TOKEN` in their shell. Use your own variable name: Claude Code blanks credential names it knows, such as `ANTHROPIC_AUTH_TOKEN`, in remote headers.
-
-```json
-{
-  "mcpServers": {
-    "folio": {
-      "type": "http",
-      "url": "${FOLIO_URL:-https://your-folio.example.com}/mcp",
-      "headers": { "Authorization": "Bearer ${FOLIO_TOKEN}" }
-    }
-  }
-}
-```
+For a shared team setup in `.mcp.json`, see [docs/MCP.md](../../docs/MCP.md). The plugin above is the simplest way: it keeps the token in your system's secure storage.
 
 To sign in with your own account instead of a token, add the server without a header and log in. Folio opens its sign-in and consent screen.
 

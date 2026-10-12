@@ -22,7 +22,7 @@ Every config here holds placeholders only: `https://your-folio.example.com`, `${
 
 Which one to pick: a client that runs on your machine (Claude Code, Cursor, VS Code, Codex, a self-hosted n8n or Open WebUI) can use a token, and your Folio can sit on a private network. A chat that runs in a vendor's cloud (claude.ai, Claude Desktop, ChatGPT) makes the request from the internet, so it needs OAuth and a Folio reachable over HTTPS.
 
-Claude Code can also install the plugin straight from this repository: `claude plugin marketplace add evergreen-it-dev/folio`, then `claude plugin install folio@folio`.
+Claude Code can also install the plugin straight from this repository: `claude plugin marketplace add evergreen-it-dev/folio`, then `claude plugin install foliowiki@foliowiki`.
 
 ## Safety
 

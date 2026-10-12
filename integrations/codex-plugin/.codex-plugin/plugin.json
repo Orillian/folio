@@ -1,5 +1,5 @@
 {
-  "name": "folio",
+  "name": "foliowiki",
   "version": "0.1.0",
   "description": "Skills that teach Codex to search, read and update a team's Folio wiki (pages, data tables, whiteboards) through the Folio MCP server.",
   "author": {
@@ -9,15 +9,25 @@
   "homepage": "https://foliowiki.online/integrations/codex",
   "repository": "https://github.com/evergreen-it-dev/folio",
   "license": "MIT",
-  "keywords": ["folio", "wiki", "mcp", "knowledge-base", "docs"],
+  "keywords": [
+    "foliowiki",
+    "folio",
+    "wiki",
+    "mcp",
+    "knowledge-base",
+    "docs"
+  ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Folio",
+    "displayName": "Folio Wiki",
     "shortDescription": "Work with your team's Folio wiki",
     "longDescription": "Folio is a self-hosted team wiki whose pages are Markdown files in Git. This plugin adds a skill that tells the agent how to find, read and carefully update Folio pages, data tables and whiteboards through the Folio MCP server. Connect the server separately with your own Folio address (see the plugin README).",
     "developerName": "Evergreen",
     "category": "Productivity",
-    "capabilities": ["Read", "Write"],
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
     "websiteURL": "https://foliowiki.online",
     "privacyPolicyURL": "https://foliowiki.online/privacy/",
     "termsOfServiceURL": "https://foliowiki.online/terms/",
