@@ -206,7 +206,7 @@ Prefer to look first? [Try the public demo](https://demo.foliowiki.online) — p
 |---|---|---|
 | Any Linux server | one command: `install.sh` | [deploy/vps](../deploy/vps/) |
 | Coolify | paste a Compose file (tested: Folio's own production runs on Coolify) | [deploy/coolify](../deploy/coolify/) |
-| Railway | template (specification inside) | [deploy/railway](../deploy/railway/) |
+| Railway | [one-click template](https://railway.com/deploy/folio) | [deploy/railway](../deploy/railway/) |
 | Render | Blueprint, paid plan (disk) | [deploy/render](../deploy/render/) |
 | DigitalOcean | Droplet with cloud-init | [deploy/digitalocean](../deploy/digitalocean/) |
 | Dokploy | compose + template files | [deploy/dokploy](../deploy/dokploy/) |

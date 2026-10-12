@@ -10,7 +10,7 @@ exactly that, from the published image `ghcr.io/evergreen-it-dev/folio`
 |---|---|---|---|
 | **Any Linux server (VPS)** | Run one command | [vps/](vps/) | yes |
 | **Coolify** | Paste a Compose file (tested: Folio's own production runs on Coolify) | [coolify/](coolify/) | yes |
-| **Railway** | Click a button (template) | [railway/](railway/) | yes (volume) |
+| **Railway** | Click a button ([template](https://railway.com/deploy/folio)) | [railway/](railway/) | yes (volume) |
 | **Render** | Click a button (Blueprint) | [render/](render/) and [`render.yaml`](../render.yaml) | paid plans only |
 | **DigitalOcean** | Droplet + cloud-init (App Platform is not possible) | [digitalocean/](digitalocean/) | yes (Droplet disk) |
 | **Dokploy** | Compose + template files | [dokploy/](dokploy/) | yes |

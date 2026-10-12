@@ -4,12 +4,11 @@
 and gives each service a public HTTPS address. A Railway template deploys the
 whole stack from one button.
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/TEMPLATE_CODE)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/folio)
 
-> The button above is a placeholder. A Railway template is created in the
-> account of whoever publishes it, so it does not exist until the Folio
-> maintainers create it from the specification below. Until then, follow
-> "Without the template" to build the same project by hand in about five minutes.
+The template is published at <https://railway.com/deploy/folio>. If you prefer
+to see each part, follow "Without the template" to build the same project by
+hand in about five minutes.
 
 **You need:** a Railway account on the Hobby plan or higher (the free trial's
 0.5 GB volume and RAM are too small), and the image
@@ -29,7 +28,7 @@ whole stack from one button.
 
 ## Template specification
 
-For the maintainer who creates the template
+What the published template contains
 ([Railway: create a template](https://docs.railway.com/guides/create)).
 Three services, one volume.
 
@@ -47,20 +46,16 @@ Variables of the `folio` service:
 | `PORT` | `4870` | The port the app listens on, and the one Railway routes to |
 | `ASSET_BACKEND` | `local` | Uploads go to the volume |
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | Reference variable |
-| `REDIS_URL` | `${{Redis.REDIS_URL}}` | Reference variable |
+| `REDIS_URL` | `${{Redis.REDIS_URL}}?family=0` | Reference variable; `?family=0` lets the client reach Redis over Railway's private network, which uses IPv6 |
 | `PUBLIC_URL` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` | Links in invitations and shares; HTTPS-only cookies |
 | `FOLIO_SECRET` | `${{secret(64, "abcdef0123456789")}}` | Generated at deploy time ([template functions](https://docs.railway.com/guides/create#dynamic-variables)); never change it afterwards |
+| `CURSOR_AGENT_WORKSPACE_ROOT` | `/app/data/assistant/workspaces` | Assistant workspaces live on the volume |
+| `CURSOR_AGENT_STATE_DIR` | `/app/data/assistant/state` | Assistant state lives on the volume |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_ALLOWED_DOMAINS` | empty, optional | "Sign in with Google" |
 | `CURSOR_API_KEY` | empty, optional | Shared AI assistant key |
 
-Template description (for the marketplace): "Folio: a team wiki whose pages are
-Git files. Real-time editing, access rights, AI agents over MCP. Deploys the
-app with PostgreSQL, Redis and a volume."
-
-After creating the template: copy its code into the button at the top of this
-file and into the site, then submit it to the marketplace and apply to
-Railway's [open-source partner program](https://docs.railway.com/guides/templates)
-(which pays a kickback on usage).
+Template description (marketplace): "Open-source team wiki in Git: real-time
+editing, AI agents over MCP". Category: AI/ML.
 
 ## Sizing and cost
 
@@ -93,8 +88,10 @@ railway run --service Postgres sh -c 'pg_dump "$DATABASE_PUBLIC_URL"' > folio-db
 - One replica only: Railway volumes do not work with replicas.
 - Volumes can grow but not shrink.
 - If Folio logs `[redis] unavailable` after the first deploy, Railway's private
-  network may need IPv6: append `?family=0` to the Redis URL
-  (`${{Redis.REDIS_URL}}?family=0`). Folio keeps working without Redis, with
-  per-process rate limits, but fix it.
-- This kit has not been deployed on Railway yet; it is written from Railway's
-  documentation. Please tell us what differs.
+  network is IPv6, so the template already sets the Redis URL to
+  `${{Redis.REDIS_URL}}?family=0`; check that suffix if you built the project
+  by hand. Folio keeps working without Redis, with per-process rate limits, but
+  fix it.
+- The template was published without a trial deployment from the template
+  itself, so it is written from Railway's documentation. Please tell us what
+  differs.

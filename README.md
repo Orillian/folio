@@ -496,6 +496,8 @@ is one link away on the same screen.
 | Any other container platform | from the `Dockerfile`, with PostgreSQL, Redis and a persistent volume — see [requirements](docs/INSTALL.md#other-platforms) |
 | Vercel, Netlify and other serverless hosting | not supported — Folio is a long-running server that keeps Git repositories on disk and holds live connections |
 
+One click on Railway: [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/folio)
+
 Domains, HTTPS, updates and backups: [docs/INSTALL.md](docs/INSTALL.md).
 
 **No telemetry.** A Folio you run sends nothing about its use to anyone: no
