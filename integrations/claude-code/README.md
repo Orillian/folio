@@ -84,7 +84,6 @@ The demo login is shared and its data resets every 24 hours. Pages written by ot
 |---|---|
 | `.claude-plugin/plugin.json` | The manifest: name, version, `userConfig` for the address and the token |
 | `.mcp.json` | The `folio` server: HTTP transport, address and Bearer header from `userConfig` |
-| `assets/icon.png` | The Folio logo, used for the listing |
 | `skills/folio-wiki/SKILL.md` | How the agent works with Folio |
 | `skills/release-notes/SKILL.md` | The release notes recipe |
 
