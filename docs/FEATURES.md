@@ -88,7 +88,8 @@ page held is saved in a backup table before the server replaces all of it (a
 file changed outside, an API or MCP body write, "Take the version from Git").
 
 **Whiteboard reactions.** Selecting a single shape in Edit mode shows a reaction
-button at its selection frame; the palette has eight emoji. Reactions appear as chips with a count under the
+button at its selection frame; the palette has eleven emoji (yes, no and in
+progress marks first), each with a name on hover. Reactions appear as chips with a count just under the
 shape, click a chip to add or remove yours, and the tooltip names who reacted.
 They sync in real time, two people reacting at once both keep theirs, people
 with the viewer role, or anyone in View mode, see them but cannot add any, and they are not part of the
@@ -137,18 +138,37 @@ connection is back.
   exact agreement with the remote branch. It is destructive by design (local
   changes are discarded), but the state is first saved into a backup branch
   `folio-backup/<timestamp>`, so it can be rolled back.
+- **Front matter from other tools is kept.** Folio manages only its own keys
+  (`id`, `order`, `status`, `icon`, `cover`); everything else — `title`,
+  `sidebar_position`, `slug`, `tags`, `description` from Docusaurus, MkDocs,
+  Hugo or Jekyll, comments, lists, quoting — stays byte for byte when a page is
+  saved, copied or duplicated.
+- **A light footprint in a product repository.** When a space is bound to a
+  folder of a repository (a root path such as `docs/`), Folio does not write an
+  `id` into the files — not on the first scan, not when a page is created or
+  edited; the id lives in Folio's index and survives moves, renames, copies and
+  restores from the trash. The space's metadata file goes inside that folder as
+  a dotfile, `docs/.<slug>.folio`, which site generators ignore, not into the
+  repository root. Spaces that already carry ids in their files keep working
+  as they are.
 - **Page history**: the list of commits and a view of any revision. For a
   PDF or Office page each version shows its file name and size, can be
   downloaded (a PDF can also be previewed), and can be restored.
 - Separately from Git there is **undo for structural actions** (create, copy,
   rename, move, delete) — your own only, and only if nothing has changed
   since.
+- **Git access** (user menu): saved tokens for GitHub and GitLab are used
+  automatically for repositories on the same host, and list your repositories
+  in the "create space" dialog. On an instance with a GitHub OAuth App
+  configured, **"Connect with GitHub"** saves github.com access in one click
+  instead of pasting a token (see `INSTALL.md`).
 
 ## 6. Access
 
 - **Roles in a space**: `admin`, `editor`, `viewer`.
-- **Space visibility**: `private` (explicit members only) or `instance` (any
-  active user may view).
+- **Space visibility**: `private` (explicit members only), `instance` (any
+  active user may view) or `public` (any active user may view, and anyone on
+  the internet may read it as a website, see section 7).
 - **Rights on a single page** can be narrower than the role in the space.
 - **The instance administrator does not see the content of spaces** they are
   not a member of: they manage users and invitations, but the pages are closed
@@ -178,6 +198,43 @@ token.
 Edits made by a guest through such a link reach Git with the matching
 authorship.
 
+### Publish a space as a website
+
+Setting a space to **public** ("Publish as website" in the space menu, for space
+and instance administrators) serves it to anyone, without signing in, as a
+read-only site. It is the same space, not a copy. People who are signed in read
+it exactly as they read a space with `instance` visibility.
+
+- **Three addresses.** `<PUBLIC_URL>/public/<space>` works as soon as the space
+  is public. `<label>.<PUBLIC_SITES_DOMAIN>` works when the operator has set
+  `PUBLIC_SITES_DOMAIN` and the administrator picked a label (lowercase
+  letters, digits and hyphens). A custom domain such as `docs.example.com`
+  works when the host has a CNAME to the instance and the reverse proxy routes
+  it to Folio. A subdomain and a domain belong to one space each. The
+  operator's part is in [INSTALL](INSTALL.md#public-sites).
+- **What a visitor sees.** The page tree, breadcrumbs, search inside the space,
+  documents, data tables (live, read-only), whiteboards as pictures, forms
+  (view only: submitting needs a Folio account), PDF and Office files, the
+  images and files that public pages use. On a phone the tree folds behind a
+  menu button. The footer has "Powered by Folio" and "Sign in" links.
+- **Downloads** (opt-in per space): a page as Markdown, PDF or DOCX. PDF and
+  DOCX are rate limited per address (`PUBLIC_EXPORT_PER_MINUTE`, default 6); a
+  visitor's search query is cut at 200 characters.
+- **Ask Folio AI** (opt-in per space, see section 11).
+- **Never published**: pages with their own access restrictions, the `.agent`
+  folder and templates. A restriction is not inherited by child pages, so each
+  page that must stay closed needs its own lock. A raw file is served only if a
+  public page uses it. Visitors are not sent the names or cursors of the people
+  editing, and there are no comments, history, backlinks or notifications on
+  the site.
+- **Control.** Only administrators change visibility and publishing settings,
+  from the browser (an API token is refused, and so is the public demo). The
+  settings live in the database, not in Git; changes are written to the audit
+  log. Moving a space back to `instance` or `private` takes the site down
+  within seconds, and the settings are kept for the next publication.
+- **Not yet.** There is no `robots.txt` or sitemap, the site is indexable, and
+  rate limits are counted per server process.
+
 ## 8. Search and navigation
 
 - **Full-text search** across documents and tables.
@@ -187,6 +244,10 @@ authorship.
 - A **tree** with drag and drop, a templates folder for creating "from a
   template", and the `.agent` folder (see section 11). The tree updates by
   itself.
+- **Moving or renaming a page keeps links working**: relative links and images
+  inside the page (and its subtree) are recalculated for the new location, and
+  links to it from other pages are rewritten. The change is one commit,
+  `docs: move <old> -> <new>` (`docs: rename …` for a slug).
 - A **welcome wizard** for someone with no space yet: choose a document, a
   whiteboard or a data table to start with, read a short overview of Folio and
   of the assistant, and the first space is created with that page open. The
@@ -233,7 +294,7 @@ Anonymous answers are rate-limited.
 
 An assistant in the side panel with two modes: **Ask** (read only) and
 **Agent** (read and write). Each person adds a Cursor API key in their account
-settings, or the operator sets a shared one.
+settings, or an administrator provides a shared one (see "Who pays" below).
 
 The assistant uses **the same set of tools** as external clients do through
 MCP (section 12). In Ask mode the write tools are unavailable, and that is
@@ -270,6 +331,34 @@ refused there.
 **Bring your own subscription.** The assistant runs on a subscription you
 already have. Cursor is supported today; other providers are coming soon.
 
+**Who pays: personal, space and instance keys.** A run uses the first key that
+exists, in this order: the person's own key, the key of the space the question
+is asked in, the key of the instance, `CURSOR_API_KEY` from the server
+environment. A space administrator sets the key of a space (space menu, "Folio
+AI key"); an instance administrator sets the instance key (the "Shared key"
+tab of Assistant analytics) and can turn personal keys off so that everyone
+uses the shared one: a stored personal key is then ignored and the form for
+adding one is hidden. The assistant settings show
+whose key is in use. Shared keys are encrypted with `FOLIO_SECRET`, never
+returned by the API (only the key's name, the Cursor account and who set it
+and when) and every change is written to the audit log. The public demo
+cannot change them.
+
+**Ask Folio AI on a public site.** A space administrator can let visitors of a
+published space ask questions (opt-in per space; "Ask AI about this space" on
+the site). Visitors are anonymous. The run is **Ask mode only**, confined to
+that one space and to its public pages: it cannot write, cannot read page
+history, and a page that is restricted, in `.agent` or a template is "not
+found" to it, like any other page that does not exist. It uses the key of the
+space, else of the instance, else `CURSOR_API_KEY`; the owner of that key pays,
+and without any key the site says Folio AI is not set up. A conversation is
+tied to the browser that started it by a random token (only its hash is
+stored). Questions are rate limited per address and per site
+(`PUBLIC_ASSISTANT_RUNS_PER_HOUR`, default 20; `PUBLIC_ASSISTANT_SPACE_RUNS_PER_HOUR`,
+default 200) and appear in the analytics as "Public visitor". The space's
+`.agent` rules are part of every run, public ones included: do not put
+anything secret in them.
+
 Runs live **on the server**, not in the browser tab: close the browser and the
 work continues; come back and read on from where it stopped.
 
@@ -297,6 +386,12 @@ See [INSTALL](INSTALL.md).
   Excalidraw boards.
 - **File upload**: images, and also pdf/docx/xlsx/pptx — they become pages in
   the tree.
+- **Images in the repository**: a space admin can turn on "Store images in the
+  repository" (space menu → Image storage). New pasted or dropped images then go
+  to `assets/` in the space's folder (`docs/assets/` for a space with a root
+  path), are committed with the page, and are linked by a **relative** path
+  (`../assets/diagram.png`), so they also show on GitHub. By default images are
+  kept in Folio's storage; images already in pages do not move.
 - **Replace a file page with a new version**: the tree menu item "Replace with
   new version…", a button in the page header (editors), or a file dropped
   on the open page. The page keeps its id, link, place in the tree, access and

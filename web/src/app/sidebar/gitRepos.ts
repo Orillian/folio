@@ -1,4 +1,5 @@
 import type { GitProviderRepo } from '@shared/contracts';
+import { ApiError } from '../api';
 import { humanize } from '../header/Breadcrumbs';
 
 /**
@@ -112,4 +113,31 @@ function buildDisplayUrl(hostWithPort: string, rawPath: string): string | null {
   const path = rawPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
   if (!path) return null; // a host with no repo path isn't a usable link either
   return `https://${hostWithPort}/${path}`;
+}
+
+/** Server error code (GET /api/git/repos) -> i18n key under `git.repos.errors`. */
+const PROVIDER_REPOS_ERROR_KEYS: Record<string, string> = {
+  git_provider_token_invalid: 'git.repos.errors.tokenInvalid',
+  git_provider_rate_limited: 'git.repos.errors.rateLimited',
+  git_provider_sso_required: 'git.repos.errors.ssoRequired',
+  git_provider_forbidden: 'git.repos.errors.forbidden',
+  git_provider_unreachable: 'git.repos.errors.unreachable',
+  git_provider_error: 'git.repos.errors.failed',
+};
+
+/**
+ * The reason the repository list could not be fetched, as a ready sentence --
+ * or null when the error has no provider code (then the caller keeps its
+ * generic "enter the URL manually" hint). A SAML SSO message the server sent
+ * with the provider's authorization link is shown as is, because that link is
+ * the actionable part and it is not part of the translated text.
+ */
+export function providerReposErrorText(t: (key: string, values?: Record<string, unknown>) => string, error: unknown, host: string): string | null {
+  if (!(error instanceof ApiError)) return null;
+  const code = (error.body as { code?: unknown } | undefined)?.code;
+  if (typeof code !== 'string') return null;
+  const key = PROVIDER_REPOS_ERROR_KEYS[code];
+  if (!key) return null;
+  if (code === 'git_provider_sso_required' && /https:\/\//.test(error.message)) return error.message;
+  return t(key, { host });
 }

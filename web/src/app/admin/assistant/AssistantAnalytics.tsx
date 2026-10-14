@@ -5,6 +5,7 @@ import { ArrowLeft } from 'lucide-react';
 import { ApiError } from '../../api';
 import { useDocumentTitle } from '../../hooks';
 import { Tabs } from '../../ui/Tabs';
+import { SharedKeyPanel } from '../../assistant/SharedKeyPanel';
 import { ConversationsTab } from './ConversationsTab';
 import { ConversationView } from './ConversationView';
 import { UnansweredTab } from './UnansweredTab';
@@ -12,8 +13,8 @@ import { useAssistantAccess } from './useAssistantAccess';
 import { EMPTY_FILTERS, type AnalyticsFilters } from './logic';
 import '../../i18n/register';
 
-type TabKey = 'conversations' | 'unanswered';
-const TAB_KEYS: TabKey[] = ['conversations', 'unanswered'];
+type TabKey = 'conversations' | 'unanswered' | 'key';
+const TAB_KEYS: TabKey[] = ['conversations', 'unanswered', 'key'];
 
 /**
  * `/admin/assistant` — analytics of the AI assistant: every conversation with
@@ -24,7 +25,9 @@ const TAB_KEYS: TabKey[] = ['conversations', 'unanswered'];
  * access query (GET /api/admin/assistant/access: 403 → "no access"); the server
  * enforces the same restriction on every endpoint. The tab and the open dialog live in
  * the URL (`?tab=`, `?conversation=`); each list's filters live here, above the
- * tabs, so they survive switching tabs and opening a dialog.
+ * tabs, so they survive switching tabs and opening a dialog. Instance admins get a
+ * third tab, "Shared key": the instance-wide Folio AI key and the personal-key policy
+ * (a space admin manages the key of their own space from the sidebar's space menu).
  */
 export function AssistantAnalytics() {
   const { t } = useTranslation('app');
@@ -53,15 +56,17 @@ export function AssistantAnalytics() {
   return <AssistantAnalyticsContent spaces={access.data.scope === 'spaces' ? (access.data.spaceRefs?.map((ref) => ref.name) ?? access.data.spaces) : null} />;
 }
 
-/** `spaces` = the names (slugs from an older server) of the spaces a space admin is limited to; null for an instance admin. */
+/** `spaces` = the names (slugs from an older server) of the spaces a space admin is limited to; null for an instance admin (who also gets the shared-key tab). */
 function AssistantAnalyticsContent({ spaces }: { spaces: string[] | null }) {
+  const instanceAdmin = spaces === null;
   const { t } = useTranslation('app');
   const [searchParams, setSearchParams] = useSearchParams();
   const [conversationFilters, setConversationFilters] = useState<AnalyticsFilters>(EMPTY_FILTERS);
   const [unansweredFilters, setUnansweredFilters] = useState<AnalyticsFilters>(EMPTY_FILTERS);
 
   const rawTab = searchParams.get('tab');
-  const tab: TabKey = TAB_KEYS.includes(rawTab as TabKey) ? (rawTab as TabKey) : 'conversations';
+  // `?tab=key` is honoured for an instance admin only; anyone else falls back to the first tab.
+  const tab: TabKey = TAB_KEYS.includes(rawTab as TabKey) && (rawTab !== 'key' || instanceAdmin) ? (rawTab as TabKey) : 'conversations';
   const conversationId = searchParams.get('conversation');
 
   function selectTab(key: string) {
@@ -107,12 +112,20 @@ function AssistantAnalyticsContent({ spaces }: { spaces: string[] | null }) {
               items={[
                 { key: 'conversations', label: t('assistantAdmin.tabs.conversations') },
                 { key: 'unanswered', label: t('assistantAdmin.tabs.unanswered') },
+                ...(instanceAdmin ? [{ key: 'key', label: t('assistantAdmin.tabs.key') }] : []),
               ]}
             />
-            {tab === 'conversations' ? (
+            {tab === 'conversations' && (
               <ConversationsTab filters={conversationFilters} onChange={changeFilters(setConversationFilters)} onOffset={changeOffset(setConversationFilters)} />
-            ) : (
+            )}
+            {tab === 'unanswered' && (
               <UnansweredTab filters={unansweredFilters} onChange={changeFilters(setUnansweredFilters)} onOffset={changeOffset(setUnansweredFilters)} />
+            )}
+            {tab === 'key' && (
+              <section className="max-w-xl">
+                <h2 className="mb-3 text-sm font-semibold text-neutral-900 dark:text-neutral-100">{t('assistant.sharedKey.titleInstance')}</h2>
+                <SharedKeyPanel scope="instance" />
+              </section>
             )}
           </>
         )}

@@ -33,6 +33,12 @@
  *        is served the same way, provided that page is itself open to the
  *        whole space; a Markdown/table/form page outside the share never is.
  *
+ * A visitor with NO session reads the files of a PUBLISHED space (public sites,
+ * visibility 'public') by the same rule as a share guest, with the space's
+ * public pages (no restricted page, no `.agent/**`, no `_templates/`) as the
+ * set: a public page's own file, and what the public pages reference. For any
+ * other space that visitor still gets the 401.
+ *
  * Never served, to anyone: a dot segment (`.git/**`, `.agent/**`, any
  * dotfile, `..`), a `*.folio` metadata file, anything that is not a regular
  * file, and any path that crosses a symlink — the path that was authorized
@@ -58,6 +64,7 @@ import { query } from './db/pool.js';
 import { forbidden, notFound } from './errors.js';
 import { resolveShareScope, type ShareScope } from './export/shareScope.js';
 import * as pageAccess from './pageAccess.js';
+import { getPublicSpace, publicReadablePageIds } from './publicSites.js';
 import { serveHeadersForPath } from './safeServe.js';
 import * as storage from './storage.js';
 import type { PageIndexEntry } from './storage.js';
@@ -217,25 +224,64 @@ async function pagesAt(space: string, relPath: string): Promise<Array<{ id: stri
 // Authorization
 // ---------------------------------------------------------------------------
 
-/** Share-token caller: the share's own pages, and what those pages reference (module doc). */
-export async function shareMayReadFile(scope: ShareScope, space: string, relPath: string): Promise<boolean> {
-  if (scope.root.space !== space) return false;
+/**
+ * The rule behind both token-less callers: may `relPath` of `space` be read by
+ * somebody whose whole grant is the page set `allowedIds`? Three ways in (module
+ * doc): the file IS a page of the set; it is a file-like page (board/PDF/Office)
+ * open to the whole space and referenced by a page of the set; or it is a
+ * non-page file referenced by a page of the set. `sourceBatches` lists the
+ * pages of the set whose content can reference files, lazily and in order
+ * (cheap batch first), so a hit in the first never loads the rest.
+ */
+async function mayReadFromPageSet(
+  space: string,
+  relPath: string,
+  allowedIds: ReadonlySet<string>,
+  sourceBatches: ReadonlyArray<() => Promise<Iterable<PageSource>> | Iterable<PageSource>>,
+): Promise<boolean> {
   const pages = await pagesAt(space, relPath);
-  if (pages.length > 0 && pages.every((page) => scope.collected.ids.has(page.id))) return true;
+  if (pages.length > 0 && pages.every((page) => allowedIds.has(page.id))) return true;
   if (pages.length > 0) {
     if (!pages.every((page) => FILE_LIKE_KINDS.has(page.kind))) return false;
     const restricted = await pageAccess.restrictedPageIds(space);
     if (pages.some((page) => restricted.has(page.id))) return false;
   }
-
-  if (await anyReferences(scope.collected.pages.map((p) => p.entry), relPath)) return true;
-  // Past the 200-page export cap, `ids` keeps members `pages` no longer lists.
-  if (scope.collected.ids.size > scope.collected.pages.length) {
-    const listed = new Set(scope.collected.pages.map((p) => p.entry.id));
-    const rest = (await storage.listEntries(space)).filter((e) => scope.collected.ids.has(e.id) && !listed.has(e.id));
-    return anyReferences(rest, relPath);
+  for (const batch of sourceBatches) {
+    if (await anyReferences(await batch(), relPath)) return true;
   }
   return false;
+}
+
+/** Share-token caller: the share's own pages, and what those pages reference (module doc). */
+export async function shareMayReadFile(scope: ShareScope, space: string, relPath: string): Promise<boolean> {
+  if (scope.root.space !== space) return false;
+  const batches: Array<() => Promise<Iterable<PageSource>> | Iterable<PageSource>> = [() => scope.collected.pages.map((p) => p.entry)];
+  // Past the 200-page export cap, `ids` keeps members `pages` no longer lists.
+  if (scope.collected.ids.size > scope.collected.pages.length) {
+    batches.push(async () => {
+      const listed = new Set(scope.collected.pages.map((p) => p.entry.id));
+      return (await storage.listEntries(space)).filter((e) => scope.collected.ids.has(e.id) && !listed.has(e.id));
+    });
+  }
+  return mayReadFromPageSet(space, relPath, scope.collected.ids, batches);
+}
+
+/**
+ * Anonymous caller on a published space (public sites): the same rule as a
+ * share, with the space's public pages (publicSites.publicReadablePageIds —
+ * no restricted page, no `.agent/**`, no `_templates/`) as the set. False for
+ * a space that is not public.
+ */
+export async function publicMayReadFile(space: string, relPath: string): Promise<boolean> {
+  if (!(await getPublicSpace(space))) return false;
+  const allowed = await publicReadablePageIds(space);
+  // A light listing (no page bodies): this runs once per image of a public page.
+  const sources = async (): Promise<PageSource[]> => {
+    const root = storage.getSpaceDir(space);
+    const rows = await query<{ id: string; path: string; kind: PageKind }>('SELECT id, path, kind FROM pages_index WHERE space_slug = $1', [space]);
+    return rows.filter((row) => allowed.has(row.id)).map((row) => ({ id: row.id, space, relPath: row.path, kind: row.kind, absPath: path.join(root, row.path) }));
+  };
+  return mayReadFromPageSet(space, relPath, allowed, [sources]);
 }
 
 /** Session caller: throws (401/403/404) unless the user may read this file (module doc). */
@@ -337,9 +383,18 @@ export async function registerFileRoutes(app: FastifyInstance): Promise<void> {
         // whether a file outside the grant exists.
         if (!(await shareMayReadFile(scope, space, relPath))) return reply.status(403).send({ error: 'share link does not grant access to this file' });
       } else {
-        await session.requireSession(request, reply);
-        if (reply.sent) return reply;
-        await requireSessionFileAccess(request, space, relPath);
+        const resolved = await session.resolveAuth(request);
+        if (resolved) {
+          request.authUser = resolved.user;
+          request.tokenScopes = resolved.tokenScopes;
+          await requireSessionFileAccess(request, space, relPath);
+        } else if (await getPublicSpace(space)) {
+          // No session, but the space is published (public sites): its public
+          // pages and the files they reference are open to anyone.
+          if (!(await publicMayReadFile(space, relPath))) return reply.status(403).send({ error: 'this file is not part of the public site' });
+        } else {
+          return reply.status(401).send({ error: 'authentication required' });
+        }
       }
 
       const root = storage.getSpaceDir(space);

@@ -4,8 +4,128 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-14
+
+Folio can now publish a space as a public website, pay for Folio AI with a key
+shared by an instance or a space, and let visitors of a public site ask Folio
+AI about it. Spaces that live in a product repository stay tidy: front matter
+from other tools is kept, ids stay out of the files, images can live in the
+repository, and moving a page keeps its links working. Also in this release:
+OAuth 2.1 so that claude.ai, Claude Desktop and ChatGPT connect to `/mcp`,
+`search` and `fetch` tools, assistant analytics, replacing a file page with a
+new version, "Connect with GitHub", install kits for ten platforms and a
+public-demo mode.
+
+Upgrading from 0.1.0: back up first (see `docs/INSTALL.md`). Migrations 031 to
+039 are applied automatically at startup. They add tables, columns, indexes and
+triggers, widen two check constraints (the source of a saved git credential and
+the visibility of a space) and create one system user, "Public visitor", the
+identity behind Ask Folio AI on public sites; it has no password, cannot sign
+in and is hidden from lists of people. Nothing is removed. Every new setting is
+optional, and an unset one keeps its default or leaves its feature off:
+`PUBLIC_SITES_DOMAIN`, `PUBLIC_EXPORT_PER_MINUTE`,
+`PUBLIC_ASSISTANT_RUNS_PER_HOUR`, `PUBLIC_ASSISTANT_SPACE_RUNS_PER_HOUR`,
+`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `TRUST_PROXY`, `FOLIO_OG_*`,
+`FOLIO_POSTHOG_KEY` and `FOLIO_DEMO_*`. A space that is not public behaves
+exactly as before.
+
 ### Added
 
+- **Publish a space as a public website.** A space or instance administrator
+  opens the space menu, chooses "Publish as website" and sets who can read the
+  space to "public": anyone on the internet then reads it without an account,
+  as a read-only site with the page tree, search inside the space, documents,
+  data tables (live, read-only), whiteboards as pictures, forms (view only) and
+  PDF and Office files. The site is served at `<PUBLIC_URL>/public/<space>` as
+  soon as the space is public; at `<label>.<PUBLIC_SITES_DOMAIN>` when the
+  operator sets `PUBLIC_SITES_DOMAIN` (wildcard DNS and a wildcard certificate
+  on the reverse proxy) and the administrator picks a label; and at a custom
+  domain such as `docs.example.com` (a CNAME to the instance and a proxy route
+  for that host). The administrator can also let visitors download a page as
+  Markdown, PDF or DOCX (`PUBLIC_EXPORT_PER_MINUTE` caps PDF and DOCX per
+  address, default 6). Pages with their own access restrictions, the `.agent`
+  folder and templates are never published (a restriction is not inherited by
+  child pages, so lock each page that must stay closed), and visitors are not
+  sent the names or cursors of the people editing. People who are signed in
+  read a public space exactly as they read a space open to the whole instance.
+  The publishing settings live in the database, not in Git, and only a browser
+  session can change them: not an API token, and not the public demo. The
+  access matrix and the spaces list show the new visibility, and switching a
+  space to public asks for confirmation. Folio does not generate `robots.txt`
+  or a sitemap for these sites yet. Adds migration 038. See `docs/INSTALL.md`
+  and `docs/LIMITATIONS.md`.
+- **Shared Folio AI key.** Folio AI no longer needs a key per person. An
+  instance administrator can set one Cursor key for the whole instance (the
+  "Shared key" tab of the Assistant analytics page) and a space administrator
+  can set one for a single space (space menu, "Folio AI key"); whoever owns the
+  key pays. A run uses the first key that exists, in this order: the person's
+  own key, the key of the space the question is asked in, the key of the
+  instance, then `CURSOR_API_KEY` from the environment. An instance
+  administrator can also turn personal keys off so that everyone uses the
+  shared key: a stored personal key is then ignored and the form for adding one
+  is hidden. The assistant settings show whose key is in use. Shared keys are
+  stored encrypted with `FOLIO_SECRET` and are never sent back to the browser
+  after they are saved (only the key's name, the Cursor account, who set it and
+  when); every change is written to the audit log, and the public demo cannot
+  change them. Adds migration 037. Cursor remains the only provider.
+- **Ask Folio AI on a public site.** In the publishing settings a space
+  administrator can switch on "Allow visitors to ask Folio AI about this space"
+  (off by default). Visitors then get an "Ask AI about this space" button and
+  need no account. The assistant runs in Ask mode only, answers from the public
+  pages of that one space, cannot change anything, cannot read page history,
+  and is told it is talking to an anonymous visitor. It uses the key of the
+  space, else the key of the instance, else `CURSOR_API_KEY` (a visitor has no
+  personal key), so the owner of the key pays; with no key the panel says Folio
+  AI is not set up for the site. A conversation belongs to the browser that
+  started it (a random token whose hash is stored), and nobody else can
+  continue or read it. Questions are rate limited per address
+  (`PUBLIC_ASSISTANT_RUNS_PER_HOUR`, default 20 an hour across all public
+  sites) and per site (`PUBLIC_ASSISTANT_SPACE_RUNS_PER_HOUR`, default 200 an
+  hour); the counters live in the memory of the server process. Public
+  conversations appear in the assistant analytics as "Public visitor". The
+  rules in the space's `.agent` folder still apply to these runs, so keep
+  secrets out of them. Adds migration 039.
+- **Front matter from other tools is kept.** Folio edits only its own keys
+  (`id`, `order`, `status`, `icon`, `cover`) inside an existing front matter
+  block. Keys written by Docusaurus, MkDocs, Hugo or Jekyll (`title`,
+  `sidebar_position`, `slug`, `tags`, `description`, ...), comments, lists and
+  quoting stay byte for byte through a scan, a save, a change of icon or order,
+  a rename, a copy and a duplicate. A block that cannot be parsed is left
+  exactly as it is.
+- **A light footprint in a product repository.** A space bound to a folder of a
+  repository (a root path such as `docs/`) no longer gets an `id` written into
+  its files, neither on the first scan nor when a page is created or edited.
+  Ids live in Folio's index and survive moves, renames, copies and restores
+  from the trash, and the space's `.folio` metadata file goes into a dotfile
+  inside that folder (`docs/.<slug>.folio`) instead of the repository root,
+  where site generators ignore it. Spaces that already carry ids in their
+  files, or a `<slug>.folio` in the root, keep working as they are, with no
+  migration.
+- **Images in the repository.** A space administrator can turn on "Store images
+  in the repository" (space menu, "Image storage"). New pasted or dropped
+  images are then saved in `assets/` of the space's folder (`docs/assets/` for
+  a space with a root path), committed with the page and linked by a relative
+  path (`../assets/diagram.png`), so they also show on GitHub. Off by default;
+  images already in pages do not move.
+- **Moving or renaming a page keeps its links working.** Relative links and
+  images inside the moved page and its subtree are recalculated for the new
+  location, and links to it from other pages are rewritten. The move and every
+  rewrite are one commit (`docs: move <old> -> <new>`, `docs: rename ...` for a
+  slug), and Undo restores the old place the same way. Only `[text](path)`
+  links and images are rewritten, not HTML tags or reference-style links.
+- **Make heading on a whiteboard.** Select a free text block that has a first
+  line and a body, in Edit mode, and a "Make heading" button appears beside the
+  selection: the first line becomes a larger heading of its own, grouped with
+  the body, in one undo step. (Excalidraw has no bold inside a text element, so
+  this is how a heading is made.) Text inside a shape or a sticky note is not
+  offered it.
+- **Connect with GitHub.** "Git access" can link a github.com account through
+  a GitHub OAuth App instead of a pasted token: one click, GitHub's consent
+  screen, and the token is saved for github.com (it replaces a token saved
+  there earlier). It appears only when `GITHUB_CLIENT_ID` and
+  `GITHUB_CLIENT_SECRET` are set, and is also offered in the "create space"
+  and "connect git" dialogs. The token form now names the scopes it needs and
+  links to the page where the token is created. See `docs/INSTALL.md`.
 - **MCP tools declare their result shape.** All 23 tools now publish an
   `outputSchema` and return `structuredContent` next to the JSON text they
   always returned, so clients and catalogs that read structured output get
@@ -74,13 +194,13 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   circle, square), nested items indent one level at a time with a hanging
   indent, ordered numbers stay real text, and checklist items drop the dash in
   favour of the checkbox. Source mode is unchanged.
-
 - **Emoji reactions on whiteboard shapes.** Select a shape in Edit mode and a
   small reaction button appears at the lower right corner of the selection
-  frame; it opens a palette of eight
-  emoji (👍 ❤️ 😂 🎉 🤔 👀 🔥 👏). A reaction shows up as a chip with a count
-  below the shape; click the chip to add or remove yours, and point at it to see
-  who reacted. Reactions are stored in their own shared map of the board's live
+  frame; it opens a palette of eleven
+  emoji (✅ ❌ 🔧 for yes, no and in progress, then 👍 ❤️ 😂 🎉 🤔 👀 🔥 👏), each
+  with a name on hover. A reaction shows up as a chip with a count just below
+  the shape; click the chip to add or remove yours, and point at it to see who
+  reacted. Reactions are stored in their own shared map of the board's live
   document, one entry per shape, emoji and person, so two people reacting to the
   same shape at the same moment both keep their reaction, and they appear in
   every open tab at once. They do not touch the drawing: no scene edit, no undo
@@ -149,7 +269,8 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   the app. For everyone in that mode the features that could be abused on a
   shared instance are refused with 403: API tokens, the assistant and AI keys,
   git and Confluence endpoints that connect to a host the caller chooses,
-  creating spaces, share links, invitations and changing name or username;
+  creating spaces, share links, invitations, changing name or username,
+  changing a space's visibility or publishing it, and setting shared AI keys;
   uploads are capped (`FOLIO_DEMO_MAX_UPLOAD_MB`, default 5), and a demo
   account cannot change passwords. See `.env.dev.example`.
   Demo accounts may be space administrators (to edit a space's `.agent`
@@ -217,9 +338,81 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 - **The space administrator's note shows space names.** The line saying which
   conversations a space administrator sees now lists the names of their
   spaces instead of their short addresses.
+- In "Questions without an answer" the person's own question is now the main
+  line, with the assistant's restatement below it as "Assistant's wording";
+  older reports that were saved without a run show only the restatement. The
+  space filter and the space columns of the assistant analytics show space
+  names instead of slugs.
+- Interface languages are picked up from the bundle files that exist, so
+  adding a language means adding files, not editing code. English is the
+  fallback when the browser asks for a language there is no bundle for.
+- Texts the server writes into content — the name of the first view of a new
+  table, the heading of the link list on an imported whiteboard — follow the
+  language of the person who triggers them.
+- The assistant's instructions are in English; it answers and writes pages in
+  the language it is addressed in.
+- Code comments, tests, test data and server error messages are in English.
+- In the share menu the checkbox under an existing link is always labelled
+  "Include child pages": the tick alone says whether it is on.
+- Share links can be listed, created, changed and revoked only from the
+  browser. A personal access token, whatever its scope, is refused: the link
+  holds an access key. Agents still read a page through a link they already
+  have.
+- A share link "with child pages" leaves out every page that has its own
+  access restrictions, and everything below such a page. The set is checked on
+  every visit, so restricting a page later also takes it out of links that
+  already exist. A restricted page shared by a link of its own is still shared
+  together with its unrestricted children.
+- Raw files (`/files/…`) follow page access. A page file is served under the
+  rules of that page; any other file is served to a signed-in user unless
+  every page that references it is hidden from them, and to a share guest
+  only when a page of the share references it. A file no page references
+  stays open to the members of the space.
+- Uploaded attachments and repository files in an unusual format are
+  downloaded instead of being opened in the browser; SVG still opens, but
+  without scripts or network access. Common raster images and PDF open as
+  before. In particular, a link from a page to a `.html`, `.txt`, `.md`,
+  `.json` or `.csv` file, or to a video or audio file, now downloads it
+  instead of opening it in the tab.
+- URL paths that are not in canonical form (`//`, `/./`, backslashes, an
+  encoded `..`) now answer 403.
+- Running outside Docker needs Node.js 22 (the image already uses it).
+- The assistant checks the `space` and `pageId` sent with a request. A space
+  the user cannot read answers `404 space not found`, exactly as a space that
+  does not exist; an unknown or inaccessible page answers `404 page not
+  found`; a `pageId` without `space` is `400`. Earlier an unknown page id was
+  silently ignored. An instance admin who is not a member of a space can no
+  longer start an assistant run in it.
 
 ### Fixed
 
+- **Repository lists from GitHub and GitLab are complete, and say why they
+  fail.** The "create space" dialog follows the provider's pagination (up to
+  1,000 repositories over 10 pages, never leaving the original host), and a
+  provider failure (invalid token, rate limit, SAML single sign-on required,
+  forbidden, unreachable) shows a specific message instead of an empty list.
+  Creating a space from a repository without naming a branch asks the remote
+  for its real default branch instead of assuming one.
+- **A link to a page that sorts later is no longer stored as broken.** The
+  first scan of a space classified each page's links while it walked, so a link
+  to a page further down the alphabet was recorded as broken and never counted
+  as a backlink. Links are now indexed after the whole walk, and a rescan
+  re-indexes unchanged pages that held broken links.
+- **Formatting keeps its blanks outside the markers.** Every inline formatting
+  button leaves a selection made only of blanks alone and keeps leading and
+  trailing blanks outside the markers. Pairs are read with the CommonMark
+  flanking rules, so an asterisk after a space is not an italic, and pressing
+  the button on a broken pair such as `*word *` moves the markers onto the text
+  (`*word* `).
+- **Headings show plain text in the outline, notes and page title.**
+  Highlights, status tags, emphasis, links and escapes are resolved, so the
+  outline, the notes panel and a page's title (the first `#` heading) no longer
+  show raw markers such as `==text=={.green}`. Heading anchors are unchanged,
+  so saved links keep working.
+- **A new sticky note opens its text field after Escape.** On a whiteboard,
+  after pressing Escape the next new sticky note used to open the previous
+  note's text (or nothing). The new note is now the only selection and opens
+  for typing.
 - **The built-in assistant no longer gets the MCP tools `search` and `fetch`.**
   They exist only because ChatGPT deep research accepts tools with exactly
   those names, and they duplicate `search_pages` and `read_page` (same access
@@ -263,7 +456,6 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   remote selections itself, as a coloured mark that never touches the text's
   visibility, and the fade dims only the colour and the caret. Mixed versions
   keep working, since the presence data is unchanged.
-
 - **The reaction button on a whiteboard no longer follows the pointer.** The
   button used to pop up at whatever shape the pointer crossed, which got in the
   way of drawing and selecting. It now belongs to the selection: select exactly
@@ -303,13 +495,11 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   underline-style heading. The editor no longer recognises that form while you
   type; `#` headings, lists, quotes, bold and rules work as before, and Reading
   mode still renders underline-style headings in existing or imported text.
-
 - The "Ask" and "Agent" mode labels in the assistant panel and on the first-run
   screen are now translated into Ukrainian instead of staying in English.
 - Asking the same unanswered question twice inside one assistant run no longer
   creates a second report; the text of the first one is kept (or completed, if
   it was empty). The limit of three reports per run is unchanged.
-
 - The "what is missing" text of an unanswered question in the assistant
   analytics is now rendered as Markdown (links open in a new tab; raw HTML and
   `javascript:` links are dropped) instead of showing the markup as text.
@@ -386,56 +576,11 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   `folio_table_insert` now stores an unticked checkbox as `false` in a column
   you did not fill, as adding a row by hand does, instead of `null`.
 
-### Changed
-
-- In "Questions without an answer" the person's own question is now the main
-  line, with the assistant's restatement below it as "Assistant's wording";
-  older reports that were saved without a run show only the restatement. The
-  space filter and the space columns of the assistant analytics show space
-  names instead of slugs.
-- Interface languages are picked up from the bundle files that exist, so
-  adding a language means adding files, not editing code. English is the
-  fallback when the browser asks for a language there is no bundle for.
-- Texts the server writes into content — the name of the first view of a new
-  table, the heading of the link list on an imported whiteboard — follow the
-  language of the person who triggers them.
-- The assistant's instructions are in English; it answers and writes pages in
-  the language it is addressed in.
-- Code comments, tests, test data and server error messages are in English.
-- In the share menu the checkbox under an existing link is always labelled
-  "Include child pages": the tick alone says whether it is on.
-- Share links can be listed, created, changed and revoked only from the
-  browser. A personal access token, whatever its scope, is refused: the link
-  holds an access key. Agents still read a page through a link they already
-  have.
-- A share link "with child pages" leaves out every page that has its own
-  access restrictions, and everything below such a page. The set is checked on
-  every visit, so restricting a page later also takes it out of links that
-  already exist. A restricted page shared by a link of its own is still shared
-  together with its unrestricted children.
-- Raw files (`/files/…`) follow page access. A page file is served under the
-  rules of that page; any other file is served to a signed-in user unless
-  every page that references it is hidden from them, and to a share guest
-  only when a page of the share references it. A file no page references
-  stays open to the members of the space.
-- Uploaded attachments and repository files in an unusual format are
-  downloaded instead of being opened in the browser; SVG still opens, but
-  without scripts or network access. Common raster images and PDF open as
-  before. In particular, a link from a page to a `.html`, `.txt`, `.md`,
-  `.json` or `.csv` file, or to a video or audio file, now downloads it
-  instead of opening it in the tab.
-- URL paths that are not in canonical form (`//`, `/./`, backslashes, an
-  encoded `..`) now answer 403.
-- Running outside Docker needs Node.js 22 (the image already uses it).
-- The assistant checks the `space` and `pageId` sent with a request. A space
-  the user cannot read answers `404 space not found`, exactly as a space that
-  does not exist; an unknown or inaccessible page answers `404 page not
-  found`; a `pageId` without `space` is `400`. Earlier an unknown page id was
-  silently ignored. An instance admin who is not a member of a space can no
-  longer start an assistant run in it.
-
 ### Security
 
+- The request log no longer records the query string of the Google and GitHub
+  sign-in callbacks (it carries a one-time code), nor the guest token of a
+  public-site Ask Folio AI conversation.
 - **The assistant no longer has file or shell tools.** The Cursor agent runs
   without an operating-system sandbox, and its built-in read, search and shell
   tools were not confined to the conversation workspace, so they could open

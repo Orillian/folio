@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -11,6 +11,7 @@ import type {
 } from '@shared/contracts';
 import { api, ApiError } from '../api';
 import { subscribeAssistantRun } from './stream';
+import { createDeltaBatcher, createRunEventHandler } from './runStream';
 import { useToast } from '../ui/Toast';
 import '../i18n/register';
 
@@ -125,13 +126,11 @@ export function AssistantRunProvider({ children }: { children: ReactNode }) {
   const trackedRunIdRef = useRef<string | null>(null);
   const lastSeqRef = useRef(0);
   // Batches `delta` text into at most one setStreamText per animation frame
-  // (owner report, 22.09.2026: "it writes one letter at a time") — on top of the
-  // server's own ~75ms coalescing (runs.ts's DELTA_BATCH_MS), this catches
-  // the case where several already-batched events still land in the same
-  // frame (e.g. a reconnect's replay burst), so that doesn't cost one React
-  // render per event either.
-  const pendingDeltaRef = useRef('');
-  const deltaFrameRef = useRef<number | null>(null);
+  // (owner report, 22.09.2026: "it writes one letter at a time") — see
+  // runStream.ts's createDeltaBatcher, shared with the public site's Ask panel.
+  const deltaBatcher = useMemo(() => createDeltaBatcher((chunk) => setStreamText((current) => current + chunk)), []);
+  // What each streamed event does to the view (status -> step line, delta -> text): also shared with the public Ask panel.
+  const handleRunEvent = useMemo(() => createRunEventHandler({ onStep: setStep, onDelta: deltaBatcher.push }), [deltaBatcher]);
   /** conversationId of the run currently tracked — kept in a ref (not state) so resyncAfterDisconnect, a stable useCallback, always reads the current one instead of whatever was in scope when it was memoized. */
   const conversationIdRef = useRef<string | null>(null);
   /** Sidesteps a circular useCallback dependency: resyncAfterDisconnect needs to call attachSubscription, which is declared after it and itself calls resyncAfterDisconnect on failure. Kept current by the effect right after attachSubscription's declaration. */
@@ -141,27 +140,8 @@ export function AssistantRunProvider({ children }: { children: ReactNode }) {
     panelOpenRef.current = open;
   }, []);
 
-  /** Appends to the pending delta buffer and schedules (at most one) rAF to flush it into state — see pendingDeltaRef's own comment. */
-  const scheduleDeltaFlush = useCallback((text: string) => {
-    pendingDeltaRef.current += text;
-    if (deltaFrameRef.current !== null) return;
-    deltaFrameRef.current = requestAnimationFrame(() => {
-      deltaFrameRef.current = null;
-      if (!pendingDeltaRef.current) return;
-      const chunk = pendingDeltaRef.current;
-      pendingDeltaRef.current = '';
-      setStreamText((current) => current + chunk);
-    });
-  }, []);
-
   /** Drops any not-yet-flushed delta text and cancels its pending frame — called whenever a run's streamText is about to be reset/replaced from elsewhere, so a stale frame can't append leftover text from a previous/different run onto it. */
-  const cancelDeltaFlush = useCallback(() => {
-    if (deltaFrameRef.current !== null) {
-      cancelAnimationFrame(deltaFrameRef.current);
-      deltaFrameRef.current = null;
-    }
-    pendingDeltaRef.current = '';
-  }, []);
+  const cancelDeltaFlush = deltaBatcher.cancel;
 
   const refreshAfterRun = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['assistant', 'chat'] });
@@ -236,8 +216,7 @@ export function AssistantRunProvider({ children }: { children: ReactNode }) {
         onEvent: (event) => {
           if (trackedRunIdRef.current !== runId) return;
           lastSeqRef.current = event.seq;
-          if (event.type === 'status') setStep({ status: event.status, label: event.label });
-          else if (event.type === 'delta') scheduleDeltaFlush(event.text);
+          handleRunEvent(event);
           // complete/stopped/error are terminal — handled below once the promise resolves.
         },
       })
@@ -268,7 +247,7 @@ export function AssistantRunProvider({ children }: { children: ReactNode }) {
           void resyncAfterDisconnect(runId);
         });
     },
-    [clearRun, refreshAfterRun, showToast, t, resyncAfterDisconnect, scheduleDeltaFlush],
+    [clearRun, refreshAfterRun, showToast, t, resyncAfterDisconnect, handleRunEvent],
   );
 
   // Keep a ref mirror of attachSubscription for resyncAfterDisconnect to call — see
@@ -310,10 +289,7 @@ export function AssistantRunProvider({ children }: { children: ReactNode }) {
       abortRef.current?.abort();
       abortRef.current = null;
       trackedRunIdRef.current = null;
-      if (deltaFrameRef.current !== null) {
-        cancelAnimationFrame(deltaFrameRef.current);
-        deltaFrameRef.current = null;
-      }
+      deltaBatcher.cancel();
     };
     // Intentionally mount-only: attachSubscription is stable via useCallback's own deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps

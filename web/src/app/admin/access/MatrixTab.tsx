@@ -8,7 +8,7 @@ import { useApiErrorText } from '../../errorText';
 import { roleLabel } from '../../auth/roles';
 import { useToast } from '../../ui/Toast';
 import { Menu, MenuItem } from '../../ui/Menu';
-import { copyMembershipsPlan, matchesSpaceQuery, matchesUserQuery, matrixCellState } from './logic';
+import { VISIBILITY_OPTIONS, copyMembershipsPlan, makeVisibilityLabelKey, matchesSpaceQuery, matchesUserQuery, matrixCellState } from './logic';
 import { VisibilityConfirmDialog } from './VisibilityConfirmDialog';
 import '../../i18n/register';
 
@@ -38,7 +38,7 @@ export function MatrixTab({ matrix }: MatrixTabProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkSpace, setBulkSpace] = useState('');
   const [bulkRole, setBulkRole] = useState<SpaceRole | ''>('');
-  const [visibilityTarget, setVisibilityTarget] = useState<{ slug: string; name: string; next: SpaceVisibility } | null>(null);
+  const [visibilityTarget, setVisibilityTarget] = useState<{ slug: string; name: string; next: SpaceVisibility; current?: SpaceVisibility } | null>(null);
 
   const users = useMemo(() => matrix.users.filter((u) => matchesUserQuery(u, userQuery)), [matrix.users, userQuery]);
   const spaces = useMemo(() => matrix.spaces.filter((s) => matchesSpaceQuery(s, spaceQuery)), [matrix.spaces, spaceQuery]);
@@ -218,7 +218,7 @@ export function MatrixTab({ matrix }: MatrixTabProps) {
                 >
                   <SpaceHeaderCell
                     space={s}
-                    onSetVisibility={(next) => setVisibilityTarget({ slug: s.slug, name: s.name, next })}
+                    onSetVisibility={(next) => setVisibilityTarget({ slug: s.slug, name: s.name, next, current: s.visibility })}
                     onCopyFrom={(source) => copyMembers.mutate({ source, target: s.slug })}
                     allSpaces={matrix.spaces}
                   />
@@ -275,6 +275,7 @@ export function MatrixTab({ matrix }: MatrixTabProps) {
           space={visibilityTarget.slug}
           spaceName={visibilityTarget.name}
           next={visibilityTarget.next}
+          current={visibilityTarget.current}
           busy={setVisibility.isPending}
           onCancel={() => setVisibilityTarget(null)}
           onConfirm={() => setVisibility.mutate({ slug: visibilityTarget.slug, visibility: visibilityTarget.next })}
@@ -310,14 +311,17 @@ function SpaceHeaderCell({
       >
         {(close) => (
           <>
-            <MenuItem
-              onSelect={() => {
-                onSetVisibility(space.visibility === 'instance' ? 'private' : 'instance');
-                close();
-              }}
-            >
-              {space.visibility === 'instance' ? t('access.spaces.makePrivate') : t('access.spaces.makeInstance')}
-            </MenuItem>
+            {VISIBILITY_OPTIONS.filter((option) => option !== space.visibility).map((option) => (
+              <MenuItem
+                key={option}
+                onSelect={() => {
+                  onSetVisibility(option);
+                  close();
+                }}
+              >
+                {t(makeVisibilityLabelKey(option))}
+              </MenuItem>
+            ))}
             {otherSpaces.length > 0 && (
               <CopyMembersSubmenu spaces={otherSpaces} onPick={(source) => (onCopyFrom(source), close())} />
             )}

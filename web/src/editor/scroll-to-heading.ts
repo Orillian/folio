@@ -4,40 +4,21 @@
  * scrollIntoView (see app/outline/OutlinePanel.tsx).
  *
  * Slugs MUST be the very ones the outline panel and the rendering pipeline use,
- * or a click would silently find nothing. So the pieces come from the shared
- * source rather than being re-invented here: `slugify` + `createSlugDeduper`
- * (markdown/headings.ts) and `stripFrontmatter` (markdown/frontmatter.ts), fed
- * by the same remark parse. `headingPositions` is `extractHeadings` plus the
- * document offset each heading starts at — the one thing that function does not
- * return, and the reason this is not simply a call to it. A test in
- * scroll-to-heading.test.ts asserts the two produce identical slug lists, so the
- * duplication cannot drift unnoticed.
+ * or a click would silently find nothing. So the headings come from the same
+ * `parseHeadings` (markdown/headings.ts) that `extractHeadings` is built on —
+ * one parse, one slug rule. `headingPositions` adds the document offset each
+ * heading starts at, which `extractHeadings` does not return. A test in
+ * scroll-to-heading.test.ts asserts the two produce identical slug lists.
  */
 import { EditorSelection } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { unified } from 'unified';
-import remarkParse from 'remark-parse';
-import remarkGfm from 'remark-gfm';
-import { remarkUnderline } from '@shared/underline';
-import { visit } from 'unist-util-visit';
-import type { Root, Heading as MdHeading, Text, InlineCode } from 'mdast';
 import { stripFrontmatter } from '../markdown/frontmatter';
-import { createSlugDeduper } from '../markdown/headings';
+import { parseHeadings } from '../markdown/headings';
 
 export interface HeadingPosition {
   slug: string;
   /** Offset of the heading's first character in the *original* markdown. */
   pos: number;
-}
-
-/** Same text extraction as markdown/headings.ts: prose and inline code, no markup. */
-function headingText(node: MdHeading): string {
-  let text = '';
-  visit(node, (child) => {
-    if (child.type === 'text') text += (child as Text).value;
-    else if (child.type === 'inlineCode') text += (child as InlineCode).value;
-  });
-  return text;
 }
 
 /** Every heading in document order, with its deduped slug and its offset. */
@@ -46,17 +27,11 @@ export function headingPositions(markdown: string): HeadingPosition[] {
   // stripFrontmatter only ever removes a prefix, so the difference in length is
   // exactly how far every offset below has to be shifted back.
   const shift = markdown.length - body.length;
-  const tree = unified().use(remarkParse).use(remarkGfm).use(remarkUnderline).parse(body) as Root;
-  const dedupe = createSlugDeduper();
   const out: HeadingPosition[] = [];
-
-  visit(tree, 'heading', (node: MdHeading) => {
-    const slug = dedupe(headingText(node));
-    const start = node.position?.start?.offset;
-    if (start === undefined) return;
-    out.push({ slug, pos: shift + start });
-  });
-
+  for (const heading of parseHeadings(body)) {
+    if (heading.offset === undefined) continue;
+    out.push({ slug: heading.slug, pos: shift + heading.offset });
+  }
   return out;
 }
 

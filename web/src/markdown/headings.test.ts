@@ -110,3 +110,52 @@ describe('extractHeadings', () => {
     expect(third).toHaveLength(3);
   });
 });
+
+describe('heading labels (outline text)', () => {
+  const labels = (md: string) => extractHeadings(md).map((h) => h.text);
+
+  it('resolves highlight, status, emphasis, strike, underline, code and links', () => {
+    expect(
+      labels(
+        [
+          '## ==SELECTED=={.green} Growth team in Ongoing',
+          '## :status[Ongoing]{color=green} Growth',
+          '## **bold** and *it* and ~~gone~~ and ++under++',
+          '## `code` and [link](https://example.com)',
+          '## <ins>a</ins> <u>b</u> <mark>c</mark>',
+          '## \\*literal\\* text',
+        ].join('\n\n'),
+      ),
+    ).toEqual([
+      'SELECTED Growth team in Ongoing',
+      'Ongoing Growth',
+      'bold and it and gone and under',
+      'code and link',
+      'a b c',
+      '*literal* text',
+    ]);
+  });
+
+  it('keeps the anchor of a plain heading exactly as it was', () => {
+    // The pre-change rule, kept here as the reference: text nodes and inline
+    // code of the heading, run through slugify and the deduper.
+    const plain = ['Overview', 'Setup & Usage', 'What is this, exactly?!', 'Wie funktioniert das für Übungen?', 'Overview'];
+    const dedupe = createSlugDeduper();
+    const expected = plain.map((title) => dedupe(title));
+    expect(extractHeadings(plain.map((title) => `## ${title}`).join('\n\n')).map((h) => h.slug)).toEqual(expected);
+    expect(expected).toEqual(['overview', 'setup-usage', 'what-is-this-exactly', 'wie-funktioniert-das-für-übungen', 'overview-2']);
+  });
+
+  it('keeps the anchor of a formatted heading that the parser already unwrapped', () => {
+    const slugs = extractHeadings('## **Bold** *plan* ~~old~~ [docs](u) `x`').map((h) => h.slug);
+    expect(slugs).toEqual(['bold-plan-old-docs-x']);
+  });
+
+  it('keeps the anchor of a highlight/status heading as it always was (GitHub-compatible, saved links keep working)', () => {
+    const [hl, st] = extractHeadings('## ==Done=={.green} work\n\n## :status[Ongoing]{color=green} Growth');
+    expect(hl.text).toBe('Done work');
+    expect(hl.slug).toBe('donegreen-work');
+    expect(st.text).toBe('Ongoing Growth');
+    expect(st.slug).toBe('statusongoingcolorgreen-growth');
+  });
+});

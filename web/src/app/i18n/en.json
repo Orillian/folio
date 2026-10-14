@@ -226,7 +226,10 @@
     "gitDirsFailed": "Could not list the folders — check the branch and your access.",
     "spaceAlreadyConnected": "This space is already connected to a git repository.",
     "repoNotEmpty": "The repository is not empty. The space already has its own content and git history, and two histories cannot be merged automatically. Create a new space from that repository instead.",
-    "emptyBoardOverwrite": "An empty scene cannot replace a non-empty board. Reload the board."
+    "emptyBoardOverwrite": "An empty scene cannot replace a non-empty board. Reload the board.",
+    "subdomainTaken": "This subdomain is already taken — pick another one.",
+    "domainInUse": "This domain is already used by another space.",
+    "notPublicSite": "This is not a public site."
   },
   "admin": {
     "noAccess": "You don't have access to this page.",
@@ -541,7 +544,9 @@
       "confirmInstanceTitle": "Make “{{space}}” visible to the whole instance?",
       "confirmInstanceBody": "Every active Folio user will be able to read this space without an invitation. Editing stays with explicit members only.",
       "confirmPrivateTitle": "Make “{{space}}” private?",
-      "confirmPrivateBody": "Only the explicit members listed above will see the space."
+      "confirmPrivateBody": "Only the explicit members listed above will see the space.",
+      "confirmPublicTitle": "Publish “{{space}}” on the internet?",
+      "confirmPublicBody": "Anyone on the internet will be able to read this space without signing in. Restricted pages and .agent rules stay hidden."
     }
   },
   "invites": {
@@ -633,6 +638,16 @@
     }
   },
   "git": {
+    "repos": {
+      "errors": {
+        "tokenInvalid": "The saved token for {{host}} was rejected: it is invalid or has expired. Save a new token and try again.",
+        "rateLimited": "{{host}} is limiting requests from this token. Wait a few minutes and try again.",
+        "ssoRequired": "The organization behind some repositories requires SAML single sign-on. Authorize the token for that organization in your {{host}} token settings, then try again.",
+        "forbidden": "{{host}} refused the request. The token may lack the permission to list repositories.",
+        "unreachable": "Could not reach {{host}}. Check the address and your network, then try again.",
+        "failed": "{{host}} returned an unexpected response."
+      }
+    },
     "conflictBanner": {
       "intro": "This space has unresolved git conflicts — open the pages with",
       "outro": "markers and resolve them as plain text.",
@@ -688,7 +703,30 @@
       "labelPlaceholder": "optional, e.g. \"personal\"",
       "saveFailed": "Could not save the credential",
       "connecting": "Connecting…",
-      "connect": "Connect"
+      "connect": "Connect",
+      "github": {
+        "connect": "Connect with GitHub",
+        "connectHint": "Sign in on GitHub and Folio saves access to github.com for you. It replaces a github.com token saved here, if any.",
+        "connected": "GitHub connected",
+        "oauthBadge": "OAuth",
+        "oauthBadgeTitle": "Connected with GitHub as @{{login}}",
+        "errors": {
+          "denied": "GitHub access was not granted.",
+          "state": "The GitHub connection expired or was started in another session. Try again.",
+          "exchange": "GitHub did not complete the connection. Try again.",
+          "scope": "GitHub did not grant access to repositories.",
+          "save": "Could not save the GitHub connection.",
+          "session": "Sign in to Folio first, then connect GitHub.",
+          "disabled": "Connecting with GitHub is not configured on this server.",
+          "demo": "Connecting GitHub is disabled in the public demo."
+        }
+      },
+      "tokenHelp": {
+        "github": "GitHub: a classic token needs the repo scope; a fine-grained token needs Contents (read and write) and Metadata (read).",
+        "gitlab": "GitLab: the token needs the read_api and write_repository scopes.",
+        "createLink": "Create a token",
+        "oauthNote": "\"Connect with GitHub\" gives Folio access to every repository your account can reach; a fine-grained token can be limited to selected repositories."
+      }
     }
   },
   "sidebar": {
@@ -730,12 +768,23 @@
     "syncFailed": "Could not sync the space",
     "fromTemplate": "From template: \"{{title}}\"",
     "spaceHome": "Space home",
+    "imageStorage": {
+      "title": "Image storage",
+      "label": "Store images in the repository",
+      "hint": "Images go into assets/ in the repository — they render on GitHub too and travel with the docs. Images already uploaded stay where they are.",
+      "save": "Save",
+      "saving": "Saving…",
+      "saveFailed": "Could not save the setting"
+    },
     "spaceMenu": {
       "label": "Space menu",
       "sync": "Sync",
       "exportSettings": "PDF header & footer",
+      "assistantKey": "Folio AI key",
+      "imageStorage": "Image storage",
       "openRepo": "Open repository",
-      "connectGit": "Connect git"
+      "connectGit": "Connect git",
+      "publish": "Publish as website"
     },
     "newPageMenu": {
       "label": "New page at the space root"
@@ -1013,20 +1062,32 @@
       "logFailed": "Could not load the access log.",
       "visibilityFailed": "Could not change the visibility",
       "makePrivate": "Make private",
-      "makeInstance": "Make instance-wide"
+      "makeInstance": "Make instance-wide",
+      "visibilityPublic": "Public",
+      "makePublic": "Make public"
     },
     "visibility": {
       "toInstanceTitle": "Make \"{{space}}\" instance-wide?",
       "toInstanceBody": "\"{{space}}\" will become visible to all {{count}} users of the instance, as read-only viewers.",
       "toPrivateTitle": "Make \"{{space}}\" private?",
       "toPrivateBody": "\"{{space}}\" will only be visible to its explicit members. These people will lose access:",
-      "toPrivateNoneLost": "No one loses access — everyone who can see this space is already an explicit member."
+      "toPrivateNoneLost": "No one loses access — everyone who can see this space is already an explicit member.",
+      "toPublicTitle": "Publish \"{{space}}\" on the internet?",
+      "toPublicBody": "Anyone on the internet will be able to read this space without signing in. Restricted pages and .agent rules stay hidden.",
+      "toInstanceFromPublicBody": "\"{{space}}\" will stop being public. It stays visible to all {{count}} users of the instance, as read-only viewers."
     },
     "log": {
       "access_grant": "granted access",
       "access_revoke": "revoked access",
       "access_self_grant": "granted themselves access",
-      "space_visibility": "changed visibility"
+      "space_visibility": "changed visibility",
+      "space_public_settings": "changed publishing settings",
+      "settingOn": "on",
+      "settingOff": "off",
+      "settingDownload": "download: {{state}}",
+      "settingAssistant": "assistant: {{state}}",
+      "settingSubdomain": "subdomain: {{value}}",
+      "settingDomain": "domain: {{value}}"
     }
   },
   "trash": {
@@ -1095,9 +1156,12 @@
     "settings": {
       "title": "Folio AI (Cursor)",
       "source": "Key source",
-      "sources": { "personal": "My key", "environment": "Server key", "none": "Not configured" },
+      "sources": { "personal": "My key", "space": "Shared key of this space", "instance": "Shared key of this instance", "environment": "Server key", "none": "Not configured" },
       "keyName": "Key name",
       "connected": "Connected",
+      "personalDisabled": "This instance uses a shared Folio AI key managed by an administrator.",
+      "personalIgnored": "Your saved personal key is ignored: personal keys are turned off on this instance.",
+      "sharedInUse": "A shared key is in use. A key you connect here takes priority over it.",
       "runtimeUnavailable": "Cursor SDK needs Node.js 22.13 or newer. Update the server runtime.",
       "encryptionUnavailable": "FOLIO_SECRET isn't configured on the server, so a personal key can't be stored securely.",
       "keyLabel": "Cursor API key",
@@ -1117,6 +1181,29 @@
       "modelHint": "Cursor picks the model automatically. This setting applies to new conversations.",
       "modelsFailed": "Cursor model catalog unavailable",
       "modelSaveFailed": "Couldn't save the model."
+    },
+    "sharedKey": {
+      "titleInstance": "Shared Folio AI key",
+      "titleSpace": "Folio AI key of this space",
+      "introInstance": "One Cursor key for the whole instance. It is used wherever a member has no personal key and the space has no key of its own.",
+      "introSpace": "One Cursor key for this space. Members chatting with the assistant here use it unless they connected a personal key.",
+      "connected": "Connected: {{name}}",
+      "account": "Cursor account: {{email}}",
+      "updatedBy": "Set by {{name}} on {{date}}",
+      "updatedAt": "Set on {{date}}",
+      "notConfigured": "No shared key yet. Paste a Cursor API key below to turn the assistant on.",
+      "replaceLabel": "Replace with a new Cursor API key",
+      "saved": "Shared key connected: {{name}}",
+      "remove": "Remove key",
+      "removeTitle": "Remove the shared key?",
+      "removeConfirmBody": "The key will be removed from the server. The assistant stops working for everyone who relies on it until a new key is set. Continue?",
+      "removeFailed": "Couldn't remove the key.",
+      "encryptionUnavailable": "FOLIO_SECRET isn't configured on the server, so the key can't be stored securely.",
+      "policyLabel": "Allow members to use their own personal keys",
+      "policyHint": "When off, the shared key is used for everyone and personal keys are ignored.",
+      "policyNoKey": "Personal keys are off, but no shared key is set. The assistant won't work for members until you add one.",
+      "policyFailed": "Couldn't change the policy.",
+      "loadFailed": "Couldn't load the shared key."
     },
     "chat": {
       "title": "Folio AI",
@@ -1188,7 +1275,8 @@
     "dislikes": "Not helpful answers (👎)",
     "tabs": {
       "conversations": "Conversations",
-      "unanswered": "Questions without an answer"
+      "unanswered": "Questions without an answer",
+      "key": "Shared key"
     },
     "filters": {
       "space": "Space",
@@ -1441,6 +1529,85 @@
       "discard": "Discard draft",
       "discardConfirmTitle": "Discard this draft?",
       "discardConfirmBody": "“{{title}}” exists on this device only. Once discarded it cannot be recovered."
+    }
+  },
+  "publicSite": {
+    "loadFailed": "Could not load this page.",
+    "treeFailed": "Could not load the page list.",
+    "pageNotFound": "This page doesn't exist on this site.",
+    "backHome": "Back to the home page",
+    "empty": "This site has no pages yet.",
+    "openMenu": "Open the page menu",
+    "closeMenu": "Close the menu",
+    "breadcrumbs": "Breadcrumbs",
+    "signIn": "Sign in",
+    "poweredBy": "Powered by Folio",
+    "formReadOnly": "This form can only be filled in inside Folio — sign in to submit it.",
+    "notPublic": {
+      "title": "This space is not public",
+      "hint": "The site may have been unpublished, or the address is wrong. If you have an account, sign in to open it in Folio."
+    },
+    "tree": {
+      "label": "Pages",
+      "expand": "Expand “{{title}}”",
+      "collapse": "Collapse “{{title}}”"
+    },
+    "index": {
+      "label": "All pages"
+    },
+    "search": {
+      "placeholder": "Search this site…",
+      "label": "Search this site",
+      "clear": "Clear search",
+      "searching": "Searching…",
+      "noResults": "Nothing found for “{{query}}”",
+      "failed": "Search failed. Try again."
+    },
+    "download": {
+      "button": "Download",
+      "disabled": "Downloads are turned off for this site.",
+      "pdfUnavailable": "PDF download is unavailable right now. Markdown and DOCX still work.",
+      "truncated": "The file was cut short because the page is too large."
+    },
+    "ask": {
+      "button": "Ask AI about this space",
+      "title": "Ask AI",
+      "intro": "Answers come from the pages of {{space}} only.",
+      "placeholder": "Ask a question about this site…",
+      "send": "Send",
+      "stop": "Stop",
+      "newConversation": "New conversation",
+      "notConfigured": "Folio AI is not set up for this site yet.",
+      "rateLimited": "Too many questions for now, try again in a few minutes.",
+      "rateLimitedIn_one": "Too many questions for now, try again in {{count}} minute.",
+      "rateLimitedIn_other": "Too many questions for now, try again in {{count}} minutes.",
+      "poweredBy": "Powered by Folio AI"
+    }
+  },
+  "publish": {
+    "title": "Publish “{{space}}” as a website",
+    "save": "Save",
+    "saved": "Site settings saved.",
+    "saveFailed": "Could not save the site settings",
+    "loadFailed": "Could not load the site settings",
+    "visibility": {
+      "heading": "Who can read this space",
+      "privateHint": "Only the people you add as members.",
+      "instanceHint": "Every signed-in user of this Folio instance can read it.",
+      "publicHint": "Anyone on the internet can read it as a website, without signing in. Restricted pages and .agent rules stay hidden."
+    },
+    "site": {
+      "heading": "Website",
+      "needsPublic": "Make the space public to turn the website on.",
+      "pathUrl": "Address on this Folio",
+      "subdomain": "Subdomain",
+      "subdomainPlaceholder": "my-docs",
+      "subdomainInvalid": "Lowercase letters, digits and hyphens (not at the start or the end).",
+      "domain": "Custom domain",
+      "domainInvalid": "Enter a host name such as docs.example.com.",
+      "domainHint": "Point a CNAME to {{mainHost}} and route the host to Folio in your reverse proxy",
+      "allowDownload": "Allow visitors to download pages (Markdown, PDF, DOCX)",
+      "allowAssistant": "Allow visitors to ask Folio AI about this space (uses the space or instance shared key)"
     }
   }
 }

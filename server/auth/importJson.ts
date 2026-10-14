@@ -52,7 +52,8 @@ async function readJsonIfExists<T>(filePath: string): Promise<T | null> {
 }
 
 export async function importJsonIfNeeded(): Promise<void> {
-  const countRow = await queryOne<{ count: string }>('SELECT COUNT(*) FROM users');
+  // Real people only: the built-in system user (migration 039) exists on every fresh database.
+  const countRow = await queryOne<{ count: string }>('SELECT COUNT(*) FROM users WHERE NOT is_system');
   if (Number(countRow?.count ?? '0') > 0) return; // PG already has users: never import, even if the json files are still there
 
   const usersPath = path.join(AUTH_DIR, 'users.json');

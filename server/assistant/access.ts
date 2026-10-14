@@ -22,7 +22,8 @@
  */
 import type { SpaceRole, User } from '../../shared/contracts.js';
 import { badRequest, HttpError, notFound } from '../errors.js';
-import { effectivePageRole, effectiveRole, roleAtLeast } from '../auth/session.js';
+import { effectivePageRole, effectiveRole, isSystemUser, roleAtLeast } from '../auth/session.js';
+import { getPublicSpace, isPublicPage } from '../publicSites.js';
 import * as storage from '../storage.js';
 import type { PageIndexEntry } from '../storage.js';
 
@@ -62,13 +63,27 @@ export interface AssistantNavigation {
  *    admin-only `.agent` folder included). A page id from another space, an
  *    unknown one and a hidden one are all the same 404 `page not found`.
  * Returns the normalized values to use from here on.
+ *
+ * Public sites (13.10.2026): a run with `publicSpace` (an anonymous visitor,
+ * acting as the system user) must be about exactly that published space —
+ * `space` equal to it, the space still public, a `pageId` in its public page
+ * set — and a system user without `publicSpace` gets nothing at all.
  */
 export async function authorizeAssistantNavigation(
   user: User,
-  input: { space?: string | null; pageId?: string | null },
+  input: { space?: string | null; pageId?: string | null; publicSpace?: string | null },
 ): Promise<AssistantNavigation> {
   const space = input.space?.trim() || null;
   const pageId = input.pageId?.trim() || null;
+  const publicSpace = input.publicSpace?.trim() || null;
+
+  if (publicSpace || isSystemUser(user)) {
+    if (!publicSpace || space !== publicSpace || !(await getPublicSpace(publicSpace))) throw notFound('space');
+    if (!pageId) return { space, pageId: null };
+    const entry = await findPage(pageId);
+    if (!entry || entry.space !== space || !(await isPublicPage(entry))) throw notFound('page');
+    return { space, pageId };
+  }
 
   if (!space) {
     if (pageId) throw badRequest('pageId requires space');

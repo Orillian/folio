@@ -133,6 +133,40 @@ export async function insertConversation(input: { userId: string; title: string 
   return toConversationRow(row!);
 }
 
+/**
+ * Public sites: a conversation of an anonymous visitor — owned by the public
+ * visitor system user, bound to ONE published space, and reachable only with
+ * the guest token whose sha256 is stored here (the token itself is never stored).
+ */
+export async function insertPublicConversation(input: {
+  userId: string;
+  space: string;
+  guestTokenHash: string;
+  title: string | null;
+  cursorAgentId: string;
+  model: string;
+}): Promise<AssistantConversationRow> {
+  const row = await queryOne<RawConversationRow>(
+    `INSERT INTO ai_conversations (id, user_id, title, cursor_agent_id, model, public_space, guest_token_hash)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [randomUUID(), input.userId, input.title, input.cursorAgentId, input.model, input.space, input.guestTokenHash],
+  );
+  return toConversationRow(row!);
+}
+
+/** A public conversation of `space` owned by `userId` (the public visitor), with its stored guest-token hash — the caller compares the token. */
+export async function findPublicConversation(
+  id: string,
+  userId: string,
+  space: string,
+): Promise<{ conversation: AssistantConversationRow; guestTokenHash: string } | null> {
+  const row = await queryOne<RawConversationRow & { guest_token_hash: string | null }>(
+    'SELECT * FROM ai_conversations WHERE id = $1 AND user_id = $2 AND public_space = $3 AND guest_token_hash IS NOT NULL',
+    [id, userId, space],
+  );
+  return row ? { conversation: toConversationRow(row), guestTokenHash: row.guest_token_hash! } : null;
+}
+
 export async function findConversation(id: string, userId: string): Promise<AssistantConversationRow | null> {
   const row = await queryOne<RawConversationRow>('SELECT * FROM ai_conversations WHERE id = $1 AND user_id = $2', [id, userId]);
   return row ? toConversationRow(row) : null;

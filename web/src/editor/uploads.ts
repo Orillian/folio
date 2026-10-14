@@ -12,6 +12,7 @@ import type { Extension } from '@codemirror/state';
 import { t } from './i18n';
 import { liveModeFacet, pageContextFacet } from './live-preview';
 import { showToast } from './toast';
+import { formatLinkTarget, relativePath } from './paths';
 import {
   convertClipboardHtml,
   htmlHasRichFormatting,
@@ -26,8 +27,18 @@ export interface TextEdit {
   insert: string;
 }
 
-/** Uploads a file and resolves to the URL the server assigned it. */
-export type AssetUploader = (space: string, file: File) => Promise<string>;
+/**
+ * What an upload resolved to. `url` is always usable on this origin; `path` is set
+ * only for a repo-mode upload (a space that keeps its images in the repository):
+ * the file's path relative to the space's content root, e.g. `assets/x.png`.
+ */
+export interface UploadedAsset {
+  url: string;
+  path?: string;
+}
+
+/** Uploads a file and resolves to the URL the server assigned it (a bare string, or the richer {url, path?}). */
+export type AssetUploader = (space: string, file: File) => Promise<string | UploadedAsset>;
 
 /* ----------------------------------------------------------------- pure -- */
 
@@ -49,7 +60,20 @@ function sanitizeLabel(text: string): string {
   return text.replace(/[[\]\r\n]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/** The URL comes back from the server ready to use; never rewrite it. */
+/**
+ * The link target to write into the page for an uploaded file. A store-mode
+ * upload (no `path`) keeps the server's URL exactly as it came back. A repo-mode
+ * upload is written as a link RELATIVE to the page (`../assets/x.png` for a page
+ * at `guides/setup.md`), so the image also renders on GitHub and travels with
+ * the docs; Folio resolves such links back to /files/<space>/... itself.
+ */
+export function assetLinkTarget(uploaded: string | UploadedAsset, pagePath: string): string {
+  if (typeof uploaded === 'string') return uploaded;
+  if (!uploaded.path) return uploaded.url;
+  return formatLinkTarget(relativePath(pagePath, uploaded.path));
+}
+
+/** The link target comes back ready to use (see assetLinkTarget); never rewrite it. */
 export function markdownFor(filename: string, url: string, isImage: boolean): string {
   return isImage ? `![${altTextFor(filename)}](${url})` : `[${linkTextFor(filename)}](${url})`;
 }
@@ -123,9 +147,9 @@ export const uploadAsset: AssetUploader = async (space, file) => {
   });
   if (!response.ok) throw new Error(`upload failed with ${response.status}`);
 
-  const data = (await response.json()) as { url?: unknown };
+  const data = (await response.json()) as { url?: unknown; path?: unknown };
   if (typeof data.url !== 'string' || !data.url) throw new Error('upload response has no url');
-  return data.url;
+  return typeof data.path === 'string' && data.path ? { url: data.url, path: data.path } : { url: data.url };
 };
 
 /* -------------------------------------------------------------- handling -- */
@@ -137,7 +161,7 @@ export async function insertFiles(
   at: number,
   upload: AssetUploader,
 ): Promise<void> {
-  const space = view.state.facet(pageContextFacet).space;
+  const { space, pagePath } = view.state.facet(pageContextFacet);
   let pos = at;
 
   for (const file of files) {
@@ -151,8 +175,8 @@ export async function insertFiles(
 
     let markdown = '';
     try {
-      const url = await upload(space, file);
-      markdown = markdownFor(file.name, url, isImageFile(file));
+      const uploaded = await upload(space, file);
+      markdown = markdownFor(file.name, assetLinkTarget(uploaded, pagePath), isImageFile(file));
     } catch {
       if (view.dom.isConnected) showToast(view, t('upload.failed', { name: file.name }));
     }
@@ -192,14 +216,14 @@ export async function insertConvertedHtml(
   upload: AssetUploader,
 ): Promise<void> {
   if (!converted.markdown) return;
-  const space = view.state.facet(pageContextFacet).space;
+  const { space, pagePath } = view.state.facet(pageContextFacet);
   view.dispatch({ changes: pasteInsertEdit(view, from, to, converted.markdown, converted.block) });
 
   for (const image of converted.images) {
     if (!view.dom.isConnected) return;
     let url = '';
     try {
-      url = await upload(space, image.file);
+      url = assetLinkTarget(await upload(space, image.file), pagePath);
     } catch {
       showToast(view, t('upload.failed', { name: image.file.name }));
     }

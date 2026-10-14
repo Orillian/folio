@@ -89,7 +89,12 @@ All settings live in the `.env` file next to `docker-compose.yml`. Copy
 | `POSTGRES_PASSWORD` | `folio` | Database password, applied when the database is first created. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | Turn on "Sign in with Google". |
 | `GOOGLE_ALLOWED_DOMAINS` | empty | Email domains allowed to sign in with Google, comma-separated. Empty means nobody. |
-| `CURSOR_API_KEY` | — | Shared key for the AI assistant. Without it each person adds their own key. |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | — | Turn on "Connect with GitHub" in "Git access" (a GitHub OAuth App). See below. |
+| `CURSOR_API_KEY` | — | Server-wide fallback key for the AI assistant, used when neither the person, the space nor the instance has a key of their own. Administrators can also set an instance key and per-space keys in the interface; those win over this variable. |
+| `PUBLIC_SITES_DOMAIN` | — | Parent domain for the subdomains of public sites, for example `sites.example.com`. See [Public sites](#public-sites). |
+| `PUBLIC_EXPORT_PER_MINUTE` | `6` | PDF and DOCX downloads one address may start per minute on public sites. |
+| `PUBLIC_ASSISTANT_RUNS_PER_HOUR` | `20` | Questions one address may ask Folio AI per hour across all public sites. |
+| `PUBLIC_ASSISTANT_SPACE_RUNS_PER_HOUR` | `200` | Questions all visitors of one public site together may ask Folio AI per hour. |
 | `TRUST_PROXY` | off | Set `true` behind a reverse proxy on the same host or Docker network so the sign-in rate limit is per visitor instead of one shared bucket. Only a proxy on a loopback or private address is believed. |
 | `FOLIO_DEMO_MODE` | off | `1` turns on public-demo mode for running your own demo: one-click demo accounts and a banner, and tokens, the assistant, outbound git and import, new spaces, share links and invitations are disabled. The accounts it offers are listed in `FOLIO_DEMO_ACCOUNTS` (a JSON array, in single quotes in `.env`); `FOLIO_DEMO_RESET_HOURS`, `FOLIO_DEMO_MAX_UPLOAD_MB`, `FOLIO_DEMO_MCP_RPM` and `FOLIO_DEMO_MCP_WRITES_PER_HOUR` are optional. See `.env.example`. |
 | `FOLIO_DEFAULT_REPO_URL` | empty | Prefilled into the repository field of the "create space" dialog. |
@@ -142,8 +147,8 @@ client IP data" for the project.
 
 ### The secret
 
-Folio encrypts saved git tokens and personal AI keys with `FOLIO_SECRET`. If
-you leave it empty, a random one is generated on first start and stored on the
+Folio encrypts saved git tokens and AI keys (personal, space and instance
+keys) with `FOLIO_SECRET`. If you leave it empty, a random one is generated on first start and stored on the
 data volume as `/app/data/.folio-secret`. It is included in the data backup
 described below.
 
@@ -156,6 +161,105 @@ Create an OAuth client in the Google Cloud Console, register the redirect URI
 `<PUBLIC_URL>/api/auth/google/callback`, and set the three `GOOGLE_*` values.
 List the email domains that may sign in — with an empty list Google sign-in
 lets nobody in.
+
+### Connect with GitHub
+
+Lets people link their github.com account in "Git access" with one click
+instead of pasting a personal access token. It is not a way to sign in to
+Folio: the person must already be signed in.
+
+1. On GitHub, open the settings of your organization (or your own account),
+   **Developer settings → OAuth Apps → New OAuth App**. Use an OAuth App, not a
+   GitHub App: OAuth App tokens do not expire, so connected spaces keep
+   syncing.
+2. Homepage URL: your `PUBLIC_URL`. Authorization callback URL:
+   `<PUBLIC_URL>/api/auth/github-connect/callback`. Leave "Enable Device Flow"
+   off.
+3. Generate a client secret and set `GITHUB_CLIENT_ID` and
+   `GITHUB_CLIENT_SECRET`. `FOLIO_SECRET` must be set too (it always is with
+   the bundled compose file).
+4. If an organization restricts third-party application access, an owner of
+   that organization approves the app once (GitHub shows a "Request" button
+   on the consent screen); until then its private repositories do not appear.
+
+Folio asks for the `repo` scope, which gives access to every repository the
+person can reach. For narrower access, people can still paste a fine-grained
+token (Contents: read and write, Metadata: read) instead. Connecting replaces
+a github.com token saved earlier. GitHub Enterprise Server keeps using tokens.
+
+### Public sites
+
+A space can be published as a read-only website that anyone can open without an
+account: a space or instance administrator opens the space menu, chooses
+"Publish as website" and sets who can read the space to **public**. The first
+of the three addresses below needs nothing from the operator; the other two do.
+
+| Address | What the operator does |
+|---|---|
+| `https://wiki.example.com/public/<space>` | Nothing. It works as soon as the space is public. Set `PUBLIC_URL` to the public address of your Folio. |
+| `https://<label>.sites.example.com` | Set `PUBLIC_SITES_DOMAIN=sites.example.com`, then the steps below. A space administrator then picks the label. |
+| `https://docs.example.com` (a custom domain) | The domain's owner adds `CNAME docs.example.com` pointing to the host of `PUBLIC_URL`; the reverse proxy routes that host to Folio and holds a certificate for it. The space administrator types the domain into the publishing settings. |
+
+**Subdomains.** Use a domain of its own for sites, such as
+`sites.example.com`, not `*.example.com`: a wildcard would catch every other
+service you run. A site's host is exactly one label under it.
+
+1. DNS: a wildcard record `*.sites.example.com` pointing at the server (or at
+   the reverse proxy).
+2. A wildcard certificate for `*.sites.example.com` on the reverse proxy. Wildcard
+   certificates need a DNS challenge, so the proxy needs access to your DNS
+   provider.
+3. The reverse proxy sends those hosts to Folio (port 4870 in the image),
+   keeps the original `Host` header and passes WebSocket connections on
+   `/collab` through, or data tables on the site will not update live.
+
+**Custom domains** need the same proxy settings for each domain, with an
+ordinary certificate. Folio recognizes a site by the `Host` header (behind a
+trusted proxy, `X-Forwarded-Host`), so the proxy must not rewrite it. A domain
+is typed without a scheme or path, cannot be the host of `PUBLIC_URL` and
+cannot lie under `PUBLIC_SITES_DOMAIN` (use the subdomain field for that). A
+subdomain or domain belongs to one space.
+
+With the bundled HTTPS proxy, a custom domain is one more block in `Caddyfile`
+followed by `docker compose --profile https restart caddy`:
+
+```
+docs.example.com {
+	encode zstd gzip
+	reverse_proxy app:4870
+}
+```
+
+The bundled Caddy cannot issue a wildcard certificate (that needs a Caddy build
+with the module for your DNS provider), so for subdomains most people put their
+own reverse proxy in front. With nginx, for example, `server_name
+*.sites.example.com;`, the wildcard certificate (certbot with a DNS plugin),
+`proxy_pass http://127.0.0.1:4870;`, `proxy_set_header Host $host;` and the same
+`Upgrade` and `X-Forwarded-*` headers as on the main host.
+
+**Behind a proxy, set `TRUST_PROXY=true`.** The limits on downloads and on
+questions to Folio AI are counted per address; without it every visitor shares
+the proxy's address and therefore one budget.
+
+**What to know before publishing.**
+
+- Everything in the space is public except pages with their own access
+  restrictions, the `.agent` folder and templates. A restriction is **not
+  inherited** by child pages, so look at the whole tree and lock each page that
+  must stay closed.
+- Folio does not generate `robots.txt` or a sitemap for these sites yet, and
+  does not mark them `noindex`: search engines may index them.
+- A reader on a subdomain or custom domain is always anonymous, even if signed
+  in on the main address (the session cookie belongs to one host). "Sign in" on
+  the site leads to the main address.
+- The limits and the cache of site hosts live in the memory of the server
+  process. After you change a site's address or turn publishing off, allow up
+  to ten seconds.
+- **Ask Folio AI** on a public site is opt-in per space and runs on the key of
+  the space, else of the instance, else `CURSOR_API_KEY`; the owner of that key
+  pays for visitors' questions. Without any of them the site says that Folio AI
+  is not set up.
+- The public demo cannot publish.
 
 ## Updating
 
@@ -252,6 +356,15 @@ docker compose logs app --tail 100
 
 **Signing in does nothing on a server.** The address in the browser and
 `PUBLIC_URL` must match, including `http` or `https`.
+
+**A public site's address opens the main Folio, a 404 or a certificate error.**
+Check that the host reaches Folio with its original `Host` header, that a
+subdomain is exactly one label under `PUBLIC_SITES_DOMAIN`, that a custom
+domain's DNS and certificate exist, and that a host is not the host of
+`PUBLIC_URL`. A change to a site's settings takes up to ten seconds to apply.
+
+**A table on a public site does not update live.** The reverse proxy does not
+pass WebSocket connections on `/collab` for that host.
 
 **Start from scratch.** This deletes every page and account:
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -9,6 +9,7 @@ import { SettingsDialog } from './SettingsDialog';
 import { HelpModal } from '../help/HelpModal';
 import { ApiTokensModal } from '../tokens/ApiTokensModal';
 import { GitCredentialsSettings } from '../git/GitCredentialsSettings';
+import { clearGitConnectResult, peekGitConnectResult, stripGitConnectParam } from '../git/gitConnectReturn';
 import { ConfluenceImportDialog } from '../import/ConfluenceImportDialog';
 import { AssistantSettingsModal } from '../assistant/AssistantSettingsModal';
 import { useAssistantAccess } from '../admin/assistant/useAssistantAccess';
@@ -40,7 +41,12 @@ export function UserMenu({ space = '' }: UserMenuProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [tokensOpen, setTokensOpen] = useState(false);
-  const [gitCredentialsOpen, setGitCredentialsOpen] = useState(false);
+  // Back from "Connect with GitHub" (?gitConnect=<result>): open "Git access", which shows the result.
+  const [gitConnectResult, setGitConnectResult] = useState(peekGitConnectResult);
+  const [gitCredentialsOpen, setGitCredentialsOpen] = useState(gitConnectResult !== null);
+  useEffect(() => {
+    if (gitConnectResult) stripGitConnectParam();
+  }, [gitConnectResult]);
   const [importOpen, setImportOpen] = useState(false);
   const [assistantSettingsOpen, setAssistantSettingsOpen] = useState(false);
   // Space admins (not instance admins, who always have it in the admin section below)
@@ -245,9 +251,18 @@ export function UserMenu({ space = '' }: UserMenuProps) {
       {settingsOpen && <SettingsDialog user={user} onClose={() => setSettingsOpen(false)} />}
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
       {tokensOpen && <ApiTokensModal onClose={() => setTokensOpen(false)} />}
-      {gitCredentialsOpen && <GitCredentialsSettings onClose={() => setGitCredentialsOpen(false)} />}
+      {gitCredentialsOpen && (
+        <GitCredentialsSettings
+          connectResult={gitConnectResult}
+          onClose={() => {
+            setGitCredentialsOpen(false);
+            setGitConnectResult(null);
+            clearGitConnectResult();
+          }}
+        />
+      )}
       {importOpen && <ConfluenceImportDialog currentSpace={space} onClose={() => setImportOpen(false)} />}
-      {assistantSettingsOpen && <AssistantSettingsModal onClose={() => setAssistantSettingsOpen(false)} />}
+      {assistantSettingsOpen && <AssistantSettingsModal space={space || null} onClose={() => setAssistantSettingsOpen(false)} />}
     </div>
   );
 }

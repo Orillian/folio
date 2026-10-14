@@ -42,6 +42,8 @@ Not ready to install? [Try the live demo](https://demo.foliowiki.online/?utm_sou
 - **Documents, tables, whiteboards, diagrams and files in one tree.** A
   roadmap table next to the spec, next to the architecture board, next to the
   signed PDF.
+- **Publish what should be public.** Turn a space into a read-only website,
+  with search and an optional "Ask AI", on your own domain.
 - **One command to run.** Docker, and nothing to configure for a first start.
 
 ---
@@ -113,6 +115,12 @@ What that gives you:
   each in its own folder — so documentation can live right next to the code.
 - **Review like code.** Merge requests, blame, diff and revert work on your
   wiki because it *is* a repository.
+- **Docs-as-code friendly.** Front matter written by Docusaurus, MkDocs, Hugo or
+  Jekyll is kept byte for byte; a space bound to a folder such as `docs/`
+  writes no ids into your files; images can be stored in the repository next to
+  the page and linked by a relative path, so GitHub shows them; and moving a
+  page rewrites the links that point to it and the ones inside it, in one
+  commit.
 - **Nothing is lost quietly.** Sync state is always visible — clean, ahead,
   behind, conflict — and conflicts are listed for the whole space. "Take the
   version from Git" resets a space to the remote branch and saves what was
@@ -245,7 +253,8 @@ short description of boxes and arrows; people then keep editing it like any
 other board.
 
 **Reactions.** Select a shape in Edit mode and a small button appears at the
-corner of its selection frame: pick an emoji (👍 ❤️ 😂 🎉 🤔 👀 🔥 👏) and a counter chip shows under the shape.
+corner of its selection frame: pick an emoji (✅ ❌ 🔧 for yes, no and in progress, or 👍 ❤️ 😂 🎉 🤔 👀 🔥 👏)
+and a counter chip shows under the shape.
 Click a chip to add or remove your own; point at it to see who reacted.
 Reactions are live for everyone on the board, and people who can only view it
 (or are in View mode) see them too but cannot click them. They are kept with the board's live state, not in its SVG file.
@@ -363,8 +372,18 @@ subscription you already pay for, and the assistant runs on it.
 
 | Provider | Status |
 |---|---|
-| Cursor | **available** — each person connects their own key, or the operator sets one for everyone |
+| Cursor | **available** — each person connects their own key, or an administrator provides one for a space or for the whole instance |
 | Others | coming soon |
+
+**Who pays.** A run uses the first key that exists: the person's own key, then
+the key of the space, then the key of the instance, then `CURSOR_API_KEY` from
+the server environment. A space administrator sets a space's key (space menu,
+"Folio AI key"); an instance administrator sets the instance key and can turn
+personal keys off, so everyone uses the shared one. Shared keys are stored
+encrypted and are never shown again after saving; every change is in the audit
+log. Visitors of a [public site](#publish-a-space-as-a-website) have no key of
+their own, so their questions run on the key of the space, of the instance or
+of the server environment, in that order.
 
 Without a subscription everything else in Folio works as usual.
 
@@ -423,9 +442,11 @@ Who sees what is decided in one place, and it is visible at a glance.
 ![The access matrix: people and spaces](docs/images/access.png)
 
 - **Roles per space**: administrator, editor, viewer.
-- **Private or open spaces.** A private space is visible to its members only.
-  A space open to the instance gives everyone read access, and edit rights
-  still have to be granted.
+- **Private, open or public spaces.** A private space is visible to its members
+  only. A space open to the instance gives every signed-in person read access,
+  and edit rights still have to be granted. A public space is also readable by
+  anyone on the internet as a website, see
+  [Publish a space as a website](#publish-a-space-as-a-website).
 - **The access matrix.** People down the side, spaces across the top, a role
   in every cell. Change one cell or many at once.
 - **An administrator is not a reader.** The instance administrator manages
@@ -463,6 +484,44 @@ members, to you only, or to selected people with view or edit rights.
   rights than its owner, and administrative actions are not available to
   tokens at all.
 - The `.agent` folder is visible to space administrators only.
+
+---
+
+## Publish a space as a website
+
+One setting turns a space into a read-only website for people without an
+account. Open the space menu, choose **Publish as website** and make the space
+public. It is the same space, not a copy: edit a page and the site shows the
+change. Signed-in people read a public space the way they read any space that is
+open to the instance.
+
+<!-- screenshot: public site -->
+
+| Address | When it works |
+|---|---|
+| `https://wiki.example.com/public/<space>` | Always, as soon as the space is public. Nothing to set up. |
+| `https://<label>.sites.example.com` | When the operator sets `PUBLIC_SITES_DOMAIN=sites.example.com` and the space administrator picks a label. Needs wildcard DNS, a wildcard certificate and a reverse proxy that routes those hosts to Folio. |
+| `https://docs.example.com` | A custom domain for one space: a CNAME to the host of your Folio, and the reverse proxy routing that host to Folio, with a certificate for it. |
+
+- **What visitors get.** The page tree, search inside the space, documents,
+  data tables (live, read-only), whiteboards as pictures, forms (view only) and
+  PDF and Office files, with breadcrumbs and a layout for phones.
+- **Downloads** as Markdown, PDF or DOCX, switched on per space.
+- **Ask Folio AI**, switched on per space: visitors ask questions and the
+  assistant answers in Ask mode only, from the public pages of that one space,
+  on the key of the space or the instance. It cannot change anything, and
+  questions are rate limited per address and per site.
+- **What is never published.** Pages with their own access restrictions, the
+  `.agent` folder and templates. A restriction is not inherited by child pages,
+  so check the tree before you publish and lock every page that must stay closed.
+- **Who can publish.** Space and instance administrators, from the browser; the
+  settings live in the database, not in Git. The public demo cannot publish.
+- **Not yet.** Folio does not generate `robots.txt` or a sitemap for these
+  sites, and the rate limits are counted per server process.
+
+What the operator sets up for subdomains and custom domains:
+[docs/INSTALL.md](docs/INSTALL.md#public-sites). Limits:
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ---
 
@@ -516,9 +575,9 @@ build, tries every change in the browser and decides what ships; agents plan
 the work, write the code and the tests, and document what they did.
 
 From the first commit on August 21, 2026 to version 0.1.0 on September 29,
-2026: 39 days, more than 400 commits upstream, roughly 90,000 lines of
-TypeScript and another 50,000 lines of tests. It runs in production for a real
-team.
+2026 took 39 days and more than 400 commits upstream. Version 0.2.0 followed on
+October 14, 2026, 54 days in. Today that is roughly 110,000 lines of TypeScript
+and another 70,000 lines of tests. It runs in production for a real team.
 
 We publish how it is made, not only what was made:
 

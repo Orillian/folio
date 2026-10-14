@@ -653,6 +653,11 @@ describe('tree-changed signal over /events (real PG, real files, real sockets)',
     expect(await check()).toEqual(await expected());
     expect(await check()).toEqual([true, true, true, false, false]);
 
+    // A published space is open to the whole instance as well (public sites).
+    await authStore.setSpaceVisibility(slug, 'public');
+    expect(await check()).toEqual(await expected());
+    expect(await check()).toEqual([true, true, true, false, false]);
+
     await deleteTestSpace(slug);
   });
 });

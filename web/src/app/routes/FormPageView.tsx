@@ -21,6 +21,8 @@ export interface FormPageViewProps {
   canEdit: boolean;
   /** Present only for an anonymous share-link guest — forwarded to POST /api/forms/:id/submit. */
   shareToken?: string;
+  /** The public site's anonymous reader: the form is shown, but there is nothing to send it with (no session, no share token). */
+  submitDisabled?: boolean;
 }
 
 /**
@@ -31,7 +33,7 @@ export interface FormPageViewProps {
  * worth adding: the generic page routes already hand back the whole file
  * for a table, and a form rides the same "content is `markdown`" contract.
  */
-export function FormPageView({ pageId, space, markdown, canEdit, shareToken }: FormPageViewProps) {
+export function FormPageView({ pageId, space, markdown, canEdit, shareToken, submitDisabled }: FormPageViewProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
   const queryClient = useQueryClient();
@@ -103,6 +105,7 @@ export function FormPageView({ pageId, space, markdown, canEdit, shareToken }: F
         fields={form.fields}
         submitButtonLabel={form.submitButton}
         onSubmit={handleSubmit}
+        submitDisabled={submitDisabled}
       />
 
       {editing && (

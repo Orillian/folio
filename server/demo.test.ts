@@ -21,10 +21,12 @@ import * as storage from './storage.js';
 import { HttpError } from './errors.js';
 import { registerRoutes } from './routes.js';
 import { registerAssistantRoutes } from './assistant/routes.js';
+import { registerAssistantAdminRoutes } from './assistant/adminRoutes.js';
 import { registerAccessRoutes } from './access/routes.js';
 import { registerTrashRoutes } from './trash/routes.js';
 import { __setTrashRootForTests } from './trash/paths.js';
 import { registerMcpRoutes } from './mcpRoutes.js';
+import { registerGitHubConnectRoutes } from './auth/githubConnect.js';
 import { __resetOAuthRateLimitsForTests, registerOAuthRoutes } from './oauth/routes.js';
 import { DEMO_MCP_MAX_WRITE_ARGS_BYTES, DEMO_OAUTH_PER_MINUTE, __resetDemoLimitsForTests, demoMcpRpm, demoMcpWritesPerHour } from './demoLimits.js';
 import { __resetDemoConfigForTests, assertDemoAgentRootIntact, assertNotDemo, assertNotDemoAccount, demoInfoFor, demoMaxUploadBytes, getDemoAccounts, isDemoAccountEmail } from './demo.js';
@@ -216,11 +218,13 @@ describe('demo mode over HTTP', () => {
     });
     await app_.register(fastifyCookieModule.default);
     registerPublicAuthRoutes(app_);
+    registerGitHubConnectRoutes(app_);
     await app_.register(async (protectedScope) => {
       protectedScope.addHook('onRequest', session.requireSession);
       registerProtectedAuthRoutes(protectedScope);
       registerRoutes(protectedScope);
       registerAssistantRoutes(protectedScope);
+      registerAssistantAdminRoutes(protectedScope);
       registerAccessRoutes(protectedScope);
       registerTrashRoutes(protectedScope);
     });
@@ -269,6 +273,9 @@ describe('demo mode over HTTP', () => {
   const DISABLED: { name: string; method: 'GET' | 'POST' | 'PUT' | 'PATCH'; url: string; payload?: unknown }[] = [
     { name: 'create a PAT', method: 'POST', url: '/api/me/tokens' },
     { name: 'save an AI key', method: 'PUT', url: '/api/assistant/settings/key' },
+    { name: 'save the instance-wide AI key', method: 'PUT', url: '/api/admin/assistant/key' },
+    { name: 'change the AI key policy', method: 'PUT', url: '/api/admin/assistant/key-policy' },
+    { name: 'save a space AI key', method: 'PUT', url: '/api/spaces/any/assistant-key' },
     { name: 'start an AI run', method: 'POST', url: '/api/assistant/runs' },
     { name: 'start an AI run (legacy stream)', method: 'POST', url: '/api/assistant/chat/stream' },
     { name: 'list remote branches', method: 'POST', url: '/api/git/branches' },
@@ -297,6 +304,29 @@ describe('demo mode over HTTP', () => {
     setDemoEnv({});
     const res = await app.inject({ method, url, headers: { cookie: realAdminCookie }, payload: payload ?? {} });
     expect(res.body).not.toMatch(/disabled in the public demo/);
+  });
+
+  it('demo mode: "Connect with GitHub" is off — no button flag, and /start goes back to the app instead of to GitHub', async () => {
+    const saved = { id: process.env.GITHUB_CLIENT_ID, secret: process.env.GITHUB_CLIENT_SECRET };
+    process.env.GITHUB_CLIENT_ID = 'test-client-id';
+    process.env.GITHUB_CLIENT_SECRET = 'test-client-secret';
+    try {
+      const config = await app.inject({ method: 'GET', url: '/api/config', headers: { cookie: realAdminCookie } });
+      expect(config.json().githubOAuth).toBe(false);
+      const start = await app.inject({ method: 'GET', url: '/api/auth/github-connect/start', headers: { cookie: demoEditorCookie } });
+      expect(start.statusCode).toBe(302);
+      expect(String(start.headers.location)).toMatch(/\/\?gitConnect=demo$/);
+      expect(String(start.headers.location)).not.toContain('github.com');
+
+      setDemoEnv({});
+      const outside = await app.inject({ method: 'GET', url: '/api/config', headers: { cookie: realAdminCookie } });
+      expect(outside.json().githubOAuth).toBe(true);
+    } finally {
+      if (saved.id === undefined) delete process.env.GITHUB_CLIENT_ID;
+      else process.env.GITHUB_CLIENT_ID = saved.id;
+      if (saved.secret === undefined) delete process.env.GITHUB_CLIENT_SECRET;
+      else process.env.GITHUB_CLIENT_SECRET = saved.secret;
+    }
   });
 
   it('demo mode: no PAT is minted, and an ordinary preference (language) still saves', async () => {

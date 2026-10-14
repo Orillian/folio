@@ -227,7 +227,7 @@ export async function undoPageChange(actor: User, space: string, id: string): Pr
     case 'page.move':
       if (!row.before_state) throw conflict('this change cannot be undone');
       requireSame(current.path, row.after_state.path);
-      page = await storage.movePage(entry.id, row.before_state.parentPath);
+      page = await collab.movePage(entry.id, row.before_state.parentPath, author);
       break;
     case 'page.slug':
       if (!row.before_state) throw conflict('this change cannot be undone');

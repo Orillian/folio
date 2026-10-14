@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { setUpTestSchema, deleteTestSpace } from '../db/testSchema.js';
 import * as storage from '../storage.js';
 import * as authStore from '../auth/store.js';
+import { updatePublicSettings } from '../publicSiteRoutes.js';
 import { applyAccessBulk, buildAccessMatrix, getSpaceAccessLog, getUserAccess, updateSpaceVisibility } from './routes.js';
 
 async function pollUntil<T>(check: () => Promise<T | undefined>, timeoutMs = 5000, intervalMs = 50): Promise<T> {
@@ -229,6 +230,21 @@ describe('access/routes (round 27, real PG)', () => {
     const asSpaceAdmin = await getSpaceAccessLog(spaceAdmin, space.slug);
     expect(asSpaceAdmin.length).toBeGreaterThan(0);
     await expect(getSpaceAccessLog(editor, space.slug)).rejects.toThrow();
+
+    await deleteTestSpace(space.slug);
+  });
+
+  it('getSpaceAccessLog: a publishing-settings change shows up in the feed as space.public_settings (and not in any one user\'s own access log)', async () => {
+    const instanceAdmin = await authStore.createUser({ email: `log-pub-admin-${Date.now()}@t.local`, name: 'A', passwordHash: 'x', isAdmin: true });
+    const space = await storage.createSpace(`Log Public Settings ${Date.now()}`, null);
+
+    await updatePublicSettings(instanceAdmin, space.slug, { subdomain: null, domain: 'docs.example.com', allowDownload: true, allowAssistant: false }, 'https://folio.example.com');
+
+    const entry = await pollUntil(async () => (await getSpaceAccessLog(instanceAdmin, space.slug)).find((e) => e.action === 'space.public_settings'));
+    expect(entry.actorId).toBe(instanceAdmin.id);
+    expect(entry.target).toBe(space.slug);
+    expect(entry.meta).toEqual({ subdomain: null, domain: 'docs.example.com', allowDownload: true, allowAssistant: false });
+    expect((await getUserAccess(instanceAdmin, instanceAdmin.id)).log.some((e) => e.action === 'space.public_settings')).toBe(false);
 
     await deleteTestSpace(space.slug);
   });

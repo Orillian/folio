@@ -6,6 +6,7 @@ import { Bot, ChevronUp, History, Loader2, MessageCircle, Minus, Plus, Send, Set
 import type { AssistantFeedbackRating, AssistantMessage, AssistantRunMode } from '@shared/contracts';
 import { api } from '../api';
 import { useAssistantRun } from './runState';
+import { runStepText } from './runStream';
 import { useApiErrorText } from '../errorText';
 import { useActivePageId, useLocalStorage } from '../hooks';
 import { useToast } from '../ui/Toast';
@@ -173,7 +174,8 @@ export function AssistantPanel({ open, onClose }: AssistantPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const busy = run.isRunning || isSubmitting;
 
-  const settings = useQuery({ queryKey: ['assistant', 'settings'], queryFn: api.getAssistantSettings });
+  // Per space: a space admin's shared key (source 'space') exists only while the chat is opened in that space.
+  const settings = useQuery({ queryKey: ['assistant', 'settings', space], queryFn: () => api.getAssistantSettings(space) });
   const conversation = useQuery({
     queryKey: ['assistant', 'chat', conversationId ?? 'latest'],
     queryFn: () => api.getAssistantConversation(conversationId),
@@ -255,12 +257,7 @@ export function AssistantPanel({ open, onClose }: AssistantPanelProps) {
   function rate(message: AssistantMessage, rating: AssistantFeedbackRating | null) {
     feedback.mutate({ messageId: message.id, rating, previous: message.feedback ?? null });
   }
-  const step = run.step;
-  const statusText = step
-    ? step.status === 'tool' && step.label
-      ? t('assistant.chat.status.tool', { tool: step.label })
-      : (step.label ?? t(`assistant.chat.status.${step.status}`))
-    : t('assistant.chat.status.starting');
+  const statusText = runStepText(t, run.step);
 
   function newConversation() {
     if (busy) return;
@@ -588,7 +585,7 @@ export function AssistantPanel({ open, onClose }: AssistantPanelProps) {
         </>
       )}
 
-      {settingsOpen && <AssistantSettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <AssistantSettingsModal space={space} onClose={() => setSettingsOpen(false)} />}
     </section>
   );
 }

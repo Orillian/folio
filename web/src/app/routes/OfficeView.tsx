@@ -11,6 +11,8 @@ export interface OfficeViewProps {
   format: OfficeFormat;
   /** The page's updatedAt. A replaced file has a new one: the viewer reloads the bytes (and shows the new version) instead of keeping the old render. */
   version?: string;
+  /** Where the bytes are served from, when that is not the session route (the public site: `/files/<space>/<path>`). Defaults to GET /api/pages/:id/file. */
+  src?: string;
 }
 
 type ViewState = 'loading' | 'ready' | 'error';
@@ -41,7 +43,7 @@ interface DestroyableViewer {
  * time would wreck that fit. Loading/error states are absolutely-positioned
  * overlays on top of it instead.
  */
-export function OfficeView({ pageId, title, format, version }: OfficeViewProps) {
+export function OfficeView({ pageId, title, format, version, src }: OfficeViewProps) {
   const { t } = useTranslation('app');
   const containerRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<ViewState>('loading');
@@ -53,8 +55,9 @@ export function OfficeView({ pageId, title, format, version }: OfficeViewProps) 
 
     (async () => {
       try {
-        const res = await fetch(api.pageFileUrl(pageId, false, version), { credentials: 'include', cache: 'no-store' });
-        if (!res.ok) throw new Error(`GET ${api.pageFileUrl(pageId, false, version)} -> ${res.status}`);
+        const url = src ?? api.pageFileUrl(pageId, false, version);
+        const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+        if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
         const bytes = await res.arrayBuffer();
         const container = containerRef.current;
         if (cancelled || !container) return;
@@ -90,7 +93,7 @@ export function OfficeView({ pageId, title, format, version }: OfficeViewProps) 
     };
     // `title` deliberately excluded — it never affects what gets rendered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageId, format, version]);
+  }, [pageId, format, version, src]);
 
   return (
     <div className="relative h-full bg-neutral-100 dark:bg-neutral-950">
@@ -107,7 +110,7 @@ export function OfficeView({ pageId, title, format, version }: OfficeViewProps) 
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-neutral-100 p-8 text-center text-sm text-neutral-500 dark:bg-neutral-950 dark:text-neutral-400">
           <p>{t('routes.office.renderFailed')}</p>
           <a
-            href={api.pageFileUrl(pageId, true)}
+            href={src ?? api.pageFileUrl(pageId, true)}
             className="rounded-md border border-neutral-300 px-3 py-1.5 text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800"
           >
             {t('routes.pdf.download')}

@@ -183,6 +183,26 @@ describe('slug rename (round 22, real git + real PG)', () => {
     await deleteTestSpace(space.slug);
   });
 
+  it('leaves the renamed page\'s OUTGOING relative links untouched: a rename keeps the directory depth, so they still resolve', async () => {
+    const space = await storage.createSpace(`Slug Rename Outgoing ${Date.now()}`, null);
+    const dir = storage.getSpaceDir(space.slug);
+    await fs.mkdir(path.join(dir, 'assets'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'assets', 'a.png'), 'png', 'utf8');
+    await fs.mkdir(path.join(dir, 'docs'), { recursive: true });
+    const outgoing = '# Old Name\n\n![img](../assets/a.png) [sib](sibling.md) [top](../top.md#part "Top")\n';
+    await fs.writeFile(path.join(dir, 'docs', 'old-name.md'), outgoing, 'utf8');
+    await fs.writeFile(path.join(dir, 'docs', 'sibling.md'), '# Sibling\n', 'utf8');
+    await fs.writeFile(path.join(dir, 'top.md'), '# Top\n', 'utf8');
+    await storage.scanSpace(space.slug);
+    const page = (await storage.listEntries(space.slug)).find((e) => e.relPath === 'docs/old-name.md')!;
+
+    await collab.renamePageSlug(page.id, 'new-slug', AUTHOR);
+
+    expect(await storage.readFreshDocBody(page.id)).toBe(outgoing);
+
+    await deleteTestSpace(space.slug);
+  });
+
   it('409s when a page already exists with the requested slug at that location', async () => {
     const space = await storage.createSpace(`Slug Rename Conflict ${Date.now()}`, null);
     const a = await storage.createPage({ space: space.slug, parentPath: '', title: 'Page A', kind: 'doc' });

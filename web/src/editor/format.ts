@@ -89,8 +89,8 @@ function doubled(open: string, before: string, after: string): boolean {
   return open.length === 1 && before === open + open && after === open + open;
 }
 
-/** Shrink a selection onto the non-blank text inside it. */
-function trimRange(text: string, from: number, to: number): { from: number; to: number } {
+/** Shrink a selection onto the non-blank text inside it (a blank one is returned as it is). */
+export function trimRange(text: string, from: number, to: number): { from: number; to: number } {
   let start = from;
   let end = to;
   while (start < end && /\s/.test(text[start])) start++;
@@ -124,64 +124,80 @@ const HTML_TAGS: Partial<Record<InlineFormat, string[]>> = {
   highlight: ['mark'],
 };
 
+interface Marker {
+  from: number;
+  to: number;
+}
+
+/** Every run of exactly `need` copies of `ch` (an escaped one, or part of a longer run, is not a marker). */
+function markersIn(text: string, ch: string, need: number): Marker[] {
+  const out: Marker[] = [];
+  for (let i = 0; i < text.length; ) {
+    if (text[i] === '\\') {
+      i += 2;
+      continue;
+    }
+    if (text[i] !== ch) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < text.length && text[j] === ch) j++;
+    if (j - i === need) out.push({ from: i, to: j });
+    i = j;
+  }
+  return out;
+}
+
 /**
  * Marker runs of `format` in `text`, in document order. Symmetric markers
- * (`**`, `*`, `~~`, `` ` ``, `==`) pair up by turns — first opens, next closes
- * — the way a one-pass renderer reads them; a run of the marker character of
- * a different length (`***`) is not this format's marker and is skipped, and
- * so is an escaped one. A highlight closer may carry `{.token}`. HTML pairs
- * (`<ins>…</ins>`, `<mark>…</mark>`) pair by tag name.
+ * (`**`, `*`, `~~`, `==`) pair the way CommonMark reads them: an opener must
+ * be followed by a non-space and a closer preceded by one, so `*word *` is
+ * NOT a run (the parser shows it as literal stars — the owner, 13.10.2026,
+ * "Goals Q4 2026": `*… we pick them *` stayed raw in Live and the I button
+ * lit up, because the old pairing just took stars two by two). Those
+ * leftovers are `brokenRunsOf`. Inline code has no such rule. A run of the
+ * marker character of a different length (`***`) is not this format's marker
+ * and is skipped, and so is an escaped one. A highlight closer may carry
+ * `{.token}`. HTML pairs (`<ins>…</ins>`, `<mark>…</mark>`) pair by tag name.
  */
 export function runsOf(text: string, format: InlineFormat): FormatRun[] {
   const runs: FormatRun[] = format === 'underline' ? plusRuns(text) : [];
   const { open } = INLINE_MARKS[format];
-  const symmetric = format !== 'underline';
-  if (symmetric) {
-    const ch = open[0];
-    const need = open.length;
-    let opener: { from: number; to: number } | null = null;
-    for (let i = 0; i < text.length; ) {
-      if (text[i] === '\\') {
-        i += 2;
-        continue;
-      }
-      if (text[i] !== ch) {
-        i++;
-        continue;
-      }
-      let j = i;
-      while (j < text.length && text[j] === ch) j++;
-      if (j - i !== need) {
-        i = j;
-        continue;
-      }
-      if (!opener) {
-        opener = { from: i, to: j };
-        i = j;
-        continue;
-      }
-      let to = j;
-      let color: BgToken | undefined;
-      if (format === 'highlight') {
-        const attr = HIGHLIGHT_ATTR.exec(text.slice(j));
-        if (attr) {
-          to = j + attr[0].length;
-          if ((BG_TOKENS as readonly string[]).includes(attr[1])) color = attr[1] as BgToken;
+  if (format !== 'underline') {
+    const markers = markersIn(text, open[0], open.length);
+    // Inline code has no flanking rule (a code span may start or end with a
+    // space); every other symmetric marker pairs the way CommonMark does.
+    const flanking = format !== 'code';
+    let opener: Marker | null = null;
+    for (const marker of markers) {
+      const canClose = !flanking || (marker.from > 0 && !/\s/.test(text[marker.from - 1]));
+      const canOpen = !flanking || (marker.to < text.length && !/\s/.test(text[marker.to]));
+      if (opener && canClose && marker.from > opener.to) {
+        let to = marker.to;
+        let color: BgToken | undefined;
+        if (format === 'highlight') {
+          const attr = HIGHLIGHT_ATTR.exec(text.slice(marker.to));
+          if (attr) {
+            to = marker.to + attr[0].length;
+            if ((BG_TOKENS as readonly string[]).includes(attr[1])) color = attr[1] as BgToken;
+          }
         }
-      }
-      if (i > opener.to) {
         runs.push({
           outerFrom: opener.from,
           innerFrom: opener.to,
-          innerTo: i,
+          innerTo: marker.from,
           outerTo: to,
           open: text.slice(opener.from, opener.to),
-          close: text.slice(i, to),
+          close: text.slice(marker.from, to),
           color,
         });
+        opener = null;
+      } else if (canOpen) {
+        // A newer opener replaces a pending one: in `*a *b*` the first star
+        // stays literal and `*b*` is the emphasis, as CommonMark reads it.
+        opener = marker;
       }
-      opener = null;
-      i = to;
     }
   }
   const tags = HTML_TAGS[format];
@@ -218,6 +234,55 @@ export function runsOf(text: string, format: InlineFormat): FormatRun[] {
   return runs.sort((a, b) => a.outerFrom - b.outerFrom);
 }
 
+/**
+ * Marker pairs that read like a run but are not one, because whitespace sits
+ * just inside a marker: `*word *`, `* word*`, `** word **`. The parser shows
+ * their markers as literal text, so they are never a run (and never an
+ * "active" button); what the toolbar does with them is `repairRunEdit`.
+ *
+ * Only markers no real run uses are paired, two neighbours at a time, and
+ * only when there is text between them on the same line. A list bullet (`* `
+ * at the start of a line) is not a marker. Inline code has no flanking rule,
+ * so it has no broken pairs.
+ */
+export function brokenRunsOf(text: string, format: InlineFormat): FormatRun[] {
+  if (format === 'code') return [];
+  const { open } = INLINE_MARKS[format];
+  const used = new Set<number>();
+  for (const run of runsOf(text, format)) {
+    if (!run.legacy) used.add(run.outerFrom).add(run.innerTo);
+  }
+  const scan = format === 'underline' ? maskCode(text) : text;
+  const loose = markersIn(scan, open[0], open.length).filter((marker) => {
+    if (used.has(marker.from)) return false;
+    if (open !== '*') return true;
+    const lineStart = text.lastIndexOf('\n', marker.from - 1) + 1;
+    const bullet = !/\S/.test(text.slice(lineStart, marker.from)) && /\s/.test(text[marker.to] ?? ' ');
+    return !bullet;
+  });
+  const out: FormatRun[] = [];
+  for (let k = 0; k + 1 < loose.length; ) {
+    const a = loose[k];
+    const b = loose[k + 1];
+    const inner = text.slice(a.to, b.from);
+    if (/\S/.test(inner) && !inner.includes('\n') && (/^\s/.test(inner) || /\s$/.test(inner))) {
+      // A highlight closer carries its colour: `==word =={.green}`.
+      const attr = format === 'highlight' ? HIGHLIGHT_ATTR.exec(text.slice(b.to)) : null;
+      const outerTo = b.to + (attr ? attr[0].length : 0);
+      out.push({
+        outerFrom: a.from,
+        innerFrom: a.to,
+        innerTo: b.from,
+        outerTo,
+        open: text.slice(a.from, a.to),
+        close: text.slice(b.from, outerTo),
+      });
+      k += 2;
+    } else k += 1;
+  }
+  return out;
+}
+
 /** The run whose text (markers included) holds `[from, to]`, if any. */
 function runAround(runs: readonly FormatRun[], from: number, to: number): FormatRun | null {
   return runs.find((run) => run.outerFrom <= from && to <= run.outerTo) ?? null;
@@ -236,6 +301,43 @@ export function formatActiveIn(text: string, from: number, to: number, format: I
   if (runAround(runs, sel.from, sel.to) !== null) return true;
   // Underline can also be several runs side by side (`++a++ ++b++`), all of it selected.
   return format === 'underline' && sel.from < sel.to && underlineCovers(text, runs, sel.from, sel.to);
+}
+
+/**
+ * The edit for a selection that is nothing but whitespace: none. A pair of
+ * markers around blanks is not a format in any renderer, so every button
+ * leaves such a selection alone (and keeps it selected).
+ */
+function blankSelection(text: string, from: number, to: number): FormatEdit | null {
+  if (from >= to || /\S/.test(text.slice(from, to))) return null;
+  return { changes: [], selection: { from, to } };
+}
+
+/**
+ * Mend a broken pair (`brokenRunsOf`): the markers move to the first and last
+ * non-blank character and the blanks they were hugging go outside, so
+ * `*word *` becomes `*word* ` and `* word*` becomes ` *word*`. Pressing the
+ * button on such text means "make this italic", and this is the one reading
+ * of it that ends with the style actually showing; adding another pair around
+ * the old stars (`**word* *`) would only bury the problem.
+ */
+function repairRunEdit(text: string, run: FormatRun, from: number, to: number): FormatEdit {
+  const inner = text.slice(run.innerFrom, run.innerTo);
+  const lead = /^\s*/.exec(inner)![0].length;
+  const trail = /\s*$/.exec(inner)![0].length;
+  const coreFrom = run.innerFrom + lead;
+  const coreTo = run.innerTo - trail;
+  const changes: TextChange[] = [];
+  if (lead > 0) {
+    changes.push({ from: run.outerFrom, to: run.innerFrom, insert: '' }, { from: coreFrom, to: coreFrom, insert: run.open });
+  }
+  if (trail > 0) {
+    changes.push({ from: coreTo, to: coreTo, insert: run.close }, { from: run.innerTo, to: run.outerTo, insert: '' });
+  }
+  const a = Math.max(coreFrom, Math.min(from, coreTo));
+  const b = Math.max(a, Math.min(to, coreTo));
+  const start = mapPos(changes, a, 1);
+  return { changes, selection: { from: start, to: a === b ? start : mapPos(changes, b, -1) } };
 }
 
 /** Back over whitespace from `pos`, no further than `floor`. */
@@ -302,8 +404,15 @@ export function inlineFormatEdit(
   const start = Math.max(0, Math.min(from, text.length));
   const end = Math.max(start, Math.min(to, text.length));
 
+  const blank = blankSelection(text, start, end);
+  if (blank) return blank;
+
   const inner = start === end ? { from: start, to: end } : trimRange(text, start, end);
   const run = runAround(runsOf(text, format), inner.from, inner.to);
+  if (!run) {
+    const broken = runAround(brokenRunsOf(text, format), inner.from, inner.to);
+    if (broken) return repairRunEdit(text, broken, inner.from, inner.to);
+  }
   if (run) {
     // The whole run, markers or not: off. Checked on the run rather than on
     // the plain marker strings so a `<mark>` run or a coloured `==…=={.x}` run
@@ -612,9 +721,16 @@ export function underlineWrapSegments(
 function underlineEdit(text: string, from: number, to: number): FormatEdit {
   const start = Math.max(0, Math.min(from, text.length));
   const end = Math.max(start, Math.min(to, text.length));
+  const blank = blankSelection(text, start, end);
+  if (blank) return blank;
   const sel = start === end ? { from: start, to: end } : trimRange(text, start, end);
   const runs = runsOf(text, 'underline');
   const containers = containerRuns(text);
+
+  if (!runAround(runs, sel.from, sel.to)) {
+    const broken = runAround(brokenRunsOf(text, 'underline'), sel.from, sel.to);
+    if (broken) return repairRunEdit(text, broken, sel.from, sel.to);
+  }
 
   if (sel.from === sel.to) {
     const run = runAround(runs, sel.from, sel.to);
@@ -740,6 +856,8 @@ export function highlightColorEdit(text: string, from: number, to: number, color
   const marks = highlightMarks(color);
   const start = Math.max(0, Math.min(from, text.length));
   const end = Math.max(start, Math.min(to, text.length));
+  const blank = blankSelection(text, start, end);
+  if (blank) return blank;
   const sel = start === end ? { from: start, to: end } : trimRange(text, start, end);
   const run = runAround(runsOf(text, 'highlight'), sel.from, sel.to);
   if (!run) {
@@ -804,6 +922,8 @@ const URL_LIKE = /^(?:[a-z][a-z\d+.-]*:|\/\/|\/|#|www\.)\S*$/i;
 export function linkEdit(text: string, from: number, to: number): FormatEdit {
   const start = Math.max(0, Math.min(from, text.length));
   const end = Math.max(start, Math.min(to, text.length));
+  const blank = blankSelection(text, start, end);
+  if (blank) return blank;
   const inner = start === end ? { from: start, to: end } : trimRange(text, start, end);
   const selected = text.slice(inner.from, inner.to);
 

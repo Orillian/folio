@@ -1,7 +1,7 @@
 {
   "name": "foliowiki",
   "displayName": "Folio Wiki",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Read and update your team's Folio wiki from Cursor: the Folio MCP server, a rule that sends the agent to the wiki for conventions, and skills that explain how to work with pages, tables and boards.",
   "author": {
     "name": "Evergreen"

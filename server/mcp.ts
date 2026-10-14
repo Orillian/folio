@@ -47,7 +47,8 @@ import type { PageIndexEntry } from './storage.js';
 import * as collab from './collab.js';
 import * as gitSync from './gitSync.js';
 import * as links from './links.js';
-import { searchPages } from './search.js';
+import { searchPages, searchPublicSpace } from './search.js';
+import { getPublicSpace, isPublicPage, publicReadablePageIds } from './publicSites.js';
 import * as session from './auth/session.js';
 import { recordAudit } from './audit.js';
 import { isAgentPath } from './agentPath.js';
@@ -135,7 +136,40 @@ export interface McpActor {
   user: User;
   scopes: ApiTokenScope[];
   tokenId: string;
+  /**
+   * Public sites (13.10.2026): set ONLY for an anonymous visitor's assistant run
+   * (server/assistant/publicRoutes.ts, user = the "Public visitor" system user).
+   * The actor then sees exactly ONE published space, read-only, and in it only
+   * the public page set (publicSites.isPublicPage: no restricted page, no
+   * `.agent/**`, no `_templates/`) — every gate below (checkSpaceRole,
+   * checkPageRole, list_spaces, list_tree, the searches, folio_table_list,
+   * get_backlinks) answers for that space alone, anything else is the same
+   * `space not found` / `page not found` as a slug that does not exist. Page
+   * history (authors' names and emails, old revisions) is not part of a public
+   * site and is refused.
+   */
+  publicSpace?: string;
 }
+
+/** The space a public-site actor is confined to, or undefined for a normal (signed-in / PAT) actor. */
+function publicSpaceOf(actor: McpActor): string | undefined {
+  return actor.publicSpace;
+}
+
+/** Can `actor` see `entry` at all (viewer)? The per-page twin of checkPageRole for lists of pages (backlinks). */
+async function canSeeEntry(actor: McpActor, entry: PageIndexEntry): Promise<boolean> {
+  const publicSpace = publicSpaceOf(actor);
+  if (publicSpace !== undefined) return entry.space === publicSpace && (await isPublicPage(entry));
+  return (await session.effectivePageRole(actor.user, entry)) !== undefined;
+}
+
+/** Page ids of `space` the actor may list (tree, tables). The public actor: the space's public page set. */
+async function listablePageIds(actor: McpActor, space: string): Promise<Set<string>> {
+  if (publicSpaceOf(actor) !== undefined) return space === actor.publicSpace ? publicReadablePageIds(space) : new Set();
+  return session.readablePageIds(actor.user, space);
+}
+
+const NOT_ON_PUBLIC_SITE = 'not available on a public site';
 
 function errorResult(message: string): CallToolResult {
   return { content: [{ type: 'text', text: message }], isError: true };
@@ -314,8 +348,18 @@ function boardAsText(summary: ReturnType<typeof boardSceneSummary>): string {
   return lines.length ? lines.join('\n').trimEnd() : '(empty board)';
 }
 
-/** Same shape as auth/session.ts's requireSpaceRole, reimplemented off a plain User (no Fastify request here) — returns an error string instead of throwing an HttpError. */
-async function checkSpaceRole(user: User, space: string, min: SpaceRole): Promise<string | null> {
+/**
+ * Same shape as auth/session.ts's requireSpaceRole, reimplemented off the actor's plain User (no Fastify request
+ * here) — returns an error string instead of throwing an HttpError. A public-site actor (actor.publicSpace) is a
+ * viewer of that one published space and of nothing else: any other slug is `space not found`.
+ */
+async function checkSpaceRole(actor: McpActor, space: string, min: SpaceRole): Promise<string | null> {
+  const publicSpace = publicSpaceOf(actor);
+  if (publicSpace !== undefined) {
+    if (space !== publicSpace || !(await getPublicSpace(space))) return 'space not found';
+    return min === 'viewer' ? null : `requires ${min}+ role in this space`;
+  }
+  const user = actor.user;
   if (!(await storage.spaceExists(space))) return 'space not found';
   const role = await session.effectiveRole(user, space);
   // No role at all: the same answer as for a slug that does not exist, so that a caller (the assistant included)
@@ -325,14 +369,24 @@ async function checkSpaceRole(user: User, space: string, min: SpaceRole): Promis
   return null;
 }
 
-/** Same shape as auth/session.ts's requirePageRole — including its `.agent/**` -> "not found" (never a role-mismatch error that would reveal the page exists) for anyone below space/instance admin. */
-async function checkPageRole(user: User, id: string, min: SpaceRole): Promise<{ entry?: PageIndexEntry; error?: string }> {
+/**
+ * Same shape as auth/session.ts's requirePageRole — including its `.agent/**` -> "not found" (never a role-mismatch
+ * error that would reveal the page exists) for anyone below space/instance admin. A public-site actor reads a page
+ * only when it is in its one space AND in that space's public page set; everything else is `page not found`.
+ */
+async function checkPageRole(actor: McpActor, id: string, min: SpaceRole): Promise<{ entry?: PageIndexEntry; error?: string }> {
   let entry: PageIndexEntry;
   try {
     entry = await storage.requireEntry(id);
   } catch {
     return { error: 'page not found' };
   }
+  const publicSpace = publicSpaceOf(actor);
+  if (publicSpace !== undefined) {
+    if (entry.space !== publicSpace || !(await isPublicPage(entry))) return { error: 'page not found' };
+    return min === 'viewer' ? { entry } : { error: `requires ${min}+ role in this page's space` };
+  }
+  const user = actor.user;
   if (isAgentPath(entry.relPath) && !(await session.canAdministerSpace(user, entry.space))) return { error: 'page not found' };
   const role = await session.effectivePageRole(user, entry);
   // No role at all (a private space, or a page hidden by page-level access): "not found", like `.agent` above.
@@ -362,8 +416,8 @@ async function checkAgentWriteAllowed(user: User, space: string, parentPath: str
 const CALL_SCHEMA_FIRST_NOTE = 'Call folio_table_schema first to learn this table\'s REAL column ids, types and option values — never guess them from a title or prior knowledge of a similar table.';
 
 /** Checks role + that the target page really is a data table; one shared shape for every folio_table_* tool. */
-async function checkTableRole(user: User, id: string, min: SpaceRole): Promise<{ entry?: PageIndexEntry; error?: string }> {
-  const { entry, error } = await checkPageRole(user, id, min);
+async function checkTableRole(actor: McpActor, id: string, min: SpaceRole): Promise<{ entry?: PageIndexEntry; error?: string }> {
+  const { entry, error } = await checkPageRole(actor, id, min);
   if (error || !entry) return { error };
   if (entry.kind !== 'table') return { error: 'page is not a data table' };
   return { entry };
@@ -426,6 +480,13 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     'list_spaces',
     { annotations: READ_ONLY, outputSchema: outputSchemas.list_spaces, title: 'List spaces', description: 'Lists every space (wiki) the caller can see: slug, name, page count, and the caller’s own role in it.' },
     async () => {
+      const publicSpace = publicSpaceOf(actor);
+      if (publicSpace !== undefined) {
+        // Only the one published space, and only what its public site shows: no git remote, no asset mode, a page count of the public set.
+        const site = await getPublicSpace(publicSpace);
+        const spaces = site ? [{ slug: site.slug, name: site.name, pageCount: (await publicReadablePageIds(site.slug)).size, myRole: 'viewer' }] : [];
+        return structuredResult(spaces, { spaces });
+      }
       const memberships = await session.membershipsFor(actor.user);
       const spaces = (await storage.listSpaces())
         .filter((s) => s.slug in memberships)
@@ -444,9 +505,9 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       inputSchema: { space: z.string().describe('Space slug') },
     },
     async ({ space }) => {
-      const err = await checkSpaceRole(actor.user, space, 'viewer');
+      const err = await checkSpaceRole(actor, space, 'viewer');
       if (err) return errorResult(err);
-      const tree = await storage.getTree(space, await session.readablePageIds(actor.user, space));
+      const tree = await storage.getTree(space, await listablePageIds(actor, space));
       return structuredResult(tree, { tree });
     },
   );
@@ -461,7 +522,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       inputSchema: { id: z.string().describe('Page id') },
     },
     async ({ id }) => {
-      const { entry, error } = await checkPageRole(actor.user, id, 'viewer');
+      const { entry, error } = await checkPageRole(actor, id, 'viewer');
       if (error || !entry) return errorResult(error ?? 'page not found');
       if (entry.kind === 'doc') {
         const markdown = collab.isDocLive(id) ? (collab.getLiveText(id) ?? entry.body ?? '') : await storage.readFreshDocBody(id);
@@ -505,7 +566,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     async ({ space, parentPath, title, sketch, scene }) => {
       if (!hasWriteScope) return errorResult('this action requires a token with write scope');
       if ((sketch === undefined) === (scene === undefined)) return errorResult('provide exactly one of sketch or scene');
-      const err = await checkSpaceRole(actor.user, space, 'editor');
+      const err = await checkSpaceRole(actor, space, 'editor');
       if (err) return errorResult(err);
       const agentErr = await checkAgentWriteAllowed(actor.user, space, parentPath);
       if (agentErr) return errorResult(agentErr);
@@ -546,7 +607,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     async ({ id, sketch, scene }) => {
       if (!hasWriteScope) return errorResult('this action requires a token with write scope');
       if ((sketch === undefined) === (scene === undefined)) return errorResult('provide exactly one of sketch or scene');
-      const { entry, error } = await checkPageRole(actor.user, id, 'editor');
+      const { entry, error } = await checkPageRole(actor, id, 'editor');
       if (error || !entry) return errorResult(error ?? 'page not found');
       if (entry.kind !== 'board') return errorResult('page is not a board');
 
@@ -593,7 +654,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     },
     async ({ id, ops }) => {
       if (!hasWriteScope) return errorResult('this action requires a token with write scope');
-      const { entry, error } = await checkPageRole(actor.user, id, 'editor');
+      const { entry, error } = await checkPageRole(actor, id, 'editor');
       if (error || !entry) return errorResult(error ?? 'page not found');
       if (entry.kind !== 'board') return errorResult('page is not a board');
 
@@ -644,8 +705,14 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       // searchPages filters in SQL by user id and knows nothing of `disabled`; every other read goes through
       // effectiveRole, which gives a disabled user nothing. Same here.
       if (actor.user.disabled) return structuredResult([], { hits: [] });
+      const publicSpace = publicSpaceOf(actor);
+      if (publicSpace !== undefined) {
+        // A public-site actor searches its one space's public page set, whatever `space` says.
+        const hits = await searchPublicSpace(query, publicSpace);
+        return structuredResult(hits, { hits });
+      }
       if (space) {
-        const err = await checkSpaceRole(actor.user, space, 'viewer');
+        const err = await checkSpaceRole(actor, space, 'viewer');
         if (err) return errorResult(err);
       }
       const hits = await searchPages(query, { userId: actor.user.id, space, isInstanceAdmin: actor.user.isAdmin });
@@ -667,7 +734,12 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     },
     async ({ query }) => {
       // A disabled user sees nothing, same as search_pages.
-      const hits = actor.user.disabled ? [] : await searchPages(query, { userId: actor.user.id, isInstanceAdmin: actor.user.isAdmin });
+      const publicSpace = publicSpaceOf(actor);
+      const hits = actor.user.disabled
+        ? []
+        : publicSpace !== undefined
+          ? await searchPublicSpace(query, publicSpace)
+          : await searchPages(query, { userId: actor.user.id, isInstanceAdmin: actor.user.isAdmin });
       return jsonResult({ results: hits.map((h) => ({ id: h.id, title: h.title, url: pageUrl(h.space, h.id) })) });
     },
   );
@@ -683,7 +755,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     },
     async ({ id }) => {
       // Unknown id, private space, hidden page and `.agent` for a non-admin all give the same answer.
-      const { entry, error } = await checkPageRole(actor.user, id, 'viewer');
+      const { entry, error } = await checkPageRole(actor, id, 'viewer');
       if (error || !entry) return errorResult(error ?? 'page not found');
       let text: string;
       if (entry.kind === 'doc') {
@@ -734,7 +806,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     },
     async ({ space, parentPath, title, kind, markdown, columns }) => {
       if (!hasWriteScope) return errorResult('this action requires a token with write scope');
-      const err = await checkSpaceRole(actor.user, space, 'editor');
+      const err = await checkSpaceRole(actor, space, 'editor');
       if (err) return errorResult(err);
       const agentErr = await checkAgentWriteAllowed(actor.user, space, parentPath);
       if (agentErr) return errorResult(agentErr);
@@ -784,7 +856,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     },
     async ({ id, markdown }) => {
       if (!hasWriteScope) return errorResult('this action requires a token with write scope');
-      const { entry, error } = await checkPageRole(actor.user, id, 'editor');
+      const { entry, error } = await checkPageRole(actor, id, 'editor');
       if (error || !entry) return errorResult(error ?? 'page not found');
       if (entry.kind === 'table') return errorResult('update_page does not support data tables — use folio_table_insert/folio_table_update/folio_table_add_column instead');
       if (entry.kind !== 'doc') return errorResult('update_page only supports document pages, not boards');
@@ -820,7 +892,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       if (m[2] === 'p') {
         id = decodeURIComponent(m[3]);
       } else {
-        const err = await checkSpaceRole(actor.user, space, 'viewer');
+        const err = await checkSpaceRole(actor, space, 'viewer');
         if (err) return errorResult(err);
         try {
           id = (await storage.resolve(space, m[2] === 'd' ? decodeURIComponent(m[3]) : '')).id;
@@ -828,7 +900,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
           return errorResult('no page found for this link');
         }
       }
-      const { entry, error } = await checkPageRole(actor.user, id, 'viewer');
+      const { entry, error } = await checkPageRole(actor, id, 'viewer');
       if (error || !entry) return errorResult(error ?? 'page not found');
       const parentPathForChildren = entry.isIndex
         ? entry.relPath.replace(/\/?(index|README)\.md$/i, '')
@@ -847,7 +919,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       inputSchema: { id: z.string().describe('Page id') },
     },
     async ({ id }) => {
-      const { error } = await checkPageRole(actor.user, id, 'viewer');
+      const { error } = await checkPageRole(actor, id, 'viewer');
       if (error) return errorResult(error);
       const all = await links.getBacklinks(id);
       // Per-source-page check (mirrors routes.ts's GET /api/pages/:id/backlinks),
@@ -857,7 +929,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const backlinks = [];
       for (const backlink of all) {
         const source = await storage.getEntry(backlink.id);
-        if (source && (await session.effectivePageRole(actor.user, source))) backlinks.push(backlink);
+        if (source && (await canSeeEntry(actor, source))) backlinks.push(backlink);
       }
       return structuredResult(backlinks, { backlinks });
     },
@@ -873,7 +945,9 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       inputSchema: { id: z.string().describe('Page id') },
     },
     async ({ id }) => {
-      const { error } = await checkPageRole(actor.user, id, 'viewer');
+      // Authors' names/emails and past revisions are not part of a public site.
+      if (publicSpaceOf(actor) !== undefined) return errorResult(NOT_ON_PUBLIC_SITE);
+      const { error } = await checkPageRole(actor, id, 'viewer');
       if (error) return errorResult(error);
       const revisions = await gitSync.getPageHistory(id);
       return structuredResult(revisions, { revisions });
@@ -890,7 +964,8 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       inputSchema: { id: z.string().describe('Page id'), sha: z.string().describe('Commit sha, from page_history') },
     },
     async ({ id, sha }) => {
-      const { error } = await checkPageRole(actor.user, id, 'viewer');
+      if (publicSpaceOf(actor) !== undefined) return errorResult(NOT_ON_PUBLIC_SITE);
+      const { error } = await checkPageRole(actor, id, 'viewer');
       if (error) return errorResult(error);
       return structuredResult(await gitSync.getPageAtSha(id, sha));
     },
@@ -912,11 +987,13 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       description: 'Lists data table pages (id, title, path) in one space, or across every space the caller can see.',
       inputSchema: { space: z.string().optional().describe('Restrict to one space slug; omit to list across every visible space') },
     },
-    async ({ space }) => {
+    async ({ space: requested }) => {
+      // A public-site actor lists the tables of its one space, whatever `space` says.
+      const space = publicSpaceOf(actor) ?? requested;
       if (space) {
-        const err = await checkSpaceRole(actor.user, space, 'viewer');
+        const err = await checkSpaceRole(actor, space, 'viewer');
         if (err) return errorResult(err);
-        const allowed = await session.readablePageIds(actor.user, space);
+        const allowed = await listablePageIds(actor, space);
         const entries = (await storage.listEntries(space)).filter((e) => e.kind === 'table' && allowed.has(e.id));
         return structuredResult(entries.map(storage.toPageMeta), { tables: entries.map(storage.toPageMeta) });
       }
@@ -938,7 +1015,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       inputSchema: { id: z.string().describe('Table page id') },
     },
     async ({ id }) => {
-      const { entry, error } = await checkTableRole(actor.user, id, 'viewer');
+      const { entry, error } = await checkTableRole(actor, id, 'viewer');
       if (error || !entry) return errorResult(error ?? 'page not found');
       const snapshot = await tableService.getTableSnapshot(id);
       return structuredResult({ meta: snapshot.meta, columns: snapshot.columns, views: snapshot.views, rowCount: snapshot.rows.length });
@@ -964,7 +1041,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       },
     },
     async ({ id, filter, sort, q, view, limit, offset, format }) => {
-      const { error } = await checkTableRole(actor.user, id, 'viewer');
+      const { error } = await checkTableRole(actor, id, 'viewer');
       if (error) return errorResult(error);
       const result = await tableService.queryRows(id, { filter, sort, q, view, limit, offset, ctx: { currentUser: actor.user.username ?? undefined } });
       if (format === 'markdown') {
@@ -989,7 +1066,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     },
     async ({ id, rows }) => {
       if (!hasWriteScope) return errorResult('this action requires a token with write scope');
-      const { entry, error } = await checkTableRole(actor.user, id, 'editor');
+      const { entry, error } = await checkTableRole(actor, id, 'editor');
       if (error || !entry) return errorResult(error ?? 'page not found');
       gitSync.recordEditor(entry.space, { name: actor.user.name, email: actor.user.email });
       const result = await tableService.insertRows(id, rows);
@@ -1016,7 +1093,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     },
     async ({ id, rowId, filter, limit, values }) => {
       if (!hasWriteScope) return errorResult('this action requires a token with write scope');
-      const { entry, error } = await checkTableRole(actor.user, id, 'editor');
+      const { entry, error } = await checkTableRole(actor, id, 'editor');
       if (error || !entry) return errorResult(error ?? 'page not found');
       if (!rowId && !filter) return errorResult('provide either rowId or filter');
       if (filter && !limit) return errorResult('filter requires limit — an unbounded filtered update is not allowed');
@@ -1047,7 +1124,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     },
     async ({ id, rowIds }) => {
       if (!hasWriteScope) return errorResult('this action requires a token with write scope');
-      const { entry, error } = await checkTableRole(actor.user, id, 'editor');
+      const { entry, error } = await checkTableRole(actor, id, 'editor');
       if (error || !entry) return errorResult(error ?? 'page not found');
       gitSync.recordEditor(entry.space, { name: actor.user.name, email: actor.user.email });
       const result = await tableService.bulkRows(id, rowIds);
@@ -1072,7 +1149,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     },
     async ({ id, columnId, ...columnInput }) => {
       if (!hasWriteScope) return errorResult('this action requires a token with write scope');
-      const { entry, error } = await checkTableRole(actor.user, id, 'editor');
+      const { entry, error } = await checkTableRole(actor, id, 'editor');
       if (error || !entry) return errorResult(error ?? 'page not found');
       gitSync.recordEditor(entry.space, { name: actor.user.name, email: actor.user.email });
       const column = await tableService.addColumn(id, { ...columnInput, id: columnId });
@@ -1098,7 +1175,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
     },
     async ({ space, parentPath, title, columns }) => {
       if (!hasWriteScope) return errorResult('this action requires a token with write scope');
-      const err = await checkSpaceRole(actor.user, space, 'editor');
+      const err = await checkSpaceRole(actor, space, 'editor');
       if (err) return errorResult(err);
       const agentErr = await checkAgentWriteAllowed(actor.user, space, parentPath);
       if (agentErr) return errorResult(agentErr);

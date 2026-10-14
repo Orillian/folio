@@ -68,11 +68,7 @@ export function screenToSceneCoords(clientX: number, clientY: number, appState: 
 }
 
 /**
- * The inverse of screenToSceneCoords — used to find where a just-inserted
- * sticky's centre lands on screen, so BoardCanvas can dispatch a synthetic
- * dblclick there (see its own insertStickyNote comment for why that's the
- * only way to open a bound-text container for editing through the public
- * imperative API).
+ * The inverse of screenToSceneCoords — scene point to where it lands on screen.
  */
 export function sceneToScreenCoords(
   scenePoint: ScenePoint,

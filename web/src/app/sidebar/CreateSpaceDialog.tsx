@@ -12,9 +12,10 @@ import { Modal } from '../ui/Modal';
 import { LabeledInput } from '../ui/LabeledInput';
 import { ComboBox } from '../ui/ComboBox';
 import { GitCredentialForm } from '../git/GitCredentialForm';
+import { ConnectGitHubButton, hasGitHubComCredential, useGitHubOAuthEnabled } from '../git/ConnectGitHubButton';
 import { BranchField } from './BranchField';
 import { branchFieldReducer } from './gitBranches';
-import { filterProviderRepos, humanizeRepoName } from './gitRepos';
+import { filterProviderRepos, humanizeRepoName, providerReposErrorText } from './gitRepos';
 import { GitRepoTreePicker } from './GitRepoTreePicker';
 import '../i18n/register';
 
@@ -91,6 +92,7 @@ export function CreateSpaceDialog({ onClose, initialTab = 'empty' }: CreateSpace
   // in parallel) — retry:false, same as this file's existing `config` query.
   const credentials = useQuery({ queryKey: ['git-credentials'], queryFn: api.getGitCredentials, retry: false });
   const savedCredentials = credentials.data?.credentials ?? [];
+  const githubOAuth = useGitHubOAuthEnabled();
   const [selectedCredentialId, setSelectedCredentialId] = useState<string | null>(null);
   const selectedCredential = savedCredentials.find((c) => c.id === selectedCredentialId) ?? savedCredentials[0];
   const [addingCredential, setAddingCredential] = useState(false);
@@ -321,7 +323,9 @@ export function CreateSpaceDialog({ onClose, initialTab = 'empty' }: CreateSpace
               />
             </label>
             {selectedCredential && providerRepos.isError && (
-              <p className="-mt-2 text-xs text-neutral-500 dark:text-neutral-400">{t('sidebar.createSpace.reposFailed')}</p>
+              <p className="-mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+                {providerReposErrorText(t, providerRepos.error, selectedCredential.host) ?? t('sidebar.createSpace.reposFailed')}
+              </p>
             )}
             {selectedCredential && providerRepos.data && providerRepos.data.repos.length === 0 && (
               <p className="-mt-2 text-xs text-neutral-500 dark:text-neutral-400">{t('sidebar.createSpace.noRepos')}</p>
@@ -334,6 +338,9 @@ export function CreateSpaceDialog({ onClose, initialTab = 'empty' }: CreateSpace
               onChange={(e) => handleNameChange(e.target.value)}
             />
 
+            {!addingCredential && githubOAuth && credentials.isSuccess && !hasGitHubComCredential(savedCredentials) && (
+              <ConnectGitHubButton variant="inline" />
+            )}
             {!addingCredential ? (
               <button
                 type="button"

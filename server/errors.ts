@@ -1,11 +1,14 @@
 /** HTTP-aware error. Thrown from storage/collab/route code; caught centrally in index.ts. */
 export class HttpError extends Error {
   status: number;
+  /** Optional stable machine-readable code, sent next to the message so a client can localize without matching text. */
+  code?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
+    this.code = code;
   }
 }
 

@@ -349,6 +349,22 @@ export async function listRemoteBranches(repoUrl: string, token?: string): Promi
 }
 
 /**
+ * The remote's real default branch (the symref behind HEAD), for callers that
+ * were given no branch: a GitHub repository whose default is `master` must not
+ * be cloned as `main`. Returns null for an empty remote or when the remote
+ * cannot be probed, so the caller keeps its own fallback.
+ */
+export async function resolveRemoteDefaultBranch(repoUrl: string, token?: string): Promise<string | null> {
+  try {
+    const { branches, defaultBranch } = await listRemoteBranches(repoUrl, token);
+    // An empty remote can advertise an unborn HEAD; only a branch that really exists counts.
+    return defaultBranch && branches.includes(defaultBranch) ? defaultBranch : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Commits whatever is currently on disk under `dir` (used when
  * auto-creating a space's rootPath folder that didn't exist yet in the
  * cloned repo) and pushes if a remote is configured. Author is always

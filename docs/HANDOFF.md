@@ -4,13 +4,14 @@ The current state of Folio, for whoever picks the work up next — a person or
 an agent. It describes what exists now. It is rewritten with every public
 update rather than appended to, so there is no history to dig through.
 
-Version: **0.1.0**.
+Version: **0.2.0**.
 
 ## What Folio is
 
 A team wiki whose content lives in Git. People write in the browser, together
-and in real time; AI agents read and write the same pages through MCP. One
-server process, PostgreSQL, Redis, and a directory of Git repositories.
+and in real time; AI agents read and write the same pages through MCP; a space
+can be published as a read-only website. One server process, PostgreSQL, Redis,
+and a directory of Git repositories.
 
 ## How it is put together
 
@@ -24,15 +25,20 @@ server process, PostgreSQL, Redis, and a directory of Git repositories.
 | Storage | Holds | Can it be rebuilt? |
 |---|---|---|
 | Git repositories (`data/repos/<space>/`) | All page content | It is the source |
-| PostgreSQL | Accounts, access rights, sessions, tokens, the search index, page order for file pages, collaborative-editing snapshots (and with them whiteboard reactions), backups of live text the server replaced, trash records, notifications | The index — yes, by scanning the files. The rest — no |
-| Redis | Rate limits, locks, presence | Transient by design |
+| PostgreSQL | Accounts, access rights, sessions, tokens, the search index, page order for file pages, collaborative-editing snapshots (and with them whiteboard reactions), backups of live text the server replaced, trash records, notifications, the publishing settings of public sites, shared AI keys (encrypted), assistant conversations and analytics | The index — yes, by scanning the files. The rest — no |
+| Redis | The sign-in rate limit, locks, presence | Transient by design |
 | Asset store (local disk or S3) | Uploaded images and attachments, addressed by content hash | No |
+
+Some limits are only in the memory of the server process, not in Redis: the
+limits on public-site downloads and on questions to Folio AI, the cache that
+maps hosts to public sites, and the demo-mode limits on `/mcp` and the OAuth
+endpoints. A restart resets them, and a second process would count on its own.
 
 ### Pages and files
 
 | Kind | File | Notes |
 |---|---|---|
-| Document | `*.md` | Title is the first `#` heading. Front matter holds `id`, `order`, `icon`, `cover` |
+| Document | `*.md` | Title is the first `#` heading. Front matter holds Folio's own keys (`id`, `order`, `status`, `icon`, `cover`); keys written by other tools are kept as they are. A space bound to a folder of a repository writes no `id` at all (see "Spaces inside a product repository") |
 | Whiteboard | `*.excalidraw.svg` | An SVG with the editable scene embedded |
 | Data table | `*.table.md` | Schema and views in front matter, rows as a GFM table |
 | Form | `*.form.md` | Paired one to one with a data table |
@@ -219,6 +225,61 @@ conflict leaves the markers in the text and marks the space until they are
 gone. "Take the version from Git" resets a space to the remote branch after
 saving the current state into a backup branch.
 
+### Spaces inside a product repository
+
+A space can be bound to a folder of a repository (a root path such as
+`docs/`), so documentation lives next to the code and other tools keep reading
+the same files.
+
+- **Foreign front matter survives.** `server/frontmatter.ts` merges only
+  Folio's keys (`id`, `order`, `status`, `icon`, `cover`) into an existing
+  block, line by line. Keys from Docusaurus, MkDocs, Hugo or Jekyll, comments,
+  lists, quoting and line endings stay byte for byte. After the merge the block
+  is parsed again and only Folio's keys may differ; if anything else moved,
+  the block is rewritten from the parsed data without losing a key. A block
+  that cannot be parsed is not touched.
+- **Light footprint.** A space with a root path (`isLightFootprintSpace`)
+  never gets an `id` written into its files, neither on a scan nor on create
+  or save. The id lives in the index, found again through the mechanism that
+  file pages already use (a claim, the same path, an orphan of the same size,
+  else a deterministic id from the path), and move, rename, copy, duplicate and
+  restore from the trash all pass their claims on. The space's `.folio` file is
+  a dotfile inside the folder, `<rootPath>/.<slug>.folio`. A space that already
+  has ids in its files or a `<slug>.folio` in the repository root keeps
+  working as it did, without a migration. A space without a root path writes
+  its `id` as before.
+- **Images in the repository.** A per-space setting (space menu, "Image
+  storage"; `PUT /api/spaces/:space/asset-mode`, audited as `space.asset_mode`)
+  sends new pasted images to `assets/` under the content root and links them
+  with a relative path (`assetLinkTarget` in `uploads.ts`), so GitHub shows
+  them.
+- **Moving a page keeps links working.** `collab.movePage` (and its undo)
+  recalculates the relative links of the moved pages and rewrites the links to
+  them from other pages, all in one commit (`docs: move <old> -> <new>`).
+  Only `[text](path)` links and images are rewritten. A scan indexes links
+  after the whole walk, so a link to a page that sorts later is not stored as
+  broken.
+
+### Git providers
+
+- **Connect with GitHub** (`server/auth/githubConnect.ts`). A signed-in person
+  links a github.com account in "Git access" through a GitHub OAuth App instead
+  of pasting a token. It is not a sign-in method: `GET
+  /api/auth/github-connect/start|callback` need the cookie session. State,
+  PKCE (S256), the user id and the return path travel in a cookie sealed with
+  `FOLIO_SECRET` (AES-GCM); the scope is `repo`; the token is saved as the
+  person's git credential for github.com (migration 036 adds `source`, `pat` or
+  `oauth`, and `account_login`), replacing a token saved earlier. `GET
+  /api/config` reports `githubOAuth` only when both keys and `FOLIO_SECRET`
+  are set and demo mode is off. GitHub Enterprise still uses tokens.
+- **Repository lists** in the "create space" dialog follow the provider's
+  pagination (never leaving the original host), failures come back typed
+  (invalid token, rate limit, SAML single sign-on, forbidden, unreachable), and
+  a space created without a branch asks the remote for its real default branch.
+- The request log drops the query string of the Google and GitHub callbacks
+  (a one-time code) and the guest token of a public-site conversation
+  (`server/logRedaction.ts`).
+
 ### Offline
 
 A page created offline gets its final id on the client and keeps its Yjs
@@ -230,15 +291,17 @@ There is no service worker: Folio itself is loaded from the server.
 
 ### Access
 
-Roles per space (admin, editor, viewer); space visibility (private, or open
-to the instance for reading); page-level access that can only narrow what the
-space allows and is not inherited by child pages. The instance administrator
+Roles per space (admin, editor, viewer); space visibility (`private`, `instance`
+for reading by every active user, or `public` for reading by anyone, see
+"Public sites"); page-level access that can only narrow what the space allows
+and is not inherited by child pages. The instance administrator
 manages people and access but has no automatic access to private spaces.
 An invitation opened by someone who is already signed in can be accepted with
 that account; signing out is a separate secondary action.
 
 Every path that returns content filters by these rules: the tree, search,
-quick switcher, subtree, backlinks, collaboration, MCP, export.
+quick switcher, subtree, backlinks, collaboration, MCP, export. The public
+site applies its own, narrower policy (see below).
 
 **Public-demo mode** (`server/demo.ts`, `FOLIO_DEMO_MODE=1`) is inert unless
 switched on (the project's own demo runs it at <https://demo.foliowiki.online>,
@@ -246,7 +309,8 @@ shared login, data reset every 24 hours): `GET /api/auth/state` then carries the
 signed-out visitors only) and the reset interval, the sign-in screen shows
 account cards and the app a banner. For everyone in that mode, tokens, the
 assistant and AI keys, endpoints that reach a host the caller picks (git,
-Confluence import), space creation, share links, invitations and name changes
+Confluence import), space creation, share links, invitations, name changes,
+changing a space's visibility or publishing settings and setting shared AI keys
 answer 403, and uploads are capped. Demo accounts may be space administrators for editing `.agent`, but delete/rename space, members and roles, git sync, page permissions, trash purge and removing `.agent` itself answer 403 (`server/demo.ts`); `/mcp` and the OAuth credential endpoints are rate and size limited (`server/demoLimits.ts`, `FOLIO_DEMO_MCP_RPM`, `FOLIO_DEMO_MCP_WRITES_PER_HOUR`). **`TRUST_PROXY`** (`server/trustProxy.ts`,
 off by default) lets `request.ip` come from `X-Forwarded-For`, but only from a
 proxy on a loopback or private address; without it the sign-in rate limit is
@@ -273,6 +337,58 @@ turns it off. Session replay masks inputs and page content. The two OAuth
 consent steps are server-rendered pages without scripts, so the server reports
 them itself with the same anonymous id. Anything new that is sent must be
 added to this list and to `docs/INSTALL.md`.
+
+### Public sites
+
+A space whose visibility is `public` is also a read-only website for people
+without an account. It is the running application in a second mode, not a
+static export: nothing is copied, and the publishing settings live in
+PostgreSQL, not in Git.
+
+- **Visibility.** `public` includes `instance`: every active user stays an
+  implicit viewer, so signed-in people read a public space exactly as they read
+  an open one. The one predicate is `spaceOpenToInstance()` in
+  `shared/contracts.ts` (sessions, page access and the access matrix use it);
+  SQL says `visibility IN ('instance','public')`. Migration 038 widens the
+  check constraint and adds `public_subdomain`, `public_domain`,
+  `public_allow_download` and `public_allow_assistant` (the two hosts are
+  unique).
+- **An anonymous caller is not a `User`.** The policy is a set of page ids,
+  `publicReadablePageIds(slug)` in `server/publicSites.ts`: every page, minus
+  pages with a `page_access` row, minus `.agent/**`, minus `_templates/`.
+  `isPublicPage` is the point check used by collaboration, page, export and
+  MCP code; `publicMayReadFile` decides files (a file is public only if a
+  public page uses it). A restriction is not inherited, so the children of a
+  locked page stay public. The documents say so; the publishing dialog only
+  says that restricted pages stay hidden.
+- **Settings.** `GET|PUT /api/spaces/:space/public-settings` (cookie session
+  only; space or instance administrator; audited as `space.public_settings`
+  and `space.visibility`; refused for demo accounts). Changing visibility
+  clears the host cache.
+- **Addresses.** `<PUBLIC_URL>/public/<slug>[/p/<id>]` always;
+  `<label>.<PUBLIC_SITES_DOMAIN>`; a custom domain. `resolvePublicSiteByHost`
+  maps the `Host` header (behind `TRUST_PROXY`, `X-Forwarded-Host`) to a space
+  and caches it for ten seconds in process memory. The host of `PUBLIC_URL` is
+  never a site. On a site host `index.html` carries a `folio-public-site` meta
+  tag (`server/pageMeta.ts`), the SPA mounts the site at `/` and redirects
+  `/public/<slug>/…` and `/s/<slug>/…`. The session cookie is bound to its
+  host, so a reader on a subdomain or a domain is always anonymous; "Sign in"
+  leads to the main host, and `GuestGate` sends signed-out visitors of
+  `/s/<slug>/…` of a public space to the site (`?signin=1` opts out).
+- **Server.** `server/publicSiteRoutes.ts`: anonymous `GET /api/public/site`
+  (by Host), `/api/public/spaces/:slug`, `…/tree`, `…/pages/:id`, `…/resolve`
+  and `…/search` (query cut at 200 characters, at most 50 hits). `buildPageDoc`
+  is shared with `/api/pages/:id` and the share route. Downloads
+  (`…/pages/:id/export.md|pdf|docx`) exist only when the space allows them;
+  PDF and DOCX are limited per address (`PUBLIC_EXPORT_PER_MINUTE`, a sliding
+  window in `server/rateLimit.ts`), Markdown is not.
+- **Web.** `web/src/app/public/**` is mounted outside `AuthProvider`, because
+  the shell and sidebar need a session. Documents arrive as Markdown over HTTP;
+  a data table is a live read-only grid over the collaboration socket as an
+  anonymous viewer whose awareness is silent (no names or cursors go in or
+  out); a whiteboard is a static SVG; a form is view only; PDF and Office files
+  come through `/files/<space>/…`. `web/src/markdown/publicSite.ts` rewrites
+  links and images for guests.
 
 ### Agents
 
@@ -304,6 +420,43 @@ added to this list and to `docs/INSTALL.md`.
   or page gets "not found", identical to a missing one. `toolAccess.test.ts`
   pins every read tool against a private space, a page hidden by page access
   and `.agent`.
+- **Whose key pays** (`server/assistant/sharedKeys.ts`, migration 037). A run
+  uses the first key that exists: the person's own (while personal keys are
+  allowed), then the key of the space the question is asked in, then the key of
+  the instance, then `CURSOR_API_KEY`. `resolveApiKey(userId, space)` in
+  `server/assistant/routes.ts` is the only place that decides;
+  `GET /api/assistant/settings?space=` reports `apiKeySource`
+  (`personal`, `space`, `instance`, `environment` or `none`) and
+  `personalKeysAllowed`. Instance administrators set the instance key and the
+  policy (`GET|PUT|DELETE /api/admin/assistant/key`, `PUT
+  /api/admin/assistant/key-policy`); space administrators set the key of their
+  space (`GET|PUT|DELETE /api/spaces/:space/assistant-key`). All of these need
+  the cookie session and are refused in demo mode. Shared keys are encrypted
+  with `FOLIO_SECRET`, the API never returns one (only the key's name, the
+  Cursor account, who set it and when), and every change is audited
+  (`assistant.instance_key_set|removed`, `assistant.space_key_set|removed`,
+  `assistant.key_policy`). When personal keys are off, a stored personal key is
+  ignored, not deleted.
+- **Ask Folio AI on a public site** (`server/assistant/publicRoutes.ts`,
+  migration 039). Visitors are anonymous. Their runs belong to a built-in
+  system user, "Public visitor" (`users.is_system`): no password, cannot sign
+  in, hidden from lists of people, a viewer of public spaces only. The run
+  carries `publicSpace` in the MCP actor (`server/mcp.ts`), so `list_spaces`,
+  `list_tree`, `search_pages`/`search`, `read_page`/`fetch`,
+  `folio_table_list` and `get_backlinks` answer only about that one space and
+  only about its public pages; `page_history` and `page_at_sha` are refused,
+  there are no write tools, and any mode other than Ask is rejected
+  (`server/assistant/tools.ts`). Routes: `POST
+  /api/public/spaces/:slug/assistant/runs`, `GET …/runs/:runId/events`, `POST
+  …/runs/:runId/stop`, `GET …/conversations/:id`. A conversation is reached only
+  with the guest token of the browser that started it (the database stores its
+  SHA-256 hash, compared in constant time). Answers: 404 when the space is not
+  public or the switch is off, 403 in demo mode, 409 when no key exists, 429
+  with `Retry-After` past the limits (per address, `PUBLIC_ASSISTANT_RUNS_PER_HOUR`,
+  default 20; per site, `PUBLIC_ASSISTANT_SPACE_RUNS_PER_HOUR`, default 200;
+  both in process memory). The key is resolved space, instance, environment.
+  The `.agent` rules of the space are part of the prompt of these runs too.
+  The conversations show up in the assistant analytics under "Public visitor".
 - **`.agent`**: pages in this folder of a space are added to every assistant
   run in that space, up to about 60,000 characters, cut at a page boundary.
   The folder is visible to space administrators only.
@@ -388,6 +541,21 @@ added to this list and to `docs/INSTALL.md`.
 - Importing a Confluence tree must never replace a page that already exists at
   the target, least of all a space's own `index.md`, which the tree does not
   list.
+- An anonymous request is answered from the public policy and nothing else.
+  A route, tool or socket that serves content to someone without a session
+  asks `isPublicPage` / `publicReadablePageIds` / `publicMayReadFile`; it never
+  widens a normal route to accept no session. Restricted pages, `.agent/**`
+  and templates are never public.
+- A visitor of a public site must not receive anyone's name, cursor or
+  presence: the anonymous collaboration connection is a silent viewer in both
+  directions.
+- Publishing settings, shared AI keys and their policy are changed by cookie
+  session only, never by a token, and never in demo mode. A shared key is never
+  returned by any endpoint, is stored encrypted and every change is audited.
+- Ask Folio AI on a public site stays Ask only, confined to one space and its
+  public pages, and its conversation is reachable only with the guest token
+  that created it. The token is stored as a hash and never logged.
+- The host of `PUBLIC_URL` is never served as a public site.
 - MCP-only tools (`search`/`fetch`) are not offered to the in-app assistant;
   the assistant tool set must not contain URL/path/command-looking tools. The
   external `/mcp` endpoint keeps all 23. The skip list is
@@ -467,6 +635,17 @@ Each of these was a real defect. They are here so that nobody pays twice.
   home page. Choose the destination so that it cannot clobber or hide a page
   that exists; when in doubt, make a folder of its own and update that in
   place on re-import.
+- An anonymous caller is a different kind of caller, not a user with fewer
+  rights. Model it as a policy that has to be asked explicitly (a set of
+  readable ids) instead of a role, so that a new route cannot be public by
+  forgetting a check.
+- A session cookie belongs to one host. A site on another host or domain is
+  anonymous by construction; do not try to share the cookie across hosts.
+- Anything that spends someone's money (a shared AI key) must show whose key is
+  in use, and the order in which keys are tried has to live in one function.
+- Foreign front matter belongs to other tools. Merge only your own keys, parse
+  the result again and check that nothing else moved; a rewrite from parsed
+  data is the fallback, never the first move.
 - Do heavy work after the port is open, never before. A scan that throws
   during startup takes the whole instance down with no way to see why.
 - Do not turn "every file I read failed" into "system failure": with one
@@ -550,7 +729,8 @@ Each of these was a real defect. They are here so that nobody pays twice.
   history lists, downloads and restores versions, but offers no side-by-side
   comparison, and an Office version has no in-browser preview in the history
   panel (only a download; a PDF is previewed).
-- Moving a page does not rewrite relative links inside it.
+- Moving or renaming a page rewrites `[text](path)` links and images, but not
+  HTML tags or reference-style links.
 - Offline mode does not cover data tables, forms, uploads or templates.
 - Reactions exist on whiteboard shapes only, not on documents, tables or
   comments, and live in the database, not in the board's file or in Git.
@@ -562,6 +742,16 @@ Each of these was a real defect. They are here so that nobody pays twice.
   person repeats "Connect"; its rate limits live in process memory, not Redis;
   a client's metadata document is cached for an hour; no connector has been
   tried live from claude.ai or ChatGPT.
+- Public sites: Folio generates no `robots.txt` or sitemap and does not mark
+  the pages `noindex`. Only downloads and Ask Folio AI are rate limited; public
+  search and the other read routes have no per-address limit. The limits and the
+  host cache are in process memory, so several processes behind one address
+  need a shared (Redis-backed) limiter and a way to invalidate the cache.
+  "Sign in" on a site leads to the main host. The `.agent` rules of a space
+  reach the prompt of public Ask runs, so a visitor may get them paraphrased.
+- Spaces inside a product repository: a rename made outside Folio in Git is
+  matched to its page by file size (as for PDF and Office files), and a
+  Confluence import into such a space still writes `id`s.
 - Folio runs as one server process. Real-time rooms and sockets live in that
   process, so several processes behind one address need a deliberate design.
 
@@ -605,5 +795,8 @@ npx vitest run <the files you touched>
 
 Then start the whole stack from a clean checkout with `docker compose up -d`,
 create the first account, a space and a page, and open the page in two tabs.
+If the change touched publishing, make a space public and open
+`<PUBLIC_URL>/public/<space>` in a private window: the tree, a page, search and
+a data table must work, and a locked page must answer "not found".
 If the change touched the Dockerfile, migrations or environment variables,
 check it in the built container, not only on the development machine.

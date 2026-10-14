@@ -40,6 +40,7 @@ import { badRequest, forbidden, notFound } from '../errors.js';
 import { parseBody } from '../validate.js';
 import { assertNotDemoAccount } from '../demo.js';
 import { resolveTextLanguage } from '../serverText.js';
+import { invalidatePublicSiteCache } from '../publicSites.js';
 
 const ACCESS_LOG_LIMIT = 100;
 
@@ -143,6 +144,7 @@ export async function updateSpaceVisibility(actor: User, space: string, visibili
   if (!(await storage.spaceExists(space))) throw notFound('space');
   if (!(await session.canAdministerSpace(actor, space))) throw forbidden('requires instance admin, or admin role in this space');
   await store.setSpaceVisibility(space, visibility);
+  invalidatePublicSiteCache();
   recordAudit(actor.id, 'space.visibility', space, { visibility });
   return { slug: space, visibility };
 }

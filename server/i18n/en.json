@@ -18,5 +18,12 @@
   "oauth.allow": "Allow",
   "oauth.deny": "Deny",
   "oauth.errorTitle": "Cannot authorize",
-  "oauth.back": "Go back to the app and start the connection again."
+  "oauth.back": "Go back to the app and start the connection again.",
+  "gitRepos.tokenInvalid": "The saved access token for {host} was rejected. It is invalid or has expired. Save a new token and try again.",
+  "gitRepos.rateLimited": "{host} is limiting requests from this token right now. Wait a few minutes and try again.",
+  "gitRepos.ssoRequired": "The organization behind some repositories requires SAML single sign-on. Authorize the token for that organization in your {host} token settings, then try again.",
+  "gitRepos.ssoRequiredUrl": "The organization behind some repositories requires SAML single sign-on. Authorize the token here, then try again: {url}",
+  "gitRepos.forbidden": "{host} refused the request. The token may lack the permission to list repositories.",
+  "gitRepos.unreachable": "Could not reach {host}. Check the address and your network, then try again.",
+  "gitRepos.failed": "{host} returned an unexpected response (HTTP {status})."
 }

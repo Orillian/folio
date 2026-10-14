@@ -680,6 +680,60 @@ describe('git.listRemoteBranches / git.validateRepoUrl (round: create-space bran
     await fs.rm(bareDir, { recursive: true, force: true }).catch(() => {});
   }, 30_000);
 
+  it('resolveRemoteDefaultBranch returns the remote\'s real default (master), not a hard-coded main', async () => {
+    const bareDir = path.join(os.tmpdir(), `folio-test-default-branch-${Date.now()}.git`);
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execFileAsync = promisify(execFile);
+    await execFileAsync('git', ['init', '--bare', '-b', 'master', bareDir]);
+
+    const seedDir = path.join(os.tmpdir(), `folio-test-default-branch-seed-${Date.now()}`);
+    await fs.mkdir(seedDir, { recursive: true });
+    await execFileAsync('git', ['init', '-b', 'master'], { cwd: seedDir });
+    await fs.writeFile(path.join(seedDir, 'f.md'), 'x\n', 'utf8');
+    await git.commitAll(seedDir, 'first', { name: 'Tester', email: 't@example.test' });
+    await execFileAsync('git', ['remote', 'add', 'origin', bareDir], { cwd: seedDir });
+    await git.push(seedDir, 'master');
+    await fs.rm(seedDir, { recursive: true, force: true });
+
+    const server = await serveDumbHttp(bareDir);
+    try {
+      expect(await git.resolveRemoteDefaultBranch(server.url)).toBe('master');
+    } finally {
+      await server.close();
+    }
+    await fs.rm(bareDir, { recursive: true, force: true }).catch(() => {});
+  }, 30_000);
+
+  it('resolveRemoteDefaultBranch is null for an empty or unreachable remote, so the caller keeps its fallback', async () => {
+    const bareDir = path.join(os.tmpdir(), `folio-test-default-branch-empty-${Date.now()}.git`);
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    await promisify(execFile)('git', ['init', '--bare', '-b', 'main', bareDir]);
+
+    const server = await serveDumbHttp(bareDir);
+    try {
+      expect(await git.resolveRemoteDefaultBranch(server.url)).toBeNull();
+    } finally {
+      await server.close();
+    }
+    expect(await git.resolveRemoteDefaultBranch('http://127.0.0.1:1/none.git')).toBeNull();
+    expect(await git.resolveRemoteDefaultBranch('file:///etc')).toBeNull();
+    await fs.rm(bareDir, { recursive: true, force: true }).catch(() => {});
+  }, 30_000);
+
+  it('the askpass helper answers a one-off token with the x-access-token username (what GitHub and GitLab both accept for a PAT)', async () => {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const { ensureAskpassScript } = await import('./gitCredentials.js');
+    const script = await ensureAskpassScript();
+    const env = { ...process.env, FOLIO_ONEOFF_TOKEN: 'ghp_example_token' };
+    const user = await promisify(execFile)('node', [script, "Username for 'https://github.com': "], { env });
+    const pass = await promisify(execFile)('node', [script, "Password for 'https://x-access-token@github.com': "], { env });
+    expect(user.stdout).toBe('x-access-token');
+    expect(pass.stdout).toBe('ghp_example_token');
+  });
+
   it('a genuinely empty remote reports zero branches and no default', async () => {
     const bareDir = path.join(os.tmpdir(), `folio-test-branches-empty-${Date.now()}.git`);
     const { execFile } = await import('node:child_process');

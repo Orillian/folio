@@ -125,6 +125,31 @@ describe('R23 tail — space export settings (real PG, fastify inject)', () => {
     expect(after.export).toEqual({ headerHtml: '<span>H</span>' });
   });
 
+  it('renaming the space keeps the export templates and every other key — only `name` changes', async () => {
+    const headerHtml = '<span>Kept {{space}}</span>';
+    const footerHtml = '<span>{{page}}</span>';
+    await put({ headerHtml, footerHtml }, adminCookie);
+    const before = JSON.parse(await fs.readFile(folioFile, 'utf8')) as Record<string, unknown>;
+
+    await storage.renameSpace(space, 'Renamed Header Footer');
+
+    const after = JSON.parse(await fs.readFile(folioFile, 'utf8')) as Record<string, unknown>;
+    expect(after).toEqual({ ...before, name: 'Renamed Header Footer' });
+    expect((await get(adminCookie)).json()).toEqual({ headerHtml, footerHtml });
+  });
+
+  it('a rename leaves a `.folio` that is not JSON untouched (the DB name still changes)', async () => {
+    const original = await fs.readFile(folioFile, 'utf8');
+    await fs.writeFile(folioFile, 'not json {', 'utf8');
+    try {
+      const info = await storage.renameSpace(space, 'Renamed Again');
+      expect(info.name).toBe('Renamed Again');
+      expect(await fs.readFile(folioFile, 'utf8')).toBe('not json {');
+    } finally {
+      await fs.writeFile(folioFile, original, 'utf8');
+    }
+  });
+
   it('blanking both templates removes the export section entirely (and blank-only strings count as blank)', async () => {
     await put({ headerHtml: '<span>H</span>', footerHtml: '<span>F</span>' }, adminCookie);
     await put({ headerHtml: '', footerHtml: '   ' }, adminCookie);

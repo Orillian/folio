@@ -3,6 +3,33 @@ import { ApiError, UNAUTHORIZED_EVENT } from '../api';
 
 /** Every `AssistantRunEvent` except `ping` — pings only reset the silence timer below, callers never see them. */
 type AssistantRunDataEvent = Exclude<AssistantRunEvent, { type: 'ping' }>;
+
+/**
+ * Where a run's events come from. The default is the signed-in route; the public site's Ask panel
+ * (app/public) passes its own anonymous one — same NDJSON stream, different URL and different rules for
+ * a refused request.
+ */
+export interface AssistantEventsSource {
+  /** URL of the NDJSON stream of `runId`, replaying the events with `seq` greater than `since`. */
+  url: (runId: string, since: number) => string;
+  /**
+   * An anonymous reader has no session to lose: a 401 must not fire UNAUTHORIZED_EVENT (which would send an
+   * AuthProvider surface to the login screen), and any 4xx answer is final (a run or token the server does
+   * not know will not appear by asking again) instead of being retried for ten minutes.
+   */
+  anonymous?: boolean;
+}
+
+/** The signed-in user's own run: `GET /api/assistant/runs/:runId/events`. */
+const SIGNED_IN_SOURCE: AssistantEventsSource = {
+  url: (runId, since) => `/api/assistant/runs/${encodeURIComponent(runId)}/events?since=${since}`,
+};
+
+/** Whether a refused stream request ends the subscription (rejects) rather than backing off and reconnecting. */
+function isFinalStreamError(error: unknown, source: AssistantEventsSource): boolean {
+  if (!(error instanceof ApiError)) return false;
+  return source.anonymous ? error.status >= 400 && error.status < 500 : error.status === 401;
+}
 /** The three event types the NDJSON stream ends on (see shared/contracts.ts's `AssistantRunEvent` doc comment). */
 type TerminalRunEvent = Extract<AssistantRunDataEvent, { type: 'complete' | 'stopped' | 'error' }>;
 
@@ -41,6 +68,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * reconnects, same as any other network failure.
  */
 function streamOnce(
+  source: AssistantEventsSource,
   runId: string,
   since: number,
   onEvent: (event: AssistantRunDataEvent) => void,
@@ -75,7 +103,7 @@ function streamOnce(
     if (outerSignal.aborted) internalController.abort();
 
     (async () => {
-      const response = await fetch(`/api/assistant/runs/${encodeURIComponent(runId)}/events?since=${since}`, {
+      const response = await fetch(source.url(runId, since), {
         method: 'GET',
         credentials: 'same-origin',
         headers: { Accept: 'application/x-ndjson' },
@@ -90,7 +118,7 @@ function streamOnce(
         } catch {
           // Response wasn't JSON (or was empty) — keep the statusText fallback.
         }
-        if (response.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+        if (response.status === 401 && !source.anonymous) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
         throw new ApiError(response.status, message);
       }
       if (!response.body) throw new Error('Streaming response body is unavailable');
@@ -142,6 +170,8 @@ export interface SubscribeAssistantRunOptions {
   /** Resume point: only events with `seq` greater than this are delivered (replay + live). */
   since: number;
   onEvent: (event: AssistantRunDataEvent) => void;
+  /** Where the events are read from; defaults to the signed-in user's own run. */
+  source?: AssistantEventsSource;
   /** Fires `true` while a reconnect attempt is backing off, `false` once a connection is (re)established. */
   onReconnecting?: (reconnecting: boolean) => void;
   signal: AbortSignal;
@@ -158,13 +188,15 @@ const MAX_RECONNECT_BUDGET_MS = 10 * 60 * 1000;
  * replay overlap from the new connection is deduped rather than re-applied.
  * Resolves with the terminal event (`complete`/`stopped`/`error`) once the
  * run actually finishes. A 401 mid-stream dispatches UNAUTHORIZED_EVENT and
- * rejects immediately (no point reconnecting an unauthenticated session). An
+ * rejects immediately (no point reconnecting an unauthenticated session); an
+ * `anonymous` source rejects on any 4xx instead and never dispatches it. An
  * outer `signal` abort rejects with AbortError, same as a plain fetch.
  */
 export async function subscribeAssistantRun({
   runId,
   since,
   onEvent,
+  source = SIGNED_IN_SOURCE,
   onReconnecting,
   signal,
 }: SubscribeAssistantRunOptions): Promise<TerminalRunEvent> {
@@ -176,6 +208,7 @@ export async function subscribeAssistantRun({
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     try {
       const terminal = await streamOnce(
+        source,
         runId,
         lastSeq,
         (event) => {
@@ -192,7 +225,7 @@ export async function subscribeAssistantRun({
       // Connection closed cleanly but with no terminal event — reconnect below.
     } catch (error) {
       if (signal.aborted) throw error instanceof DOMException ? error : new DOMException('Aborted', 'AbortError');
-      if (error instanceof ApiError && error.status === 401) throw error;
+      if (isFinalStreamError(error, source)) throw error;
       // Any other failure (network drop, silence-timeout abort, transient 5xx) — reconnect.
     }
 

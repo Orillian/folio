@@ -194,7 +194,7 @@ export async function readSpaceExportAssets(space: string): Promise<SpaceExportA
 
   let headerHtml: string | undefined;
   let footerHtml: string | undefined;
-  const meta = await readIfPresent(path.join(repoDir, `${space}.folio`));
+  const meta = await readIfPresent(await storage.folioMetaPath(space));
   if (meta) {
     try {
       const parsed = JSON.parse(meta) as { export?: { headerHtml?: unknown; footerHtml?: unknown } };

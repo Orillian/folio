@@ -8,6 +8,7 @@ import { useDebouncedValue } from '../hooks';
 import { Modal } from '../ui/Modal';
 import { LabeledInput } from '../ui/LabeledInput';
 import { GitCredentialForm } from '../git/GitCredentialForm';
+import { ConnectGitHubButton, hasGitHubComCredential, useGitHubOAuthEnabled } from '../git/ConnectGitHubButton';
 import { BranchField } from './BranchField';
 import { branchFieldReducer } from './gitBranches';
 import '../i18n/register';
@@ -49,6 +50,7 @@ export function ConnectGitDialog({ space, onClose, onConnected }: ConnectGitDial
 
   const credentials = useQuery({ queryKey: ['git-credentials'], queryFn: api.getGitCredentials, retry: false });
   const savedCredentials = credentials.data?.credentials ?? [];
+  const githubOAuth = useGitHubOAuthEnabled();
 
   const debouncedRepoUrl = useDebouncedValue(repoUrl, 600).trim();
   const debouncedToken = useDebouncedValue(token, 600).trim();
@@ -169,6 +171,9 @@ export function ConnectGitDialog({ space, onClose, onConnected }: ConnectGitDial
           </p>
         )}
 
+        {!addingCredential && githubOAuth && credentials.isSuccess && !hasGitHubComCredential(savedCredentials) && (
+          <ConnectGitHubButton variant="inline" />
+        )}
         {!addingCredential ? (
           <button
             type="button"

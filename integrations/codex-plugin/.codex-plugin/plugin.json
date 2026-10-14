@@ -1,6 +1,6 @@
 {
   "name": "foliowiki",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Skills that teach Codex to search, read and update a team's Folio wiki (pages, data tables, whiteboards) through the Folio MCP server.",
   "author": {
     "name": "Evergreen",

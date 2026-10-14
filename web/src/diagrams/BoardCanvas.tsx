@@ -79,8 +79,10 @@ import { BoardExportMenu } from './BoardExportMenu';
 import { downloadBlob } from './download';
 import { exportFilename } from './exportFilename';
 import { BoardReactions } from './BoardReactions';
+import { BoardHeadingAction } from './BoardHeadingAction';
 import { StickyNotePalette, STICKY_NOTE_DRAG_MIME } from './StickyNotePalette';
-import { createStickyNoteElements, screenToSceneCoords, sceneToScreenCoords, type StickyNoteColorId } from './boardStickyNotes';
+import { createStickyNoteElements, screenToSceneCoords, type StickyNoteColorId } from './boardStickyNotes';
+import { openStickyTextEditor, soleSelection } from './boardStickyEdit';
 import { trackBoardEdit } from '../analytics';
 import './i18n/register';
 
@@ -1081,38 +1083,24 @@ export default function BoardCanvas({ pageId, shareToken, shareMode }: BoardCanv
    * picks the update up and pushes it into the Y.Doc exactly like any other
    * local edit — no separate sync path needed for stickies.
    *
-   * Text entry: the imperative API has no "start editing this container's
-   * text" method. The package's OWN way of doing it — confirmed by reading
-   * the installed 0.18.1's dist source — is `handleCanvasDoubleClick`: on a
-   * real dblclick over an opaque-fill container (with the selection tool
-   * active and not in view mode) it calls `startTextEditing` at the
-   * container's centre, which creates the bound text element and focuses it.
-   * That handler is wired as the interactive canvas's own `onDoubleClick`
-   * (`canvas.excalidraw__canvas.interactive` — the one that receives pointer
-   * events, as opposed to the static/new-element canvases layered under it),
-   * so dispatching a genuine `dblclick` MouseEvent at the note's own screen
-   * centre reaches the exact same code path a real user double-click would.
-   * Two animation frames are given first so the just-inserted rectangle has
-   * actually been committed to Excalidraw's own scene AND painted — the
-   * hit-test (`getTextBindableContainerAtPosition`) needs the element to
-   * really be there, not just have been requested a moment ago.
+   * Text entry: the new note becomes the ONLY selected element (a note left
+   * selected by an earlier insert would otherwise have its own text opened
+   * instead) and boardStickyEdit.ts's openStickyTextEditor then opens it with
+   * the package's own Enter-on-selected-container path.
    */
   function insertStickyNote(colorId: StickyNoteColorId, scenePoint: { x: number; y: number }): void {
     const api = apiRef.current;
     if (!api || !canWrite) return;
     const [sticky] = createStickyNoteElements(colorId, scenePoint);
     if (!sticky) return;
-    api.updateScene({ elements: [...api.getSceneElementsIncludingDeleted(), sticky] });
-    // Selection, not whatever tool happened to be active — handleCanvasDoubleClick
-    // only starts text editing when `activeTool.type === 'selection'`.
-    api.setActiveTool({ type: 'selection' });
-    const { clientX, clientY } = sceneToScreenCoords(scenePoint, api.getAppState());
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const canvas = containerRef.current?.querySelector<HTMLCanvasElement>('canvas.excalidraw__canvas.interactive');
-        canvas?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX, clientY }));
-      });
+    api.updateScene({
+      elements: [...api.getSceneElementsIncludingDeleted(), sticky],
+      appState: soleSelection(sticky.id),
     });
+    // Selection tool, not whatever tool happened to be active.
+    api.setActiveTool({ type: 'selection' });
+    const host = containerRef.current;
+    if (host) openStickyTextEditor(api, host, sticky.id);
   }
 
   /** Plain click on a palette swatch (no drag) — centre of the currently visible viewport, same spot `fitBoardToScreen` frames. */
@@ -1629,6 +1617,8 @@ export default function BoardCanvas({ pageId, shareToken, shareMode }: BoardCanv
         userId={reactionUserId}
         names={reactionNames}
       />
+      {/* "Make heading" rewrites the scene, so it needs the same edit permission AND Edit mode. */}
+      <BoardHeadingAction api={excalidrawApi} containerRef={containerRef} canEdit={canWrite && isEditingNow} />
       {/* `top` AND `right` are measured, not a breakpoint (boardChromeLayout.ts):
           our row shares this corner with Excalidraw's library trigger, sits in
           the column its centred tool island grows into, and — mobile, QA-3

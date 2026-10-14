@@ -7,7 +7,8 @@
   "form": {
     "loading": "Loading form…",
     "notFound": "Form not found",
-    "fallback": "form"
+    "fallback": "form",
+    "publicUnavailable": "A form can be filled in inside Folio only"
   },
   "alerts": {
     "note": "Note",

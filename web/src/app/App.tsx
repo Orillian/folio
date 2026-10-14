@@ -1,6 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
+import { PUBLIC_SITE_PATH_PREFIX } from '@shared/contracts';
 import { ToastProvider } from './ui/Toast';
 import { SettingsProvider } from './settings';
 import { AuthProvider } from './auth/AuthProvider';
@@ -19,6 +21,8 @@ import { NotFound } from './routes/NotFound';
 import { OAuthResume } from './routes/OAuthResume';
 import { SharedPageView } from './share/SharedPageView';
 import { AcceptInviteView } from './invites/AcceptInviteView';
+import { PublicHostRoutes, PublicPathRoutes } from './public/PublicSiteRoutes';
+import { readHostSiteSlug } from './public/publicSite';
 import './i18n/register';
 
 const queryClient = new QueryClient({
@@ -46,9 +50,10 @@ const queryClient = new QueryClient({
  * from rendering the login screen to rendering the same Routes tree, still
  * matched against the same location) but wraps the whole Routes tree —
  * except `/share/:token` (round 8) and `/invite/:token` (round 9), the
- * genuinely public routes: see AppRoutes below for why those need their own
- * <Routes> tree entirely outside AuthProvider rather than just another
- * <Route> inside it.
+ * genuinely public routes — and the published-space site (`/public/:space` on the
+ * main host; `/` and `/p/:id` on a site's own subdomain / custom domain, see
+ * app/public/): see AppRoutes below for why those need their own <Routes> tree
+ * entirely outside AuthProvider rather than just another <Route> inside it.
  */
 export function App() {
   return (
@@ -79,6 +84,8 @@ export function App() {
 function AppRoutes() {
   const { t } = useTranslation('app');
   const location = useLocation();
+  // Set by the server in index.html when this host is a published space's own subdomain / custom domain.
+  const hostSiteSlug = useMemo(() => readHostSiteSlug(), []);
 
   if (location.pathname.startsWith('/share/')) {
     return (
@@ -98,6 +105,13 @@ function AppRoutes() {
         <Route path="/invite/:token" element={<AcceptInviteView />} />
       </Routes>
     );
+  }
+
+  // Published spaces: anonymous visitors, no AuthProvider (it would answer with a login screen).
+  // On a site's own host the site owns every other path too; on the main host only /public/….
+  if (hostSiteSlug) return <PublicHostRoutes slug={hostSiteSlug} />;
+  if (location.pathname === PUBLIC_SITE_PATH_PREFIX || location.pathname.startsWith(`${PUBLIC_SITE_PATH_PREFIX}/`)) {
+    return <PublicPathRoutes />;
   }
 
   return (

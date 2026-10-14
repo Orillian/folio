@@ -35,6 +35,10 @@ Three access rules:
 - The space sets the base rights (`viewer`, `editor`, `admin`), and page
   access can narrow them for a particular page. The token scope, too, only
   narrows the rights of its owner.
+- A **public** space (published as a website) is readable by anyone in the
+  browser, but `/mcp` and the REST API still need a token or an OAuth grant.
+  Publishing settings can be changed only from a browser session, never with a
+  token.
 
 ## OAuth: connect from claude.ai / ChatGPT
 
@@ -168,7 +172,10 @@ touch the text. A missing `icon`/`cover` means "do not change", `null` means
 **A token cannot** create an `index.md` for a folder, manage instance, space
 or page access, rename or delete a space.
 
-**`move` does not rewrite relative links** inside the moved page.
+**`move` and a slug change rewrite `[text](path)` links and images**: the ones
+inside the moved page and its subtree are recalculated for the new location,
+and links to it from other pages are rewritten, all in one commit. HTML tags
+and reference-style links are left as they are.
 
 **An export may be truncated.** Check the `X-Folio-Export-*` response headers,
 which state the reason.

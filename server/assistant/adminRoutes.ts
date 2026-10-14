@@ -43,6 +43,9 @@ import { forbidden, notFound } from '../errors.js';
 import { query, queryOne } from '../db/pool.js';
 import { parseBody } from '../validate.js';
 import { recordAudit } from '../audit.js';
+import { assertNotDemo } from '../demo.js';
+import { updateAssistantKeyPolicyBodySchema } from '../../shared/contracts.js';
+import * as sharedKeys from './sharedKeys.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -363,7 +366,49 @@ async function conversationVisible(access: AdminAssistantAccess, conversationId:
   return Boolean(row);
 }
 
+/** Instance-wide shared key routes: cookie session AND instance admin, nothing less (a space admin gets 403). */
+function requireInstanceKeyAdmin(request: FastifyRequest): User {
+  session.requireCookieAuth(request);
+  return session.requireInstanceAdmin(request);
+}
+
 export function registerAssistantAdminRoutes(app: FastifyInstance): void {
+  // --- Instance-wide shared Cursor key (/api/admin/assistant/key[-policy]) -----
+  // The key is stored encrypted and never returned: only its Cursor name, the
+  // account email and who set it when. The policy flag decides whether members
+  // may still use their own personal key.
+
+  app.get('/api/admin/assistant/key', async (request) => {
+    requireInstanceKeyAdmin(request);
+    return sharedKeys.buildInstanceKeyInfo();
+  });
+
+  app.put('/api/admin/assistant/key', async (request) => {
+    assertNotDemo('Connecting an AI key');
+    const user = requireInstanceKeyAdmin(request);
+    const verified = await sharedKeys.verifySharedKeyBody(request.body);
+    await sharedKeys.saveInstanceKey(verified.apiKey, verified.apiKeyName, verified.email, user.id);
+    recordAudit(user.id, 'assistant.instance_key_set', 'instance', { keyName: verified.apiKeyName });
+    return sharedKeys.buildInstanceKeyInfo();
+  });
+
+  app.delete('/api/admin/assistant/key', async (request, reply) => {
+    const user = requireInstanceKeyAdmin(request);
+    await sharedKeys.deleteInstanceKey(user.id);
+    recordAudit(user.id, 'assistant.instance_key_removed', 'instance');
+    reply.status(204);
+    return null;
+  });
+
+  app.put('/api/admin/assistant/key-policy', async (request) => {
+    assertNotDemo('Changing the AI key policy');
+    const user = requireInstanceKeyAdmin(request);
+    const body = parseBody(updateAssistantKeyPolicyBodySchema, request.body);
+    await sharedKeys.setPersonalKeysAllowed(body.personalKeysAllowed, user.id);
+    recordAudit(user.id, 'assistant.key_policy', 'instance', { personalKeysAllowed: body.personalKeysAllowed });
+    return sharedKeys.buildInstanceKeyInfo();
+  });
+
   app.get('/api/admin/assistant/access', async (request) => {
     const { scope, spaces } = await resolveAnalyticsScope(request);
     // Names for display only; the access decision stays with the slugs. A slug without a row cannot be an administered space (listAdminSpaceSlugs joins spaces), the fallback is just defensive.

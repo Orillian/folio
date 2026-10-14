@@ -377,7 +377,9 @@ async function restorePageItem(actor: User, row: TrashRow): Promise<TrashRestore
     // files") — pin the trashed page's id to where it lands so the rescan
     // gives it back.
     const lowerDest = destAbs.toLowerCase();
-    if (row.page_id && (lowerDest.endsWith('.pdf') || officeFormat(lowerDest))) storage.claimBinaryId(destAbs, row.page_id);
+    if (row.page_id && (lowerDest.endsWith('.pdf') || officeFormat(lowerDest))) storage.claimPageId(destAbs, row.page_id);
+    // Light footprint: the docs (and file pages) of the item carry no id either.
+    claimTrashedIds(row, spaceRoot, restoredPathMapper(row, destRel));
     await fs.rename(srcAbs, destAbs);
     if (srcChildDirAbs) {
       const destChildDirAbs = destChildDirAbsFor(destAbs, destRel);
@@ -431,22 +433,48 @@ async function restorePageItem(actor: User, row: TrashRow): Promise<TrashRestore
   return result;
 }
 
+/** Claims back, at their restored paths, the ids a light-footprint trash item recorded (TrashPagePayload.ids). */
+function claimTrashedIds(row: TrashRow, contentRootAbs: string, mapPath: (oldRel: string) => string | undefined): void {
+  const ids = (row.payload as { ids?: unknown } | null)?.ids;
+  if (!Array.isArray(ids)) return;
+  for (const item of ids as Array<{ pageId?: unknown; relPath?: unknown }>) {
+    if (typeof item?.pageId !== 'string' || typeof item.relPath !== 'string') continue;
+    const rel = mapPath(item.relPath);
+    if (rel) storage.claimPageId(path.join(contentRootAbs, ...rel.split('/')), item.pageId);
+  }
+}
+
 function humanizeSlug(slug: string): string {
   return slug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Reads only this space's canonical metadata, never a sibling `*.folio`. */
-async function readFolioName(repoDirAbs: string, slug: string): Promise<string | undefined> {
+/** Reads only this space's canonical metadata (storage.resolveFolioMetaPath: the legacy root file, or a light space's dotfile), never a sibling `*.folio`. */
+async function readFolioName(repoDirAbs: string, slug: string, rootPath: string): Promise<string | undefined> {
   try {
-    const parsed = JSON.parse(await fs.readFile(path.join(repoDirAbs, `${slug}.folio`), 'utf8')) as { name?: unknown };
+    const file = await storage.resolveFolioMetaPath(repoDirAbs, slug, rootPath);
+    const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as { name?: unknown };
     return typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name.trim() : undefined;
   } catch {
     return undefined;
   }
 }
 
-function validVisibility(v: unknown): 'private' | 'instance' {
-  return v === 'instance' ? 'instance' : 'private';
+function validVisibility(v: unknown): 'private' | 'instance' | 'public' {
+  return v === 'instance' || v === 'public' ? v : 'private';
+}
+/**
+ * Puts the public-site publish settings (migration 038) of a restored space
+ * back. A subdomain / custom domain is unique across the instance and may have
+ * been claimed by another space while this one sat in the trash: then the
+ * claim is simply left empty (the admin picks a new one) instead of failing
+ * the whole restore.
+ */
+async function restorePublicSettings(slug: string, settings: TrashSpaceSnapshot['publicSettings'] | undefined): Promise<void> {
+  if (!settings) return;
+  await query('UPDATE spaces SET public_allow_download = $2, public_allow_assistant = $3 WHERE slug = $1', [slug, settings.allowDownload === true, settings.allowAssistant === true]);
+  // One at a time: losing one claim must not cost the other.
+  if (settings.subdomain) await query('UPDATE spaces SET public_subdomain = $2 WHERE slug = $1', [slug, settings.subdomain]).catch(() => undefined);
+  if (settings.domain) await query('UPDATE spaces SET public_domain = $2 WHERE slug = $1', [slug, settings.domain]).catch(() => undefined);
 }
 function validAssetMode(v: unknown): 'store' | 'repo' {
   return v === 'repo' ? 'repo' : 'store';
@@ -498,13 +526,16 @@ async function restoreSpaceItem(actor: User, row: TrashRow): Promise<TrashRestor
     if (!(await git.isGitRepo(repoDirAbs))) {
       await git.initWithCommit(repoDirAbs, `docs: restore space ${origSlug}`);
     }
-    const name = snapshot?.name ?? (await readFolioName(repoDirAbs, origSlug)) ?? humanizeSlug(origSlug);
+    const name = snapshot?.name ?? (await readFolioName(repoDirAbs, origSlug, rootPath)) ?? humanizeSlug(origSlug);
     await query(
       `INSERT INTO spaces (slug, name, repo_url, branch, root_path, status, visibility, asset_mode)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [slug, name, snapshot?.repoUrl ?? null, snapshot?.branch ?? 'main', rootPath, snapshot?.repoUrl ? 'clean' : 'local', validVisibility(snapshot?.visibility), validAssetMode(snapshot?.assetMode)],
     );
     await storage.setSpaceRootPathCache(slug, rootPath);
+    await restorePublicSettings(slug, snapshot?.publicSettings);
+    // Light footprint: page ids that lived only in the dropped index rows (paths are unchanged).
+    claimTrashedIds(row, contentRootAbsFor(slug), (oldRel) => oldRel);
     for (const member of snapshot?.members ?? []) {
       await query('INSERT INTO space_members (space_slug, user_id, role) VALUES ($1,$2,$3) ON CONFLICT (space_slug, user_id) DO UPDATE SET role = EXCLUDED.role', [
         slug,

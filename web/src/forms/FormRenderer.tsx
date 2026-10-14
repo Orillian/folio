@@ -24,6 +24,8 @@ export interface FormRendererProps {
    * import edge" rule web/src/markdown/PageTree.tsx already follows.
    */
   onSubmit: (values: Record<string, unknown>) => Promise<FormSubmitOutcome>;
+  /** Show the form but do not let it be sent (a public site's anonymous reader: the form is filled in inside Folio). */
+  submitDisabled?: boolean;
 }
 
 /**
@@ -38,7 +40,7 @@ export interface FormRendererProps {
  * input — v1 scope cut, see the round report: `FormField` only carries
  * `kind` for coercion, not a full copy of the column's `options`/`multiple`.
  */
-export function FormRenderer({ title, description, fields, submitButtonLabel, onSubmit }: FormRendererProps) {
+export function FormRenderer({ title, description, fields, submitButtonLabel, onSubmit, submitDisabled }: FormRendererProps) {
   const { t } = useTranslation('forms');
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -53,7 +55,7 @@ export function FormRenderer({ title, description, fields, submitButtonLabel, on
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (submitting) return;
+    if (submitting || submitDisabled) return;
     setSubmitting(true);
     setFormError(undefined);
     try {
@@ -121,7 +123,7 @@ export function FormRenderer({ title, description, fields, submitButtonLabel, on
 
       <button
         type="submit"
-        disabled={submitting}
+        disabled={submitting || submitDisabled}
         className="mt-2 self-start rounded-md bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
       >
         {submitting ? t('submitting') : (submitButtonLabel?.trim() || t('submit'))}

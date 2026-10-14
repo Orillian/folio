@@ -86,6 +86,9 @@ In the order it was built.
 | 49 | Dependency advisories | Seven open advisories closed: MCP SDK 1.31+, `@fastify/busboy` 3.2.2, `source-map-js` 1.2.2, `proxy-addr` 2.0.8, and by override `shell-quote` and `katex`; `sprintf-js` removed from the lock file (it only served a `js-yaml` 3 command-line tool); `npm audit --omit=dev` is clean |
 | 50 | Inline formatting | A status tag (`:status[Done]{color=green}`, six colours, Confluence status macros imported, PDF and DOCX); underline as `++text++` that nests with the other formats; copy and cut in Live edit keep formatting (Markdown and HTML on the clipboard); Live edit lists look like Reading; Reading keeps the number and text of a loose list on one line; the Confluence import no longer replaces a space's home page; a collaborator's selection no longer hides text |
 | 51 | Replace a file page, file version history | A PDF, Word, Excel or PowerPoint page takes a new file and keeps its id, link, place in the tree, access and stars: tree menu item, header button, drag and drop with a confirmation, an Undo toast. A new file of another type renames the file and rewrites incoming links the way a slug change does. Every replace is its own commit (the quiet-period commit is flushed first), so the history panel lists file versions with name and size, downloads any of them, previews a PDF and restores one. `POST /api/pages/:id/file`, `GET /api/pages/:id/history/:sha/file`; `docker-compose.yml` now passes `TRUST_PROXY`, `FOLIO_DEMO_*`, `FOLIO_DEFAULT_REPO_URL` and the assistant deadlines to the app (they were documented but ignored under Compose); the in-app assistant is no longer offered the ChatGPT-only MCP tools `search` and `fetch` (it keeps `search_pages` and `read_page`; the external MCP endpoint still has all 23 tools) |
+| 52 | Docs-as-code | Front matter written by other tools (Docusaurus, MkDocs, Hugo, Jekyll) is kept byte for byte: only Folio's own keys are merged, and the result is parsed again and checked; a space bound to a folder of a repository writes no `id` into its files and keeps its `.folio` file as a dotfile inside that folder; new images can be stored in the repository (`assets/`, relative links that GitHub shows); moving or renaming a page rewrites the relative links in it and the links to it, in one commit; a scan indexes links after the whole walk, so a link to a page that sorts later is no longer stored as broken |
+| 53 | Connect with GitHub, editor polish | A GitHub OAuth App links a github.com account in "Git access" with one click instead of a pasted token (migration 036); repository lists follow the provider's pagination and fail with a reason, and a new space asks the remote for its real default branch; the request log drops one-time codes; blanks stay outside inline formatting markers; headings show plain text in the outline and the notes panel; "Make heading" on a whiteboard; a new sticky note opens its text field after Escape |
+| 54 | Public sites, shared AI keys | A space can be published as a read-only website at `/public/<space>`, at a subdomain of a domain the operator sets, or at a custom domain: page tree, search inside the space, live read-only data tables, whiteboards as pictures, optional Markdown, PDF and DOCX downloads, and an optional "Ask Folio AI" for anonymous visitors (Ask mode only, confined to that space and its public pages, rate limited per address and per site). Restricted pages, `.agent` and templates are never shown. Folio AI can be paid by a key of a space or of the instance, with a policy that turns personal keys off; the order is personal, space, instance, environment (migrations 037 to 039; `PUBLIC_SITES_DOMAIN` and three rate-limit settings, all optional) |
 
 ## What comes next
 
@@ -106,6 +109,10 @@ picked up.
 - Check the kits on each platform (only plain Docker Compose and Coolify have been run end to end; Folio's own production runs on Coolify).
 - More providers for the assistant.
 - Share links and content search for file pages.
+- A `robots.txt` and a sitemap for public sites, so that a published space can
+  be found (and one that must not be found can say so).
+- Limits that hold across processes: a per-address limit for public search and
+  Redis-backed counters and host cache, for more than one server process.
 
 **Depth**
 
@@ -114,7 +121,6 @@ picked up.
 - Forms that follow changes to their table.
 - Offline mode for data tables.
 - Space list and membership changes pushed to open sessions as the page tree already is, in place of polling.
-- Relative links rewritten when a page moves.
 
 ## How to propose something
 

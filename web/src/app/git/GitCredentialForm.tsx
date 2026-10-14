@@ -6,7 +6,24 @@ import { api } from '../api';
 import { useApiErrorText } from '../errorText';
 import { useToast } from '../ui/Toast';
 import { LabeledInput } from '../ui/LabeledInput';
+import { useGitHubOAuthEnabled } from './ConnectGitHubButton';
 import '../i18n/register';
+
+/** Bare host from what the user typed ("https://GitHub.com/" -> "github.com"), or null when it does not look like one. */
+function bareHost(raw: string): string | null {
+  const host = raw.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  return /^[a-z0-9.-]+(:\d+)?$/.test(host) ? host : null;
+}
+
+/** Where the user creates a token with the scopes Folio needs, on the provider's own site. */
+export function createTokenUrl(provider: 'github' | 'gitlab', rawHost: string): string {
+  if (provider === 'github') {
+    const host = bareHost(rawHost) ?? 'github.com';
+    return `https://${host}/settings/tokens/new?scopes=repo&description=Folio`;
+  }
+  const host = bareHost(rawHost) ?? 'gitlab.com';
+  return `https://${host}/-/user_settings/personal_access_tokens?name=Folio&scopes=read_api,write_repository`;
+}
 
 export interface GitCredentialFormProps {
   onSaved: (credential: GitCredentialInfo) => void;
@@ -27,6 +44,7 @@ export function GitCredentialForm({ onSaved, onCancel }: GitCredentialFormProps)
   const [provider, setProvider] = useState<'github' | 'gitlab'>('github');
   const [token, setToken] = useState('');
   const [label, setLabel] = useState('');
+  const githubOAuth = useGitHubOAuthEnabled();
 
   const save = useMutation({
     mutationFn: () =>
@@ -58,6 +76,18 @@ export function GitCredentialForm({ onSaved, onCancel }: GitCredentialFormProps)
         value={token}
         onChange={(e) => setToken(e.target.value)}
       />
+      <p className="-mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+        {t(provider === 'github' ? 'git.credentials.tokenHelp.github' : 'git.credentials.tokenHelp.gitlab')}{' '}
+        <a
+          href={createTokenUrl(provider, host)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-600 underline underline-offset-2 dark:text-blue-400"
+        >
+          {t('git.credentials.tokenHelp.createLink')}
+        </a>
+        {provider === 'github' && githubOAuth && <span className="mt-1 block">{t('git.credentials.tokenHelp.oauthNote')}</span>}
+      </p>
       <LabeledInput
         label={t('git.credentials.label')}
         placeholder={t('git.credentials.labelPlaceholder')}

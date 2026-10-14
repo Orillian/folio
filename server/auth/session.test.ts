@@ -119,4 +119,30 @@ describe('auth/session (round 27, real PG)', () => {
 
     await deleteTestSpace(space.slug);
   });
+
+  it('the public visitor system user (migration 039): viewer of PUBLIC spaces only — never instance/private, never via a membership row, never admin', async () => {
+    const visitor = (await authStore.findUserById(authStore.PUBLIC_VISITOR_USER_ID))!;
+    expect(visitor).toMatchObject({ isSystem: true, isAdmin: false });
+    const publicSpace = await storage.createSpace(`Session System Public ${Date.now()}`, null);
+    const instanceSpace = await storage.createSpace(`Session System Instance ${Date.now()}`, null);
+    const privateSpace = await storage.createSpace(`Session System Private ${Date.now()}`, null);
+    await authStore.setSpaceVisibility(publicSpace.slug, 'public');
+    await authStore.setSpaceVisibility(instanceSpace.slug, 'instance');
+    // Even a membership row (no route can create one — they 404 a system user) grants nothing.
+    await authStore.setMembership(privateSpace.slug, visitor.id, 'admin');
+
+    expect(await session.effectiveRole(visitor, publicSpace.slug)).toBe('viewer');
+    expect(await session.effectiveRole(visitor, instanceSpace.slug)).toBeUndefined();
+    expect(await session.effectiveRole(visitor, privateSpace.slug)).toBeUndefined();
+    // Recognised by its id too, without the flag.
+    expect(await session.effectiveRole({ ...visitor, isSystem: undefined }, instanceSpace.slug)).toBeUndefined();
+    const memberships = await session.membershipsFor(visitor);
+    expect(memberships[publicSpace.slug]).toBe('viewer');
+    expect(memberships[instanceSpace.slug]).toBeUndefined();
+    expect(memberships[privateSpace.slug]).toBeUndefined();
+    expect(await session.canAdministerSpace(visitor, publicSpace.slug)).toBe(false);
+    expect(await session.canAdministerSpace(visitor, privateSpace.slug)).toBe(false);
+
+    for (const space of [publicSpace, instanceSpace, privateSpace]) await deleteTestSpace(space.slug);
+  });
 });

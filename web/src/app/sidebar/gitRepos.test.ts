@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GitProviderRepo } from '@shared/contracts';
-import { filterProviderRepos, humanizeRepoName, normalizeRepoUrlForDisplay } from './gitRepos';
+import { ApiError } from '../api';
+import { filterProviderRepos, humanizeRepoName, normalizeRepoUrlForDisplay, providerReposErrorText } from './gitRepos';
 
 const REPOS: GitProviderRepo[] = [
   { name: 'architecture-docs', url: 'https://github.com/acme/architecture-docs.git', defaultBranch: 'main' },
@@ -114,5 +115,36 @@ describe('normalizeRepoUrlForDisplay', () => {
   it('returns null for a host with no repo path at all', () => {
     expect(normalizeRepoUrlForDisplay('https://github.com')).toBeNull();
     expect(normalizeRepoUrlForDisplay('https://github.com/')).toBeNull();
+  });
+});
+
+describe('providerReposErrorText', () => {
+  const t = (key: string, values?: Record<string, unknown>) => `${key}|${String(values?.host)}`;
+
+  it('maps each provider error code to its own key and passes the host', () => {
+    const codes: Record<string, string> = {
+      git_provider_token_invalid: 'tokenInvalid',
+      git_provider_rate_limited: 'rateLimited',
+      git_provider_sso_required: 'ssoRequired',
+      git_provider_forbidden: 'forbidden',
+      git_provider_unreachable: 'unreachable',
+      git_provider_error: 'failed',
+    };
+    for (const [code, key] of Object.entries(codes)) {
+      const err = new ApiError(400, 'server text', { error: 'server text', code });
+      expect(providerReposErrorText(t, err, 'github.com')).toBe(`git.repos.errors.${key}|github.com`);
+    }
+  });
+
+  it('keeps the server message when it carries the SSO authorization link', () => {
+    const message = 'Authorize the token here: https://github.com/orgs/acme/sso?authorization_request=abc';
+    const err = new ApiError(400, message, { error: message, code: 'git_provider_sso_required' });
+    expect(providerReposErrorText(t, err, 'github.com')).toBe(message);
+  });
+
+  it('returns null for errors without a provider code', () => {
+    expect(providerReposErrorText(t, new ApiError(400, 'bad', { error: 'bad' }), 'github.com')).toBeNull();
+    expect(providerReposErrorText(t, new ApiError(400, 'bad', { error: 'bad', code: 'something_else' }), 'github.com')).toBeNull();
+    expect(providerReposErrorText(t, new Error('boom'), 'github.com')).toBeNull();
   });
 });

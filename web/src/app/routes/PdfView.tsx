@@ -5,6 +5,8 @@ export interface PdfViewProps {
   title: string;
   /** The page's updatedAt: a replaced file has a new one, which changes the url and so reloads the frame instead of showing a cached copy. */
   version?: string;
+  /** Where the file is served from, when that is not the session route (the public site: `/files/<space>/<path>`). Defaults to GET /api/pages/:id/file. */
+  src?: string;
 }
 
 /**
@@ -22,10 +24,10 @@ export interface PdfViewProps {
  * platform's own pdf viewer chrome) points at GET /api/pages/:id/file — the
  * same url the header's actions use.
  */
-export function PdfView({ pageId, title, version }: PdfViewProps) {
+export function PdfView({ pageId, title, version, src }: PdfViewProps) {
   return (
     <div className="h-full bg-neutral-100 dark:bg-neutral-950">
-      <iframe src={api.pageFileUrl(pageId, false, version)} title={title} className="h-full w-full border-0 bg-white" />
+      <iframe src={src ?? api.pageFileUrl(pageId, false, version)} title={title} className="h-full w-full border-0 bg-white" />
     </div>
   );
 }

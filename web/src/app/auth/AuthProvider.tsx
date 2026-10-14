@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect } from 'react';
-import type { ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
+import { useLocation, useNavigate } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import type { SpaceRole, User } from '@shared/contracts';
@@ -9,6 +10,7 @@ import { reconcileLanguageFromProfile } from '../../i18n';
 import { resolveSpaceRole } from './roles';
 import { SetupScreen } from './SetupScreen';
 import { LoginScreen } from './LoginScreen';
+import { publicHomeUrl, publicPageUrl, publicSiteInfoKey, publicUrlForAppPath } from '../public/publicSite';
 import '../i18n/register';
 
 const STARS_QUERY_KEY = ['stars'] as const;
@@ -151,7 +153,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }
 
   if (!data.user) {
-    return <LoginScreen onDone={() => refetch()} google={data.google} demo={data.demo} />;
+    return <GuestGate onDone={() => refetch()} google={data.google} demo={data.demo} />;
   }
 
   const value: AuthContextValue = {
@@ -161,7 +163,64 @@ export function AuthProvider({ children }: AuthProviderProps) {
     loggingOut: logoutMutation.isPending,
   };
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      <SigninParamCleaner />
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+/**
+ * What a visitor with no session sees: the login screen — except on an internal link
+ * (`/s/:space`, `/s/:space/p/:id`) to a space that has been PUBLISHED, where they are sent on to
+ * the public site's page for it instead (replace, so Back does not return to the redirect). Only
+ * ever mounted for a logged-out visitor, so a signed-in user pays no extra request. A private
+ * space answers 404 to the probe and the login screen shows as before.
+ *
+ * `?signin=1` (the public site's "Sign in" link, public/publicSite.ts appPageUrl) opts out: the
+ * visitor asked for the login screen of a public space, and bouncing them back would make that
+ * impossible.
+ */
+function GuestGate(loginProps: ComponentProps<typeof LoginScreen>) {
+  const { t } = useTranslation('app');
+  const location = useLocation();
+  const navigate = useNavigate();
+  const target = publicUrlForAppPath(location.pathname);
+  const probe = target !== null && !new URLSearchParams(location.search).has('signin');
+  const { data: site, isLoading } = useQuery({
+    queryKey: publicSiteInfoKey('path', target?.space ?? ''),
+    queryFn: () => api.getPublicSite(target!.space),
+    enabled: probe,
+    retry: false,
+    staleTime: 60_000,
+  });
+
+  useEffect(() => {
+    if (!probe || !site || !target) return;
+    const ref = { space: target.space, mode: 'path' as const };
+    const url = target.pageId ? publicPageUrl(ref, target.pageId) : publicHomeUrl(ref);
+    // The query (?row= deep links into a table) and the hash survive the move.
+    navigate(`${url}${location.search}${location.hash}`, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `target` is derived from pathname
+  }, [probe, site, location.pathname, location.search, location.hash, navigate]);
+
+  if (probe && (isLoading || site)) return <CenteredMessage>{t('auth.loading')}</CenteredMessage>;
+  return <LoginScreen {...loginProps} />;
+}
+
+/** Drops `?signin=1` once the visitor has signed in, so the address bar does not keep a flag that no longer means anything. */
+function SigninParamCleaner() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (!params.has('signin')) return;
+    params.delete('signin');
+    const search = params.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : '', hash: location.hash }, { replace: true });
+  }, [location.pathname, location.search, location.hash, navigate]);
+  return null;
 }
 
 function CenteredMessage({ children }: { children: ReactNode }) {

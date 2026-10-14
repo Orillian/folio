@@ -24,6 +24,7 @@ import { MermaidBlock } from '../diagrams';
 import { Backlinks } from './Backlinks';
 import { PageTree } from './PageTree';
 import { FormEmbed } from './FormEmbed';
+import type { MarkdownPublicSite } from './publicSite';
 import './i18n/register';
 import './markdown.css';
 import './status.css';
@@ -35,6 +36,7 @@ import { attachGlossaryTooltips } from './glossaryTooltip';
 // import above for the underlying component/props).
 export { PageTree } from './PageTree';
 export type { PageTreeProps } from './PageTree';
+export type { MarkdownPublicSite } from './publicSite';
 
 export interface MarkdownProps {
   markdown: string;
@@ -58,6 +60,15 @@ export interface MarkdownProps {
    * calling it.
    */
   shareToken?: string;
+  /**
+   * Set by the public site (a published space read by anonymous visitors, app/public/).
+   * Like `shareToken` it means "no session here": no mentionable fetch, no backlinks,
+   * no page tree, no form embed (a neutral note instead), no title resolution of pasted
+   * Folio URLs. Unlike a share link it can navigate: relative `.md` links resolve
+   * through the public resolve route and links to the site's own pages become the
+   * site's URLs — see publicSite.ts for the shape.
+   */
+  publicSite?: MarkdownPublicSite;
 }
 
 /**
@@ -66,7 +77,7 @@ export interface MarkdownProps {
  * alerts, sanitized raw HTML, and relative link/image resolution. Used both
  * for the page reading route and by the editor's "reading" mode.
  */
-export function Markdown({ markdown, space, pagePath, pageId, shareToken }: MarkdownProps) {
+export function Markdown({ markdown, space, pagePath, pageId, shareToken, publicSite }: MarkdownProps) {
   const navigate = useNavigate();
   const { t, i18n } = useTranslation('markdown');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -116,12 +127,12 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken }: Mark
   // (viewer+) and would just 401, same reasoning as the resolve() skip in
   // handleClick further down: shareToken's presence IS "no session here".
   useEffect(() => {
-    if (shareToken) return;
+    if (shareToken || publicSite) return;
     void ensureMentionIndex(space);
     return onMentionsLoaded((loadedSpace) => {
       if (loadedSpace === space) setMentionsVersion((v) => v + 1);
     });
-  }, [space, shareToken]);
+  }, [space, shareToken, publicSite]);
 
   // Round 22.09.2026: any Folio-page-URL resolution this render's rehype
   // pass kicked off (folioLinkIndex.ts) can land for ANY space/page, not
@@ -176,7 +187,7 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken }: Mark
       if (segment.type === 'mermaid' || segment.type === 'pagetree' || segment.type === 'form-embed') return segment;
       const html = renderMarkdownToHtml(
         segment.value,
-        { space, pagePath, shareToken, mentionLookup, origin },
+        { space, pagePath, shareToken, mentionLookup, origin, publicSite },
         cursor,
         tableCursor,
         noteCursor,
@@ -224,7 +235,7 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken }: Mark
     // linksVersion, same reasoning as mentionsVersion above: rehypeFolioPageLinks
     // reads folioLinkIndex.ts's own module cache directly (resolvedFolioLink),
     // this is only here to force the SECOND pass that shows a title once it lands.
-  }, [segments, headings, space, pagePath, shareToken, mentionsVersion, linksVersion, i18n.language]);
+  }, [segments, headings, space, pagePath, shareToken, publicSite, mentionsVersion, linksVersion, i18n.language]);
 
   // The collapsible wrapper/body/stub structure is baked into `rendered`'s
   // HTML by the pipeline's rehypeCollapsibleSections — this only ever
@@ -342,6 +353,18 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken }: Mark
     event.preventDefault();
     const relPath = anchor.getAttribute('data-folio-link') ?? '';
 
+    // Public site: a relative page link resolves through the anonymous route
+    // (the session-only /api/resolve below would 401) and lands on the site's URL
+    // for that page, in path or host mode alike.
+    if (publicSite) {
+      try {
+        navigate(publicSite.pageUrl(await publicSite.resolvePath(relPath)));
+      } catch {
+        showHint(t('link.notFound', { path: relPath }));
+      }
+      return;
+    }
+
     // Round 8: a share link grants access to exactly the ONE page it was
     // created for — /api/resolve requires a real session (server-side
     // session.requireSpaceRole) and would just 401 for an anonymous guest.
@@ -382,7 +405,12 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken }: Mark
           </div>
         ) : segment.type === 'form-embed' ? (
           <div className="folio-form-embed-segment" key={index}>
-            <FormEmbed pageId={segment.pageId} />
+            {/* A form is filled in inside Folio; an anonymous reader of a public site gets a neutral note. */}
+            {publicSite ? (
+              <p className="text-sm text-neutral-400 dark:text-neutral-500">{t('form.publicUnavailable')}</p>
+            ) : (
+              <FormEmbed pageId={segment.pageId} />
+            )}
           </div>
         ) : segment.html.trim() === '' ? null : (
           <div className="folio-md-segment" key={index} dangerouslySetInnerHTML={segment.innerHtmlProp} />

@@ -22,7 +22,6 @@
  * the existing JSON the way this module does.
  */
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { spaceExportSettingsSchema } from '../../shared/contracts.js';
 import { badRequest, conflict } from '../errors.js';
 import { parseBody } from '../validate.js';
@@ -42,13 +41,14 @@ export interface SpaceExportSettingsPayload {
   footerHtml?: string;
 }
 
-function folioFilePath(space: string): string {
-  return path.join(storage.getRepoDir(space), `${space}.folio`);
+/** `<slug>.folio` at the repo root, or a light-footprint space's `<rootPath>/.<slug>.folio` — storage.folioMetaPath decides. */
+function folioFilePath(space: string): Promise<string> {
+  return storage.folioMetaPath(space);
 }
 
 async function readRawFolioFile(space: string): Promise<string | undefined> {
   try {
-    return await fs.readFile(folioFilePath(space), 'utf8');
+    return await fs.readFile(await folioFilePath(space), 'utf8');
   } catch {
     return undefined;
   }
@@ -159,5 +159,5 @@ export async function writeSpaceExportSettings(space: string, settings: SpaceExp
     parsed.export = section;
   }
 
-  await fs.writeFile(folioFilePath(space), `${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
+  await fs.writeFile(await folioFilePath(space), `${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
 }

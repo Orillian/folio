@@ -29,6 +29,20 @@ describe('extractH1', () => {
   it('picks the first H1 when there are several', () => {
     expect(extractH1('# First\n\n# Second\n')).toBe('First');
   });
+
+  // The owner, 13.10.2026: the tree and tabs showed the syntax of a title.
+  it('returns the title as plain text: markup resolved', () => {
+    expect(extractH1('# ==Q4=={.green} **goals**\n')).toBe('Q4 goals');
+    expect(extractH1('# :status[Ongoing]{color=green} Growth\n')).toBe('Ongoing Growth');
+    expect(extractH1('# [Guide](https://example.com) to `npm`\n')).toBe('Guide to npm');
+    expect(extractH1('# ++Under++ and ~~gone~~ and *it*\n')).toBe('Under and gone and it');
+  });
+
+  it('leaves an ordinary title exactly as typed', () => {
+    for (const title of ['Hello World', 'Goals: Q4 2026', 'C++ and C++', '1. Intro', 'Q&A', 'List<T> guide', 'a == b']) {
+      expect(extractH1(`# ${title}\n`)).toBe(title);
+    }
+  });
 });
 
 describe('copyPage', () => {
@@ -622,30 +636,26 @@ describe('storage integration (real fs under a throwaway data/spaces/<temp> dir,
     await deleteTestSpace(space.slug);
   });
 
-  it('a rewrite keeps only Folio\'s own front matter keys (id, order, status, icon, cover) — a documented limitation', async () => {
+  it('a rewrite keeps front matter keys other tools wrote (only id, order, status, icon, cover are Folio\'s)', async () => {
     const space = await storage.createSpace(`Vitest Extra Keys ${Date.now()}`, null);
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
     const file = path.join(storage.REPOS_DIR, space.slug, 'hand-written.md');
 
-    // No id yet: the scan that assigns one already rewrites the block.
+    // No id yet: the scan that assigns one appends it and leaves the rest alone.
     await fs.writeFile(file, '---\ntitle: Hand written\ntags:\n  - alpha\nstatus: draft\n---\n# Hand Written\n', 'utf8');
     await storage.scanSpace(space.slug);
     const entry = (await storage.listEntries(space.slug)).find((e) => e.relPath === 'hand-written.md');
     expect(entry).toBeDefined();
     let raw = await fs.readFile(file, 'utf8');
-    expect(raw).toContain(`id: ${entry!.id}`);
-    expect(raw).toContain('status: draft');
-    expect(raw).not.toContain('title: Hand written');
-    expect(raw).not.toContain('tags:');
+    expect(raw).toBe(`---\ntitle: Hand written\ntags:\n  - alpha\nstatus: draft\nid: ${entry!.id}\n---\n# Hand Written\n`);
 
-    // With an id: an ordinary body write does the same.
+    // With an id: an ordinary body write keeps them too.
     await fs.writeFile(file, `---\nid: ${entry!.id}\nauthor: Jane\n---\n# Hand Written\n`, 'utf8');
     await storage.scanSpace(space.slug);
     await storage.writeDocBody(entry!.id, '# Hand Written\n\nEdited.\n');
     raw = await fs.readFile(file, 'utf8');
-    expect(raw).toContain('Edited.');
-    expect(raw).not.toContain('author: Jane');
+    expect(raw).toBe(`---\nid: ${entry!.id}\nauthor: Jane\n---\n# Hand Written\n\nEdited.\n`);
 
     await deleteTestSpace(space.slug);
   });

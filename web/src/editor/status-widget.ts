@@ -300,8 +300,13 @@ export function openStatusPopover(view: EditorView, from: number): void {
 export function insertStatus(view: EditorView, from?: number, to?: number): boolean {
   if (!isEditable(view)) return false;
   const range = view.state.selection.main;
-  const start = from ?? range.from;
-  const end = to ?? range.to;
+  // Padding stays outside the tag, like every other inline format; a selection
+  // of nothing but blanks has nothing to tag.
+  const picked = view.state.doc.sliceString(from ?? range.from, to ?? range.to);
+  if (picked !== '' && !/\S/.test(picked)) return false;
+  const lead = picked.length - picked.trimStart().length;
+  const start = (from ?? range.from) + lead;
+  const end = start + picked.trim().length;
   const selected = cleanStatusLabel(view.state.doc.sliceString(start, end));
   const label = selected || t('statusTag.defaultText');
   const insert = serializeStatus(label, 'grey');

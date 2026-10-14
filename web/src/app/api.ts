@@ -38,9 +38,11 @@ import type {
   AssistantConversationsResponse,
   AssistantModelsResponse,
   AssistantSettings,
+  SharedAssistantKeyInfo,
   AuthState,
   ConfluenceCredentialInfo,
   ConfluenceImportRequest,
+  FolioConfig,
   CopyPageBody,
   DuplicatePageBody,
   CreatedApiToken,
@@ -62,6 +64,11 @@ import type {
   PageHistoryEntry,
   PageChangeInfo,
   PageMeta,
+  PublicAssistantConversation,
+  PublicAssistantRunBody,
+  PublicAssistantRunStarted,
+  PublicPagePayload,
+  PublicSiteInfo,
   ReplaceFilePageResponse,
   RenamePageBody,
   RepoBranches,
@@ -72,9 +79,13 @@ import type {
   SharedPagePayload,
   SpaceInfo,
   SpaceGitInfo,
+  SpacePublicSettings,
+  SpacePublicSettingsResponse,
   SpaceMemberInfo,
   SpaceRole,
   SpaceVisibility,
+  SpaceAssetMode,
+  UploadAssetResponse,
   Stars,
   StartAssistantRunResponse,
   SubmitFormBody,
@@ -121,6 +132,8 @@ export class ApiError extends Error {
    * purely additive, optional field.
    */
   body?: unknown;
+  /** Seconds from the response's `Retry-After` header, when the server sent one (public routes only; see publicRequest). */
+  retryAfter?: number;
   constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = 'ApiError';
@@ -190,6 +203,11 @@ function queryString(filters?: object): string {
   return qs ? `?${qs}` : '';
 }
 
+/** `?space=<slug>` for the assistant routes that can resolve a space's shared key; empty without a space. */
+function spaceQuery(space?: string | null): string {
+  return space ? `?space=${encodeURIComponent(space)}` : '';
+}
+
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   // FormData (asset upload) must NOT get a hand-set content-type — fetch
   // sets its own `multipart/form-data; boundary=...` from the FormData body,
@@ -253,6 +271,51 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
 }
 
 /**
+ * GET for the anonymous `/api/public/**` routes (published spaces). Deliberately NOT
+ * request(): a visitor of a public site has no session, so a 401/404 here means "this
+ * is not (or no longer) a public site", not "log in again" — request() would fire
+ * UNAUTHORIZED_EVENT and, on a surface inside AuthProvider, bounce to the login screen.
+ * No retries either: a 404 is an answer, and the pages are cheap to ask for again.
+ */
+async function publicGet<T>(input: string): Promise<T> {
+  return publicRequest<T>(input, { credentials: 'same-origin' });
+}
+
+/**
+ * POST for the anonymous `/api/public/**` routes (the visitors' Ask AI): publicGet's rules — no
+ * UNAUTHORIZED_EVENT, no retries (a retried POST could start a second run) — plus the 429's `Retry-After`
+ * on the thrown ApiError, so the panel can say when to come back.
+ */
+async function publicPost<T>(input: string, body: unknown): Promise<T> {
+  return publicRequest<T>(input, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+async function publicRequest<T>(input: string, init: RequestInit): Promise<T> {
+  const res = await fetch(input, init);
+  if (!res.ok) {
+    let message = res.statusText || `HTTP ${res.status}`;
+    let parsedBody: unknown;
+    try {
+      parsedBody = await res.json();
+      const errorField = (parsedBody as { error?: string } | undefined)?.error;
+      if (errorField) message = errorField;
+    } catch {
+      // Not JSON — keep the status fallback.
+    }
+    const error = new ApiError(res.status, message, parsedBody);
+    const retryAfter = Number(res.headers?.get?.('Retry-After'));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfter = retryAfter;
+    throw error;
+  }
+  return (await res.json()) as T;
+}
+
+/**
  * Tree response, loosely typed: the DEV-PLAN leaves it up to the server
  * whether the space-root index page is exposed as `tree[0]` or as a
  * separate `home` field, so the sidebar handles both shapes defensively.
@@ -308,12 +371,11 @@ export interface TableSnapshot {
 
 export const api = {
   /**
-   * Instance-wide config (round 5 follow-up: create-space prefill). Not yet
-   * in shared/contracts.ts (SERVER adding it) — caller must degrade
-   * silently on a 404/error (no toast, just leave the prefill fields
-   * empty, same as before this endpoint existed).
+   * Instance-wide config (create-space prefill, whether "Connect with GitHub"
+   * is configured). Callers must degrade silently on a 404/error (no toast:
+   * no prefill, no GitHub button), so every field is treated as optional.
    */
-  getConfig: () => request<{ defaultRepoUrl?: string }>('/api/config'),
+  getConfig: () => request<Partial<FolioConfig>>('/api/config'),
 
   listSpaces: () => request<{ spaces: SpaceInfo[] }>('/api/spaces'),
 
@@ -700,8 +762,19 @@ export const api = {
   uploadAsset: (space: string, file: File) => {
     const body = new FormData();
     body.append('file', file, file.name);
-    return request<{ url: string }>(`/api/spaces/${encodeURIComponent(space)}/assets`, { method: 'POST', body });
+    return request<UploadAssetResponse>(`/api/spaces/${encodeURIComponent(space)}/assets`, { method: 'POST', body });
   },
+
+  /**
+   * PUT /api/spaces/:space/asset-mode (space admin) — "Store images in the
+   * repository": where NEW uploads of this space go ('store' = Folio's object
+   * storage, 'repo' = assets/ in the space's repository). Callers re-fetch ['spaces'].
+   */
+  setSpaceAssetMode: (space: string, assetMode: SpaceAssetMode) =>
+    request<{ slug: string; assetMode: SpaceAssetMode }>(`/api/spaces/${encodeURIComponent(space)}/asset-mode`, {
+      method: 'PUT',
+      body: JSON.stringify({ assetMode }),
+    }),
 
   // ---------- templates (round 5, create-from-template) ----------
 
@@ -854,6 +927,67 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  // ---------- public sites (published spaces) ----------
+
+  /** GET /api/spaces/:space/public-settings — space admin or instance admin; the site's URLs, the opt-ins and what this instance offers (sitesDomain). */
+  getSpacePublicSettings: (space: string) =>
+    request<SpacePublicSettingsResponse>(`/api/spaces/${encodeURIComponent(space)}/public-settings`),
+
+  /** PUT /api/spaces/:space/public-settings — 409 'subdomain is already taken' / 'domain is already in use'; visibility itself goes through setSpaceVisibility. */
+  updateSpacePublicSettings: (space: string, body: SpacePublicSettings) =>
+    request<SpacePublicSettingsResponse>(`/api/spaces/${encodeURIComponent(space)}/public-settings`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  /** GET /api/public/spaces/:slug — anonymous; 404 unless the space is public. `mode: 'path'`. */
+  getPublicSite: (slug: string) => publicGet<PublicSiteInfo>(`/api/public/spaces/${encodeURIComponent(slug)}`),
+
+  /** GET /api/public/site — anonymous, resolved by the Host header (subdomain / custom domain); 404 when the host is not a published site. `mode: 'host'`. */
+  getPublicSiteByHost: () => publicGet<PublicSiteInfo>('/api/public/site'),
+
+  /** GET /api/public/spaces/:slug/tree — the page tree an anonymous visitor sees (restricted, .agent and _templates left out), sorted per level like the sidebar's. */
+  getPublicTree: async (slug: string): Promise<{ tree: TreeNode[] }> => {
+    const data = await publicGet<{ tree: TreeNode[] }>(`/api/public/spaces/${encodeURIComponent(slug)}/tree`);
+    return { ...data, tree: sortTreeSiblings(data.tree) };
+  },
+
+  /** GET /api/public/spaces/:slug/pages/:id — the same PageDoc as the session route, plus the space name. */
+  getPublicPage: (slug: string, id: string) =>
+    publicGet<PublicPagePayload>(`/api/public/spaces/${encodeURIComponent(slug)}/pages/${encodeURIComponent(id)}`),
+
+  /** GET /api/public/spaces/:slug/resolve?path= — a relative .md link (path relative to the space root) to a page id. */
+  resolvePublicPath: (slug: string, path: string) =>
+    publicGet<{ id: string }>(`/api/public/spaces/${encodeURIComponent(slug)}/resolve?path=${encodeURIComponent(path)}`),
+
+  /** GET /api/public/spaces/:slug/search?q= — this space only. */
+  searchPublic: (slug: string, q: string) =>
+    publicGet<{ hits: SearchHit[] }>(`/api/public/spaces/${encodeURIComponent(slug)}/search?q=${encodeURIComponent(q)}`),
+
+  // ---------- public sites: Ask Folio AI (anonymous; the guest token is the conversation's bearer secret) ----------
+
+  /** POST /api/public/spaces/:slug/assistant/runs — 202 with the new run (and, for a first question, the conversation and its guest token). 404 site/conversation, 429 + Retry-After, 409 'Folio AI is not configured for this site', 403 in the public demo. */
+  startPublicAssistantRun: (slug: string, body: PublicAssistantRunBody) =>
+    publicPost<PublicAssistantRunStarted>(`/api/public/spaces/${encodeURIComponent(slug)}/assistant/runs`, body),
+
+  /** The NDJSON event stream of a public run (the same events as the signed-in one), replaying from `since`. Read with subscribeAssistantRun, not fetched here. */
+  publicAssistantEventsUrl: (slug: string, runId: string, since: number, guestToken: string) =>
+    `/api/public/spaces/${encodeURIComponent(slug)}/assistant/runs/${encodeURIComponent(runId)}/events?since=${since}&guestToken=${encodeURIComponent(guestToken)}`,
+
+  /** POST /api/public/spaces/:slug/assistant/runs/:runId/stop — the only way to cancel a run. */
+  stopPublicAssistantRun: (slug: string, runId: string, guestToken: string) =>
+    publicPost<{ stopped: boolean }>(`/api/public/spaces/${encodeURIComponent(slug)}/assistant/runs/${encodeURIComponent(runId)}/stop`, { guestToken }),
+
+  /** GET /api/public/spaces/:slug/assistant/conversations/:id?guestToken= — the chat to restore after a reload; 404 for an unknown conversation or a wrong token. */
+  getPublicAssistantConversation: (slug: string, conversationId: string, guestToken: string) =>
+    publicGet<PublicAssistantConversation>(
+      `/api/public/spaces/${encodeURIComponent(slug)}/assistant/conversations/${encodeURIComponent(conversationId)}?guestToken=${encodeURIComponent(guestToken)}`,
+    ),
+
+  /** URL of a public export (404 unless the space allows downloads; 429 when rate limited). `children` collates the page's subtree. */
+  publicExportUrl: (slug: string, id: string, format: 'md' | 'pdf' | 'docx', children: boolean) =>
+    `/api/public/spaces/${encodeURIComponent(slug)}/pages/${encodeURIComponent(id)}/export.${format}?children=${children ? 1 : 0}`,
+
   /** GET /api/spaces/:space/access-log — `{ entries: [...] }`, per server/access/routes.ts's route handler (NOT a bare array, unlike listAdminSpaces above). */
   getSpaceAccessLog: (space: string) => request<{ entries: AccessLogEntry[] }>(`/api/spaces/${encodeURIComponent(space)}/access-log`),
 
@@ -892,25 +1026,51 @@ export const api = {
   // here — it doesn't fit request()'s single-JSON-response shape, see
   // assistant/stream.ts's subscribeAssistantRun.
 
-  getAssistantSettings: () => request<AssistantSettings>('/api/assistant/settings'),
+  /** `space` = the space the chat is opened in, so the server can report that space's shared key as the source. */
+  getAssistantSettings: (space?: string | null) => request<AssistantSettings>(`/api/assistant/settings${spaceQuery(space)}`),
 
-  getAssistantModels: () => request<AssistantModelsResponse>('/api/assistant/models'),
+  getAssistantModels: (space?: string | null) => request<AssistantModelsResponse>(`/api/assistant/models${spaceQuery(space)}`),
 
-  setAssistantModel: (model: string) =>
-    request<AssistantSettings>('/api/assistant/settings/model', { method: 'PUT', body: JSON.stringify({ model }) }),
+  setAssistantModel: (model: string, space?: string | null) =>
+    request<AssistantSettings>(`/api/assistant/settings/model${spaceQuery(space)}`, { method: 'PUT', body: JSON.stringify({ model }) }),
 
-  /** Checks the key against Cursor and stores it encrypted; 400 when Cursor didn't accept it. */
+  /** Checks the key against Cursor and stores it encrypted; 400 when Cursor didn't accept it, 403 when personal keys are disabled on this instance. */
   saveAssistantKey: (apiKey: string) =>
     request<AssistantConnectionCheck>('/api/assistant/settings/key', { method: 'PUT', body: JSON.stringify({ apiKey }) }),
 
   deleteAssistantKey: () => request<void>('/api/assistant/settings/key', { method: 'DELETE' }),
 
-  /** Without `apiKey`, re-checks the already-saved key. */
-  checkAssistantKey: (apiKey?: string) =>
-    request<AssistantConnectionCheck>('/api/assistant/settings/check', {
+  /** Without `apiKey`, re-checks the key the caller would use (`space` lets a shared space key be found). */
+  checkAssistantKey: (apiKey?: string, space?: string | null) =>
+    request<AssistantConnectionCheck>(`/api/assistant/settings/check${spaceQuery(space)}`, {
       method: 'POST',
       body: JSON.stringify(apiKey ? { apiKey } : {}),
     }),
+
+  // ---------- Shared assistant keys (instance / space) — contract in shared/contracts.ts ----------
+  // The key itself never comes back, only its Cursor name and who set it when.
+
+  /** Instance admin: the instance-wide shared key. */
+  getInstanceAssistantKey: () => request<SharedAssistantKeyInfo>('/api/admin/assistant/key'),
+
+  /** Checks the key with Cursor and stores it encrypted; 400 when Cursor didn't accept it, 403 in the public demo. */
+  saveInstanceAssistantKey: (apiKey: string) =>
+    request<SharedAssistantKeyInfo>('/api/admin/assistant/key', { method: 'PUT', body: JSON.stringify({ apiKey }) }),
+
+  deleteInstanceAssistantKey: () => request<void>('/api/admin/assistant/key', { method: 'DELETE' }),
+
+  /** `false` = the shared key is used for everyone and members' personal keys are ignored. */
+  setAssistantKeyPolicy: (personalKeysAllowed: boolean) =>
+    request<SharedAssistantKeyInfo>('/api/admin/assistant/key-policy', { method: 'PUT', body: JSON.stringify({ personalKeysAllowed }) }),
+
+  /** Space admin (or instance admin): the shared key of one space. */
+  getSpaceAssistantKey: (space: string) => request<SharedAssistantKeyInfo>(`/api/spaces/${encodeURIComponent(space)}/assistant-key`),
+
+  saveSpaceAssistantKey: (space: string, apiKey: string) =>
+    request<SharedAssistantKeyInfo>(`/api/spaces/${encodeURIComponent(space)}/assistant-key`, { method: 'PUT', body: JSON.stringify({ apiKey }) }),
+
+  deleteSpaceAssistantKey: (space: string) =>
+    request<void>(`/api/spaces/${encodeURIComponent(space)}/assistant-key`, { method: 'DELETE' }),
 
   /** Without `conversationId`, returns the caller's most recent conversation. */
   getAssistantConversation: (conversationId?: string | null) =>

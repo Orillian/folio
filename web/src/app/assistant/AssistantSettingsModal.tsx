@@ -12,9 +12,11 @@ import '../i18n/register';
 
 export interface AssistantSettingsModalProps {
   onClose: () => void;
+  /** The space the chat is opened in (null/omitted outside a space), so a shared space key is reported as the source. */
+  space?: string | null;
 }
 
-const SETTINGS_QUERY_KEY = ['assistant', 'settings'] as const;
+const SETTINGS_PREFIX_KEY = ['assistant', 'settings'] as const;
 
 /**
  * «Folio AI (Cursor)» — personal-key connection + model choice, opened both
@@ -23,8 +25,13 @@ const SETTINGS_QUERY_KEY = ['assistant', 'settings'] as const;
  * trimmed to Folio's slimmer contract: no system-access matrix,
  * personalization or explain-mode toggle — those aren't in this round's
  * AssistantSettings shape (shared/contracts.ts).
+ *
+ * Besides the personal key it reports where the key in use really comes from
+ * (own / space / instance / server), and when the instance admin turned personal
+ * keys off (`personalKeysAllowed: false`) it hides the key form and says that the
+ * shared key is used for everyone — only the model choice stays.
  */
-export function AssistantSettingsModal({ onClose }: AssistantSettingsModalProps) {
+export function AssistantSettingsModal({ onClose, space = null }: AssistantSettingsModalProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
   const showToast = useToast();
@@ -32,15 +39,20 @@ export function AssistantSettingsModal({ onClose }: AssistantSettingsModalProps)
   const [apiKey, setApiKey] = useState('');
   const [confirmingForget, setConfirmingForget] = useState(false);
 
-  const settings = useQuery({ queryKey: SETTINGS_QUERY_KEY, queryFn: api.getAssistantSettings });
-  const models = useQuery({ queryKey: ['assistant', 'models'], queryFn: api.getAssistantModels });
+  const settingsKey = [...SETTINGS_PREFIX_KEY, space] as const;
+  const settings = useQuery({ queryKey: settingsKey, queryFn: () => api.getAssistantSettings(space) });
+  const models = useQuery({ queryKey: ['assistant', 'models', space], queryFn: () => api.getAssistantModels(space) });
   const current = settings.data;
+  // The instance admin turned personal keys off: the shared key serves everyone, a personal key is not used.
+  const personalDisabled = current?.personalKeysAllowed === false;
+  const sharedInUse = current?.apiKeySource === 'space' || current?.apiKeySource === 'instance';
 
   const saveKey = useMutation({
     mutationFn: (key: string) => api.saveAssistantKey(key),
     onSuccess: (result) => {
       setApiKey('');
-      void queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: SETTINGS_PREFIX_KEY });
+      void queryClient.invalidateQueries({ queryKey: ['assistant', 'models'] });
       showToast(t('assistant.settings.savedAs', { name: result.apiKeyName ?? '' }), 'info');
     },
     onError: (err) => {
@@ -49,7 +61,7 @@ export function AssistantSettingsModal({ onClose }: AssistantSettingsModalProps)
   });
 
   const checkKey = useMutation({
-    mutationFn: () => api.checkAssistantKey(),
+    mutationFn: () => api.checkAssistantKey(undefined, space),
     onSuccess: (result) => {
       showToast(result.ok ? t('assistant.settings.checkOk', { name: result.apiKeyName ?? '' }) : t('assistant.settings.checkFailed'), result.ok ? 'info' : 'error');
     },
@@ -60,7 +72,8 @@ export function AssistantSettingsModal({ onClose }: AssistantSettingsModalProps)
     mutationFn: () => api.deleteAssistantKey(),
     onSuccess: () => {
       setConfirmingForget(false);
-      void queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: SETTINGS_PREFIX_KEY });
+      void queryClient.invalidateQueries({ queryKey: ['assistant', 'models'] });
     },
     onError: (err) => {
       setConfirmingForget(false);
@@ -69,8 +82,8 @@ export function AssistantSettingsModal({ onClose }: AssistantSettingsModalProps)
   });
 
   const updateModel = useMutation({
-    mutationFn: (model: string) => api.setAssistantModel(model),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY }),
+    mutationFn: (model: string) => api.setAssistantModel(model, space),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: SETTINGS_PREFIX_KEY }),
     onError: (err) => showToast(errorText(err, 'assistant.settings.modelSaveFailed')),
   });
 
@@ -107,56 +120,81 @@ export function AssistantSettingsModal({ onClose }: AssistantSettingsModalProps)
               {t('assistant.settings.runtimeUnavailable')}
             </div>
           )}
-          {current && !current.encryptionAvailable && (
+          {current && !current.encryptionAvailable && !personalDisabled && (
             <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
               {t('assistant.settings.encryptionUnavailable')}
             </div>
           )}
 
-          <div>
-            <LabeledInput
-              label={t('assistant.settings.keyLabel')}
-              type="password"
-              autoComplete="off"
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-              placeholder={t('assistant.settings.keyPlaceholder')}
-              disabled={busy || !current?.runtimeAvailable || !current?.encryptionAvailable}
-            />
-            <p className="mt-1 text-xs text-neutral-400">{t('assistant.settings.keyHint')}</p>
-          </div>
+          {personalDisabled ? (
+            <>
+              <p className="rounded-lg border border-neutral-200 bg-neutral-50 p-2.5 text-sm text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800/60 dark:text-neutral-200">
+                {t('assistant.settings.personalDisabled')}
+              </p>
+              {/* Not reachable with the current server (a personal key is skipped under this policy and never reported as the source), kept so a stale personal key can still be forgotten. */}
+              {current?.apiKeySource === 'personal' && (
+                <div className="flex flex-col items-start gap-2">
+                  <p className="text-sm text-amber-800 dark:text-amber-300">{t('assistant.settings.personalIgnored')}</p>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingForget(true)}
+                    disabled={busy}
+                    className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-neutral-700 dark:text-red-400 dark:hover:bg-red-950/30"
+                  >
+                    {t('assistant.settings.disconnect')}
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div>
+                <LabeledInput
+                  label={t('assistant.settings.keyLabel')}
+                  type="password"
+                  autoComplete="off"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  placeholder={t('assistant.settings.keyPlaceholder')}
+                  disabled={busy || !current?.runtimeAvailable || !current?.encryptionAvailable}
+                />
+                <p className="mt-1 text-xs text-neutral-400">{t('assistant.settings.keyHint')}</p>
+                {sharedInUse && <p className="mt-1 text-xs text-neutral-400">{t('assistant.settings.sharedInUse')}</p>}
+              </div>
 
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => saveKey.mutate(apiKey.trim())}
-              disabled={!apiKey.trim() || busy || !current?.runtimeAvailable || !current?.encryptionAvailable}
-              className="flex items-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-            >
-              {saveKey.isPending ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}
-              {t('assistant.settings.save')}
-            </button>
-            {current?.apiKeyConfigured && (
-              <button
-                type="button"
-                onClick={() => checkKey.mutate()}
-                disabled={busy || !current.runtimeAvailable}
-                className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-              >
-                {checkKey.isPending ? <Loader2 size={14} className="animate-spin" /> : t('assistant.settings.check')}
-              </button>
-            )}
-            {current?.apiKeySource === 'personal' && (
-              <button
-                type="button"
-                onClick={() => setConfirmingForget(true)}
-                disabled={busy}
-                className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-neutral-700 dark:text-red-400 dark:hover:bg-red-950/30"
-              >
-                {t('assistant.settings.disconnect')}
-              </button>
-            )}
-          </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => saveKey.mutate(apiKey.trim())}
+                  disabled={!apiKey.trim() || busy || !current?.runtimeAvailable || !current?.encryptionAvailable}
+                  className="flex items-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+                >
+                  {saveKey.isPending ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}
+                  {t('assistant.settings.save')}
+                </button>
+                {current?.apiKeyConfigured && (
+                  <button
+                    type="button"
+                    onClick={() => checkKey.mutate()}
+                    disabled={busy || !current.runtimeAvailable}
+                    className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                  >
+                    {checkKey.isPending ? <Loader2 size={14} className="animate-spin" /> : t('assistant.settings.check')}
+                  </button>
+                )}
+                {current?.apiKeySource === 'personal' && (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingForget(true)}
+                    disabled={busy}
+                    className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-neutral-700 dark:text-red-400 dark:hover:bg-red-950/30"
+                  >
+                    {t('assistant.settings.disconnect')}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
 
           <div>
             <span className="text-sm text-neutral-500 dark:text-neutral-400">{t('assistant.settings.model')}</span>

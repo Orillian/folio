@@ -7,6 +7,7 @@
  * module's role-resolution helpers are async where round 2's were sync.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { spaceOpenToInstance } from '../../shared/contracts.js';
 import type { ApiTokenScope, SpaceRole, User } from '../../shared/contracts.js';
 import * as store from './store.js';
 import * as storage from '../storage.js';
@@ -16,6 +17,7 @@ import { checkLoginRateLimitRedis, isRedisReady, type RateLimitResult } from '..
 import * as pageAccess from '../pageAccess.js';
 import { isAgentPath } from '../agentPath.js';
 import { normalizePublicUrl } from '../publicUrl.js';
+import { isPublicPage, publicReadablePageIds } from '../publicSites.js';
 
 export const SESSION_COOKIE_NAME = 'folio_session';
 const SESSION_TTL_SECONDS = Math.floor(store.SESSION_TTL_MS / 1000);
@@ -47,9 +49,23 @@ export function roleAtLeast(role: SpaceRole | undefined, min: SpaceRole): boolea
 }
 
 /**
+ * A built-in system account (13.10.2026: the "Public visitor" that anonymous
+ * public-site assistant runs act as — db/migrations/039_public_assistant.sql).
+ * Its access is NOT the access model of a person: never a membership, never the
+ * implicit viewer of an `instance` space, never an administrator — only an
+ * implicit `viewer` of a PUBLISHED (`visibility: 'public'`) space, and within it
+ * only the public page set (publicSites.ts: no restricted page, no `.agent/**`,
+ * no `_templates/`). The id check is a second key to the `isSystem` flag, so a
+ * User object built without the flag is still recognised.
+ */
+export function isSystemUser(user: Pick<User, 'id' | 'isSystem'>): boolean {
+  return user.isSystem === true || user.id === store.PUBLIC_VISITOR_USER_ID;
+}
+
+/**
  * Round 27 (access and rights): NO instance-admin bypass here — content access is
  * ONLY an explicit `space_members` row, or (§3) an implicit `viewer` when the
- * space's `visibility` is `'instance'`. `user.isAdmin` grants the ability to
+ * space's `visibility` is `'instance'` or `'public'` (spaceOpenToInstance). `user.isAdmin` grants the ability to
  * ADMINISTER access (see canAdministerSpace below), never to read content by
  * itself — that's the whole point of this round (spec-access.md §1/§2): "not
  * 'an admin cannot read a private space', but 'an admin cannot read it
@@ -57,21 +73,23 @@ export function roleAtLeast(role: SpaceRole | undefined, min: SpaceRole): boolea
  */
 export async function effectiveRole(user: User, space: string): Promise<SpaceRole | undefined> {
   if (user.disabled) return undefined;
+  if (isSystemUser(user)) return (await store.getSpaceVisibility(space)) === 'public' ? 'viewer' : undefined;
   const explicit = await store.getMembershipRole(space, user.id);
   if (explicit) return explicit;
   const visibility = await store.getSpaceVisibility(space);
-  return visibility === 'instance' ? 'viewer' : undefined;
+  return spaceOpenToInstance(visibility) ? 'viewer' : undefined;
 }
 
 /**
  * space slug -> role for every space this user may see: explicit
- * space_members rows, plus (round 27) every `visibility: 'instance'` space
+ * space_members rows, plus (round 27) every `visibility: 'instance'` or `'public'` space
  * as an implicit 'viewer' entry (explicit membership, if any, wins — an
  * explicit editor/admin role is never downgraded by the implicit grant).
  * Disabled: nothing, same as effectiveRole.
  */
 export async function membershipsFor(user: User): Promise<Record<string, SpaceRole>> {
   if (user.disabled) return {};
+  if (isSystemUser(user)) return Object.fromEntries((await store.listPublicSpaceSlugs()).map((slug) => [slug, 'viewer' as SpaceRole]));
   const explicit = await store.spacesForUser(user.id);
   const out: Record<string, SpaceRole> = { ...explicit };
   for (const slug of await store.listInstanceVisibleSpaceSlugs()) {
@@ -94,6 +112,7 @@ export async function visibleSpaceSlugs(user: User): Promise<Set<string>> {
  * boundary" table draws exactly this line.
  */
 export async function canAdministerSpace(user: User, space: string): Promise<boolean> {
+  if (isSystemUser(user)) return false;
   if (user.isAdmin) return true;
   const role = await store.getMembershipRole(space, user.id);
   return role === 'admin';
@@ -136,12 +155,15 @@ export async function requirePageRole(request: FastifyRequest, id: string, min: 
 
 /** `.agent/**` gate first (see requirePageRole's doc comment) — every caller of this (routes.ts, mcp.ts's checkPageRole, collab.ts, pageChanges.ts, assistant/workspace.ts) gets it for free. */
 export async function effectivePageRole(user: User, entry: PageIndexEntry): Promise<SpaceRole | undefined> {
+  // A system user reads exactly the public page set of a published space (see isSystemUser).
+  if (isSystemUser(user)) return !user.disabled && (await isPublicPage({ id: entry.id, space: entry.space, relPath: entry.relPath })) ? 'viewer' : undefined;
   if (isAgentPath(entry.relPath) && !(await canAdministerSpace(user, entry.space))) return undefined;
   return pageAccess.effectivePageRole(user, entry, await effectiveRole(user, entry.space));
 }
 
 export async function readablePageIds(user: User, space: string): Promise<Set<string>> {
   if (!(await effectiveRole(user, space))) return new Set();
+  if (isSystemUser(user)) return publicReadablePageIds(space);
   return pageAccess.readablePageIds(user.id, space, await canAdministerSpace(user, space));
 }
 
@@ -232,6 +254,8 @@ export async function userForToken(token: string | undefined | null): Promise<Us
   if (!userId) return null;
   const stored = await store.findStoredUserById(userId);
   if (!stored) return null;
+  // A system account never holds a session (store.createSession refuses it); should a row ever appear, it authenticates nothing.
+  if (stored.isSystem) return null;
   if (stored.disabled) {
     await store.destroyAllSessionsForUser(userId);
     return null;
@@ -267,7 +291,7 @@ async function resolvePat(request: FastifyRequest): Promise<ResolvedAuth | null>
   const resolved = await store.resolveApiToken(bearer);
   if (!resolved) return null;
   const user = await store.findUserById(resolved.userId);
-  if (!user || user.disabled) return null;
+  if (!user || user.disabled || isSystemUser(user)) return null;
   store.touchApiTokenLastUsed(resolved.tokenId);
   return { user, tokenScopes: resolved.scopes, tokenId: resolved.tokenId };
 }

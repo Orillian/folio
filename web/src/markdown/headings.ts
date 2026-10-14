@@ -2,6 +2,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import { remarkUnderline } from '@shared/underline';
+import { phrasingToPlainText } from '@shared/inlineText';
 import { visit } from 'unist-util-visit';
 import type { Root, Heading as MdHeading, Text, InlineCode } from 'mdast';
 import { slugify } from './slugify';
@@ -11,6 +12,7 @@ export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface HeadingInfo {
   level: HeadingLevel;
+  /** What the heading says, markup resolved (`==x=={.green}`, `:status[x]`, `**x**`, links, escapes): the label the outline shows. */
   text: string;
   slug: string;
 }
@@ -55,20 +57,50 @@ export function createSlugDeduper() {
  * outline panel for any page with an icon/cover set.
  */
 export function extractHeadings(rawMarkdown: string): HeadingInfo[] {
-  const markdown = stripFrontmatter(rawMarkdown);
+  return parseHeadings(stripFrontmatter(rawMarkdown)).map(({ level, text, slug }) => ({ level, text, slug }));
+}
+
+/** A heading of a parsed document: `extractHeadings`' entry plus the offset it starts at in the text that was parsed. */
+export interface ParsedHeading extends HeadingInfo {
+  offset: number | undefined;
+}
+
+/**
+ * Every heading of `markdown` (frontmatter already stripped) with its label,
+ * its deduped slug and its offset. The ONE place headings are read, so the
+ * outline, the rendered ids and the editor's scroll-to-heading cannot drift.
+ */
+export function parseHeadings(markdown: string): ParsedHeading[] {
   const tree = unified().use(remarkParse).use(remarkGfm).use(remarkUnderline).parse(markdown) as Root;
   const dedupe = createSlugDeduper();
-  const headings: HeadingInfo[] = [];
+  const headings: ParsedHeading[] = [];
 
   visit(tree, 'heading', (node: MdHeading) => {
-    const text = headingText(node);
-    headings.push({ level: node.depth as HeadingLevel, text, slug: dedupe(text) });
+    headings.push({
+      level: node.depth as HeadingLevel,
+      text: phrasingToPlainText(node.children),
+      slug: dedupe(headingAnchorSource(node)),
+      offset: node.position?.start?.offset,
+    });
   });
 
   return headings;
 }
 
-function headingText(node: MdHeading): string {
+/**
+ * The text a heading's slug is made from: prose and inline code exactly as the
+ * parser hands them over, with NO highlight/status handling. That is
+ * deliberate, and it is not the label (`HeadingInfo.text`, which resolves
+ * them): `## ==Done=={.green} work` has always been anchored as
+ * `#donegreen-work`, which is also what GitHub makes of the raw line (this
+ * app treats GitHub-renderable fidelity as a hard requirement, see
+ * slugify.ts), and a heading link or a printed outline written against that
+ * anchor must keep working. Cleaning the label changed nothing here: an
+ * ordinary heading — and one with only `**bold**`, `*italic*`, `~~strike~~`,
+ * `++underline++` or a link, which the parser already unwraps — slugs the
+ * same as before, byte for byte (headings.test.ts pins both).
+ */
+function headingAnchorSource(node: MdHeading): string {
   let text = '';
   visit(node, (child) => {
     if (child.type === 'text') text += (child as Text).value;

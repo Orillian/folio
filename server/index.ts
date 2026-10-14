@@ -18,9 +18,12 @@ import { registerTableRoutes } from './tables/routes.js';
 import { registerFormRoutes, registerPublicFormRoutes } from './forms/routes.js';
 import { registerExportRoutes, registerPublicExportRoutes } from './export/routes.js';
 import { registerAccessRoutes } from './access/routes.js';
+import { registerPublicSiteRoutes, registerPublicSiteAdminRoutes } from './publicSiteRoutes.js';
+import { publicSiteForShell } from './publicSites.js';
 import { registerTrashRoutes } from './trash/routes.js';
 import { registerPageChangeRoutes } from './pageChangesRoutes.js';
 import { registerAssistantRoutes } from './assistant/routes.js';
+import { registerPublicAssistantRoutes } from './assistant/publicRoutes.js';
 import { registerAssistantAdminRoutes } from './assistant/adminRoutes.js';
 import { registerNotificationRoutes } from './notifications/routes.js';
 import * as notificationSocket from './notifications/socket.js';
@@ -31,6 +34,8 @@ import { registerOAuthRoutes } from './oauth/routes.js';
 import * as session from './auth/session.js';
 import { registerPublicAuthRoutes, registerProtectedAuthRoutes } from './auth/routes.js';
 import { registerGoogleAuthRoutes } from './auth/google.js';
+import { registerGitHubConnectRoutes } from './auth/githubConnect.js';
+import { requestLogSerializers } from './logRedaction.js';
 import { importJsonIfNeeded } from './auth/importJson.js';
 import { ensurePgReachable, getPool, closePool } from './db/pool.js';
 import { runMigrations } from '../db/migrate.js';
@@ -63,12 +68,13 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : SERVER_PORT;
 // TRUST_PROXY (server/trustProxy.ts): off unless the operator says how many
 // reverse proxies sit in front, so a client can't forge X-Forwarded-For.
 const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
-const app = Fastify({ logger: true, trustProxy });
+// Same as `logger: true`, except OAuth callback query strings (one-time codes) are redacted — see logRedaction.ts.
+const app = Fastify({ logger: { level: 'info', serializers: requestLogSerializers }, trustProxy });
 app.decorateRequest('authUser', null);
 
 app.setErrorHandler((err, request, reply) => {
   if (err instanceof HttpError) {
-    reply.status(err.status).send({ error: err.message });
+    reply.status(err.status).send(err.code ? { error: err.message, code: err.code } : { error: err.message });
     return;
   }
   const message = err instanceof Error ? err.message : 'invalid request';
@@ -104,7 +110,10 @@ app.setNotFoundHandler(async (request, reply) => {
   // so a non-share route never pays for it.
   const pathname = request.url.split('?')[0];
   const requestOrigin = `${request.protocol}://${request.hostname}`;
-  const indexHtml = renderIndexHtml(fs.readFileSync(indexPath, 'utf8'), requestOrigin, pathname);
+  // A published space (public sites): its own host, or /public/<slug>, gets the
+  // space's name as <title> and, on its own host, the folio-public-site marker.
+  const site = await publicSiteForShell(request.hostname, pathname);
+  const indexHtml = renderIndexHtml(fs.readFileSync(indexPath, 'utf8'), requestOrigin, pathname, site);
   const shareMatch = matchShareRoute(pathname);
   if (!shareMatch) {
     reply.type('text/html').send(indexHtml);
@@ -149,6 +158,9 @@ async function main(): Promise<void> {
   // Round 32: GET /api/auth/google/start, GET /api/auth/google/callback —
   // "Sign in with Google", same public trust boundary as login above.
   registerGoogleAuthRoutes(app);
+  // GET /api/auth/github-connect/start|callback — "Connect with GitHub" (links a
+  // github.com token to the signed-in user; does its own cookie-session check).
+  registerGitHubConnectRoutes(app);
   // Round 8: GET /api/share/:token, PUT /api/share/:token/board — no session
   // at all, same public scope as the auth routes above.
   registerPublicShareRoutes(app);
@@ -161,6 +173,12 @@ async function main(): Promise<void> {
   // share-link guest" reasoning as the share routes above; the handler does
   // its own session-or-share-token check (see server/forms/routes.ts).
   registerPublicFormRoutes(app);
+  // Public sites (13.10.2026): GET /api/public/** — anonymous, read-only views of
+  // a space whose visibility is 'public'. Never touches request.authUser.
+  registerPublicSiteRoutes(app);
+  // "Ask Folio AI" on a public site: POST/GET /api/public/spaces/:slug/assistant/** —
+  // anonymous, Ask-only, confined to that one space, limited per IP and per space.
+  registerPublicAssistantRoutes(app);
 
   // Round 8 follow-up (prod bug: images inside a shared page were 401ing for a
   // guest — this route used to live inside the session-gated scope below).
@@ -233,6 +251,7 @@ async function main(): Promise<void> {
     registerFormRoutes(protectedScope);
     registerExportRoutes(protectedScope);
     registerAccessRoutes(protectedScope);
+    registerPublicSiteAdminRoutes(protectedScope);
     registerTrashRoutes(protectedScope);
     registerPageChangeRoutes(protectedScope);
     registerAssistantRoutes(protectedScope);
@@ -257,6 +276,7 @@ async function main(): Promise<void> {
         fs.readFileSync(path.join(distRoot, 'index.html'), 'utf8'),
         `${request.protocol}://${request.hostname}`,
         '/',
+        await publicSiteForShell(request.hostname, '/'),
       );
       return reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(html);
     });

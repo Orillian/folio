@@ -10,7 +10,10 @@ import { badRequest, notFound } from '../errors.js';
 import { publicUrlOrOrigin } from '../publicUrl.js';
 import * as session from '../auth/session.js';
 import * as gitSync from '../gitSync.js';
+import * as storage from '../storage.js';
 import type { PageIndexEntry } from '../storage.js';
+import { getPublicSpace, isPublicPage, publicReadablePageIds } from '../publicSites.js';
+import { rateLimited, retryAfterSeconds } from '../rateLimit.js';
 import { officeFormat } from '../../shared/contracts.js';
 import { queryString } from '../validate.js';
 import { collectForExport, singlePage } from './collect.js';
@@ -108,9 +111,11 @@ async function buildExport(
   shareToken?: string,
   /** false for PDF/DOCX — see PageSourceOptions.boardText. */
   boardText = true,
+  /** The pages the caller may read, when it is not a signed-in user (a public site passes its public set). Wins over the session. */
+  allowedPageIds?: ReadonlySet<string>,
 ): Promise<ExportRequest> {
   const includeChildren = boolParam(request, 'children', policy.fallback) && policy.allowed;
-  const allowed = request.authUser ? await session.readablePageIds(request.authUser, entry.space) : undefined;
+  const allowed = allowedPageIds ?? (request.authUser ? await session.readablePageIds(request.authUser, entry.space) : undefined);
   const collected = await collectForExport(entry, includeChildren, undefined, allowed);
   const assembled = await assembleMarkdown(collected, {
     boardText,
@@ -315,5 +320,80 @@ export function registerPublicExportRoutes(app: FastifyInstance): void {
     reply.header('X-Robots-Tag', 'noindex');
     reply.header('Cache-Control', 'no-store');
     return reply.send(html);
+  });
+}
+
+/** PUBLIC_EXPORT_PER_MINUTE: PDF/DOCX exports one IP may start per minute on public sites (default 6). */
+function publicExportsPerMinute(): number {
+  const n = Math.floor(Number((process.env.PUBLIC_EXPORT_PER_MINUTE ?? '').trim()));
+  return Number.isFinite(n) && n > 0 ? n : 6;
+}
+
+/**
+ * Anonymous export of a page of a PUBLISHED space (public sites): md / pdf /
+ * docx, only when the space's admin switched downloads on. Public scope like
+ * the routes above — nothing here reads a session. The page must itself be
+ * public (not restricted, not `.agent/**`, not a template) and `?children=1`
+ * collects only public pages. PDF and DOCX cost real CPU, so they are limited
+ * per IP (PUBLIC_EXPORT_PER_MINUTE); PDF additionally goes through pdf.ts's
+ * global concurrency limit.
+ */
+export function registerPublicSiteExportRoutes(app: FastifyInstance): void {
+  async function resolvePublicExport(request: FastifyRequest): Promise<{ entry: PageIndexEntry; allowed: Set<string> }> {
+    const { slug, id } = request.params as { slug: string; id: string };
+    const site = await getPublicSpace(slug);
+    if (!site) throw notFound('space');
+    if (!site.allowDownload) throw notFound('export');
+    const entry = id.startsWith('dir:') ? undefined : await storage.getEntry(id);
+    if (!entry || entry.space !== slug || !(await isPublicPage(entry))) throw notFound('page');
+    return { entry, allowed: await publicReadablePageIds(slug) };
+  }
+
+  /** True (after sending the 429) when this IP already used up its heavy exports for the minute. */
+  function exportThrottled(request: FastifyRequest, reply: FastifyReply): boolean {
+    if (!rateLimited('public-export', request.ip, publicExportsPerMinute(), 60_000)) return false;
+    void reply
+      .status(429)
+      .header('Retry-After', String(retryAfterSeconds('public-export', request.ip, 60_000)))
+      .send({ error: 'too many exports, try again in a minute' });
+    return true;
+  }
+
+  app.get('/api/public/spaces/:slug/pages/:id/export.md', async (request, reply) => {
+    const { entry, allowed } = await resolvePublicExport(request);
+    const { assembled } = await buildExport(request, entry, AUTHENTICATED_CHILDREN, undefined, true, allowed);
+    reply.header('Content-Type', 'text/markdown; charset=utf-8');
+    reply.header('Content-Disposition', contentDisposition('attachment', `${slugOf(entry)}.md`));
+    setExportHeaders(reply, assembled.pageCount, assembled.truncation);
+    return reply.send(assembled.markdown);
+  });
+
+  app.get('/api/public/spaces/:slug/pages/:id/export.pdf', async (request, reply) => {
+    const { entry, allowed } = await resolvePublicExport(request);
+    if (!(await isChromiumAvailable())) throw badRequest('PDF export is unavailable: no chromium executable found (set CHROMIUM_PATH)');
+    if (exportThrottled(request, reply)) return reply;
+    const { assembled } = await buildExport(request, entry, AUTHENTICATED_CHILDREN, undefined, false, allowed);
+    const pdf = await renderPdf({
+      markdown: assembled.markdown,
+      entry,
+      baseUrl: requestBaseUrl(request),
+      landscape: boolParam(request, 'landscape', false),
+    });
+    reply.header('Content-Type', 'application/pdf');
+    reply.header('Content-Disposition', contentDisposition('attachment', `${slugOf(entry)}.pdf`));
+    setExportHeaders(reply, assembled.pageCount, assembled.truncation);
+    return reply.send(pdf);
+  });
+
+  app.get('/api/public/spaces/:slug/pages/:id/export.docx', async (request, reply) => {
+    const { entry, allowed } = await resolvePublicExport(request);
+    if (exportThrottled(request, reply)) return reply;
+    const { assembled } = await buildExport(request, entry, AUTHENTICATED_CHILDREN, undefined, true, allowed);
+    const { renderDocx } = await import('./docx.js');
+    const docx = await renderDocx({ markdown: assembled.markdown, entry, baseUrl: requestBaseUrl(request) });
+    reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    reply.header('Content-Disposition', contentDisposition('attachment', `${slugOf(entry)}.docx`));
+    setExportHeaders(reply, assembled.pageCount, assembled.truncation);
+    return reply.send(docx);
   });
 }

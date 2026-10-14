@@ -39,6 +39,7 @@ const SETTINGS: AssistantSettings = {
   apiKeyConfigured: true,
   apiKeySource: 'personal',
   apiKeyName: 'k',
+  personalKeysAllowed: true,
   encryptionAvailable: true,
   runtimeAvailable: true,
 };

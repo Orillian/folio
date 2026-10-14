@@ -106,3 +106,12 @@ describe('formatLinkTarget', () => {
     expect(formatLinkTarget('a(1).md')).toBe('<a(1).md>');
   });
 });
+
+describe('repo-mode asset links round-trip', () => {
+  it('a link written by relativePath resolves back to the same /files URL', () => {
+    for (const page of ['index.md', 'guides/setup.md', 'a/b/c/page.md']) {
+      const link = relativePath(page, 'assets/diagram.png');
+      expect(resolveAssetSrc(link, 'docs', page)).toBe('/files/docs/assets/diagram.png');
+    }
+  });
+});

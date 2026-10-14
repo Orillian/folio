@@ -86,6 +86,13 @@ const RULES: { test: RegExp; key: string; values?: (m: RegExpMatchArray) => Reco
   { test: /^a user with this email already exists$/i, key: 'errors.emailTaken' },
   { test: /^this username is already taken$/i, key: 'errors.usernameTaken' },
   { test: /^a space with this slug already exists/i, key: 'errors.spaceSlugTaken' },
+  // --- public sites -------------------------------------------------------
+  { test: /^subdomain is already taken$/i, key: 'errors.subdomainTaken' },
+  { test: /^domain is already in use$/i, key: 'errors.domainInUse' },
+  { test: /^not a public site$/i, key: 'errors.notPublicSite' },
+  // The visitors' Ask AI on a public site (server/assistant/publicRoutes.ts).
+  { test: /^folio ai is not configured for this site$/i, key: 'publicSite.ask.notConfigured' },
+  { test: /^too many questions/i, key: 'publicSite.ask.rateLimited' },
   { test: /^page changed after this action; undo is no longer safe$/i, key: 'errors.undoUnsafe' },
   { test: /^this change cannot be undone$/i, key: 'errors.undoUnavailable' },
 

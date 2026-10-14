@@ -252,6 +252,8 @@ export interface StartRunInput {
   space: string | null;
   pageId: string | null;
   apiKey: string;
+  /** Public sites: the published space an anonymous visitor's run is confined to (Ask-only; user = the public visitor system user). */
+  publicSpace?: string | null;
 }
 
 /**
@@ -265,6 +267,7 @@ export interface StartRunInput {
  */
 export async function startRun(input: StartRunInput): Promise<{ runId: string; conversationId: string }> {
   await authorizeAssistantNavigation(input.user, input);
+  if (input.publicSpace && input.runMode !== 'ask') throw conflict('a public-site assistant run is Ask-only');
   const conversationId = input.conversation.id;
   if (activeByConversation.has(conversationId)) throw conflict('This assistant conversation is already processing a message');
 
@@ -365,6 +368,7 @@ async function executeRun(run: RunState, input: StartRunInput): Promise<void> {
         space: input.space,
         pageId: input.pageId,
         runMode: input.runMode,
+        publicSpace: input.publicSpace ?? null,
         signal: run.abort.signal,
         onRun: (cursorRun) => {
           run.cancel = () => cursorRun.cancel();

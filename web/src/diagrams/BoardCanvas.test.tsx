@@ -856,10 +856,13 @@ describe('BoardCanvas sticky-note palette (Miro-style stickies, owner request)',
 
     expect(state.fakeApi.setActiveTool).toHaveBeenCalledWith({ type: 'selection' });
     expect(state.fakeApi.updateScene).toHaveBeenCalledTimes(1);
-    const { elements } = state.fakeApi.updateScene.mock.calls[0][0] as {
-      elements: Array<{ type: string; width: number; height: number; x: number; y: number; backgroundColor: string }>;
+    const { elements, appState } = state.fakeApi.updateScene.mock.calls[0][0] as {
+      elements: Array<{ id: string; type: string; width: number; height: number; x: number; y: number; backgroundColor: string }>;
+      appState: { selectedElementIds: Record<string, boolean> };
     };
     const inserted = elements.at(-1);
+    // The new note is the ONLY selection: a note left selected by an earlier insert would otherwise have its own text opened (boardStickyEdit.ts).
+    expect(appState.selectedElementIds).toEqual({ [inserted!.id]: true });
     expect(inserted?.type).toBe('rectangle');
     expect(inserted?.width).toBe(STICKY_NOTE_SIZE);
     expect(inserted?.height).toBe(STICKY_NOTE_SIZE);

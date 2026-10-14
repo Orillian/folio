@@ -13,6 +13,13 @@ beforeAll(async () => {
 const opts = { space: 'engineering', pagePath: 'architecture/data-flow.md' };
 
 describe('extractNotes', () => {
+  it('shows the words of a checklist item or callout line, not its highlight/status syntax', () => {
+    const notes = extractNotes(
+      ['- [ ] ==ship== it {.x}', '- [x] :status[Done]{color=green} **docs**', '', '> [!NOTE]', '> a ==marked=={.red} line'].join('\n'),
+    );
+    expect(notes.map((note) => note.text)).toEqual(['ship it {.x}', 'Done docs', 'a marked line']);
+  });
+
   it('finds every callout type, in document order, with the marker stripped', () => {
     const markdown = [
       '> [!NOTE]',

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -11,10 +11,14 @@ import { Modal } from '../ui/Modal';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { GitCredentialForm } from './GitCredentialForm';
 import { ConfluenceCredentialsSection } from './ConfluenceCredentialsSection';
+import { ConnectGitHubButton, useGitHubOAuthEnabled, type GitConnectResult } from './ConnectGitHubButton';
+import { clearGitConnectResult } from './gitConnectReturn';
 import '../i18n/register';
 
 export interface GitCredentialsSettingsProps {
   onClose: () => void;
+  /** Set when the app was just reopened after "Connect with GitHub" (`?gitConnect=`): shown once as a toast. */
+  connectResult?: GitConnectResult | null;
 }
 
 const CREDENTIALS_QUERY_KEY = ['git-credentials'] as const;
@@ -37,7 +41,7 @@ type Tab = 'git' | 'confluence';
  * exactly what it always has, same "specific label, broader tabbed content"
  * shape as tokens/ApiTokensModal.tsx's own MCP tabs.
  */
-export function GitCredentialsSettings({ onClose }: GitCredentialsSettingsProps) {
+export function GitCredentialsSettings({ onClose, connectResult = null }: GitCredentialsSettingsProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
   const queryClient = useQueryClient();
@@ -47,6 +51,17 @@ export function GitCredentialsSettings({ onClose }: GitCredentialsSettingsProps)
   const [removing, setRemoving] = useState<GitCredentialInfo | null>(null);
 
   const credentials = useQuery({ queryKey: CREDENTIALS_QUERY_KEY, queryFn: api.getGitCredentials, retry: false });
+  const githubOAuth = useGitHubOAuthEnabled();
+
+  // A ref, not state: StrictMode runs effects twice, the toast must appear once.
+  const connectResultShown = useRef(false);
+  useEffect(() => {
+    if (!connectResult || connectResultShown.current) return;
+    connectResultShown.current = true;
+    if (connectResult === 'ok') showToast(t('git.credentials.github.connected'), 'info');
+    else showToast(t(`git.credentials.github.errors.${connectResult}`));
+    clearGitConnectResult();
+  }, [connectResult, showToast, t]);
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: CREDENTIALS_QUERY_KEY });
@@ -78,6 +93,13 @@ export function GitCredentialsSettings({ onClose }: GitCredentialsSettingsProps)
         <div className="flex flex-col gap-3">
           <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('git.credentials.intro')}</p>
 
+          {githubOAuth && (
+            <div className="flex flex-col gap-1">
+              <ConnectGitHubButton />
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('git.credentials.github.connectHint')}</p>
+            </div>
+          )}
+
           {credentials.isLoading && <p className="text-sm text-neutral-400">{t('ui.loading')}</p>}
           {credentials.isError && (
             <p className="text-sm text-red-600 dark:text-red-400">{t('git.credentials.loadFailed')}</p>
@@ -94,8 +116,16 @@ export function GitCredentialsSettings({ onClose }: GitCredentialsSettingsProps)
                   className="flex items-center justify-between gap-2 rounded-md border border-neutral-200 px-2.5 py-1.5 dark:border-neutral-700"
                 >
                   <div className="min-w-0">
-                    <div className="truncate text-sm text-neutral-900 dark:text-neutral-100">
-                      {cred.label || PROVIDER_LABEL[cred.provider]}
+                    <div className="flex items-center gap-1.5 text-sm text-neutral-900 dark:text-neutral-100">
+                      <span className="truncate">{cred.label || PROVIDER_LABEL[cred.provider]}</span>
+                      {cred.source === 'oauth' && (
+                        <span
+                          title={cred.accountLogin ? t('git.credentials.github.oauthBadgeTitle', { login: cred.accountLogin }) : undefined}
+                          className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+                        >
+                          {t('git.credentials.github.oauthBadge')}
+                        </span>
+                      )}
                     </div>
                     <div className="truncate text-xs text-neutral-500 dark:text-neutral-400">
                       {PROVIDER_LABEL[cred.provider]} · {cred.host}

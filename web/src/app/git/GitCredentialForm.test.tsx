@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import i18next from 'i18next';
 import { ToastProvider } from '../ui/Toast';
-import { GitCredentialForm } from './GitCredentialForm';
+import { GitCredentialForm, createTokenUrl } from './GitCredentialForm';
 
 beforeAll(async () => {
   await i18next.changeLanguage('en');
@@ -87,5 +87,16 @@ describe('GitCredentialForm', () => {
     // localized frame (errorText.ts -> errors.status.badRequest) instead of
     // being pasted raw into a localized UI.
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Invalid host'));
+  });
+});
+
+describe('createTokenUrl — the "Create a token" link next to the token field', () => {
+  it('points at the provider page with the scopes Folio needs, on the typed host or the public default', () => {
+    expect(createTokenUrl('github', '')).toBe('https://github.com/settings/tokens/new?scopes=repo&description=Folio');
+    expect(createTokenUrl('github', 'https://GitHub.Example.com/')).toBe('https://github.example.com/settings/tokens/new?scopes=repo&description=Folio');
+    expect(createTokenUrl('gitlab', 'gitlab.example.com')).toBe(
+      'https://gitlab.example.com/-/user_settings/personal_access_tokens?name=Folio&scopes=read_api,write_repository',
+    );
+    expect(createTokenUrl('gitlab', 'not a host/')).toContain('https://gitlab.com/');
   });
 });

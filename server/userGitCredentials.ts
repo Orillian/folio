@@ -43,10 +43,26 @@ interface CredRow {
   token_enc: Buffer;
   label: string | null;
   created_at: string;
+  source: 'pat' | 'oauth';
+  account_login: string | null;
 }
 
 function rowToInfo(row: CredRow): GitCredentialInfo {
-  return { id: row.id, host: row.host, provider: row.provider, label: row.label ?? row.host, createdAt: new Date(row.created_at).toISOString() };
+  return {
+    id: row.id,
+    host: row.host,
+    provider: row.provider,
+    label: row.label ?? row.host,
+    createdAt: new Date(row.created_at).toISOString(),
+    source: row.source === 'oauth' ? 'oauth' : 'pat',
+    ...(row.account_login ? { accountLogin: row.account_login } : {}),
+  };
+}
+
+/** How a credential was obtained — a pasted PAT (default) or the "Connect with GitHub" OAuth flow, which also knows the account login. */
+export interface SaveCredentialOptions {
+  source?: 'pat' | 'oauth';
+  accountLogin?: string;
 }
 
 export async function listForUser(userId: string): Promise<GitCredentialInfo[]> {
@@ -61,18 +77,26 @@ export async function listForUser(userId: string): Promise<GitCredentialInfo[]> 
  * token should just update the stored one, not create an ambiguous second
  * row the auto-token lookup would then have to arbitrarily pick between.
  */
-export async function saveCredential(userId: string, host: string, provider: Provider, token: string, label?: string): Promise<GitCredentialInfo> {
+export async function saveCredential(
+  userId: string,
+  host: string,
+  provider: Provider,
+  token: string,
+  label?: string,
+  options: SaveCredentialOptions = {},
+): Promise<GitCredentialInfo> {
   if (!hasSecretConfigured()) {
     throw new HttpError(500, 'FOLIO_SECRET is not configured on this server — git credentials cannot be stored securely. Contact an administrator.');
   }
   const normalizedHost = normalizeHost(host);
   const tokenEnc = encryptSecret(token);
   const row = await queryOne<CredRow>(
-    `INSERT INTO git_credentials (id, user_id, host, provider, token_enc, label)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (user_id, host) DO UPDATE SET provider = EXCLUDED.provider, token_enc = EXCLUDED.token_enc, label = EXCLUDED.label
+    `INSERT INTO git_credentials (id, user_id, host, provider, token_enc, label, source, account_login)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (user_id, host) DO UPDATE SET provider = EXCLUDED.provider, token_enc = EXCLUDED.token_enc, label = EXCLUDED.label,
+       source = EXCLUDED.source, account_login = EXCLUDED.account_login
      RETURNING *`,
-    [randomUUID(), userId, normalizedHost, provider, tokenEnc, label?.trim() || null],
+    [randomUUID(), userId, normalizedHost, provider, tokenEnc, label?.trim() || null, options.source ?? 'pat', options.accountLogin?.trim() || null],
   );
   return rowToInfo(row!);
 }

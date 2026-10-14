@@ -34,6 +34,9 @@
         "orange": "Orange sticky note"
       }
     },
+    "heading": {
+      "make": "Make heading"
+    },
     "reactions": {
       "add": "Add reaction",
       "pick": "Pick a reaction",

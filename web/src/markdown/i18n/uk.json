@@ -7,7 +7,8 @@
   "form": {
     "loading": "Завантаження форми…",
     "notFound": "Форму не знайдено",
-    "fallback": "форма"
+    "fallback": "форма",
+    "publicUnavailable": "Форму можна заповнити лише всередині Folio"
   },
   "alerts": {
     "note": "Нотатка",

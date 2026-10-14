@@ -117,7 +117,7 @@ export interface SpaceInfo {
   /** Present when the request is authenticated. */
   myRole?: SpaceRole;
   git?: SpaceGitInfo;
-  assetMode?: 'store' | 'repo';
+  assetMode?: SpaceAssetMode;
   /** Round 27: private (default) = explicit members only; instance = plus any active user as an implicit viewer. */
   visibility?: SpaceVisibility;
   /**
@@ -140,10 +140,169 @@ export interface SpaceInfo {
 
 // ---------- access & permissions (round 27) ----------
 
-export const spaceVisibilitySchema = z.enum(['private', 'instance']);
+/**
+ * `private` — explicit members only; `instance` — plus every active user as an
+ * implicit viewer; `public` (13.10.2026, published space) — everything `instance`
+ * gives PLUS anonymous visitors read it as a public site (see "Public sites"
+ * below). An implicit viewer never writes; restricted pages (page_access) and
+ * `.agent/**` stay hidden from implicit viewers and from the public alike.
+ */
+export const spaceVisibilitySchema = z.enum(['private', 'instance', 'public']);
 export type SpaceVisibility = z.infer<typeof spaceVisibilitySchema>;
+/** True for the visibilities that grant every active user an implicit viewer role (`instance` and `public`). Use this instead of `=== 'instance'`. */
+export function spaceOpenToInstance(visibility: SpaceVisibility | string | null | undefined): boolean {
+  return visibility === 'instance' || visibility === 'public';
+}
+
+// ---------- Public sites (published spaces), 13.10.2026 — the orchestrator's contract ----------
+// A space with visibility 'public' is served to anonymous visitors (no session) as
+// a read-only site. Three ways to reach it, all served by the same app process:
+//   path:      <PUBLIC_URL>/public/<slug>[/p/<id>]          — always, once public
+//   subdomain: https://<subdomain>.<PUBLIC_SITES_DOMAIN>/[p/<id>]  — when the operator set PUBLIC_SITES_DOMAIN and the admin chose a label
+//   domain:    https://<custom domain>/[p/<id>]              — when the admin set a custom domain (DNS CNAME -> instance host, proxy routes the host to the app)
+// The server resolves subdomain/domain by the Host header; on a match the SPA's
+// index.html carries <meta name="folio-public-site" content="<slug>"> and the SPA
+// mounts the public site at '/'. Visitors see what an implicit viewer sees: the
+// page tree, pages read-only, search limited to this space. Download (md/pdf/docx)
+// and the AI assistant ("Ask" over this space, using the space/instance shared key)
+// are opt-in per space. Notifications, presence, comments, editing: never.
+// Anonymous read routes live under /api/public/** (registered OUTSIDE the session
+// scope) and never touch request.authUser; files come from /files/<space>/<path>
+// (allowed for a public space's non-restricted pages) and /a/<sha>/<name>.
+
+export const PUBLIC_SITE_PATH_PREFIX = '/public';
+
+/** DNS label: lowercase letters, digits, hyphen, 1–63 chars, not starting/ending with a hyphen. */
+export const publicSubdomainSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, 'invalid subdomain');
+/** Bare hostname, lowercase, no scheme/port/path, at least two labels. */
+export const publicDomainSchema = z.string().trim().toLowerCase().regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/, 'invalid domain');
+
+/** PUT /api/spaces/:space/public-settings — space admin or instance admin, cookie-only. Visibility itself is changed via PATCH /api/spaces/:space. */
+export const updateSpacePublicSettingsBodySchema = z.object({
+  subdomain: publicSubdomainSchema.nullable(),
+  domain: publicDomainSchema.nullable(),
+  allowDownload: z.boolean(),
+  allowAssistant: z.boolean(),
+});
+export type SpacePublicSettings = z.infer<typeof updateSpacePublicSettingsBodySchema>;
+
+/** GET/PUT /api/spaces/:space/public-settings. */
+export interface SpacePublicSettingsResponse {
+  visibility: SpaceVisibility;
+  settings: SpacePublicSettings;
+  /** Absolute URLs where the site answers. `path` always (live once visibility is public); `subdomain`/`domain` only when configured (and, for subdomain, when the instance has PUBLIC_SITES_DOMAIN). */
+  urls: { path: string; subdomain: string | null; domain: string | null };
+  /** PUBLIC_SITES_DOMAIN of this instance; null = subdomain publishing is not available here. */
+  sitesDomain: string | null;
+  /** Host of PUBLIC_URL — what a custom domain's CNAME should point to. */
+  mainHost: string;
+}
+
+/**
+ * GET /api/public/site (resolved by the Host header; 404 when the host is not a
+ * published site) and GET /api/public/spaces/:slug (404 unless visibility is public).
+ */
+export interface PublicSiteInfo {
+  space: string;
+  name: string;
+  allowDownload: boolean;
+  allowAssistant: boolean;
+  /** How the site is being reached: 'path' = main host under /public/<slug>; 'host' = subdomain or custom domain, routes at '/'. */
+  mode: 'path' | 'host';
+  /** The space's root page (index) to open at the site root; null when the space has none (the SPA then shows the tree). */
+  homePageId: string | null;
+  /** Absolute PUBLIC_URL of the instance — the "Sign in" / "Powered by Folio" link. */
+  instanceUrl: string;
+}
+
+/**
+ * Anonymous read routes (all GET, no session, 404 unless the space is public):
+ *   GET /api/public/spaces/:slug/tree               → { tree: TreeNode[] }  (restricted, .agent, _templates excluded)
+ *   GET /api/public/spaces/:slug/pages/:id          → PublicPagePayload       (same PageDoc as GET /api/pages/:id; 404 for restricted/.agent/other space)
+ *   GET /api/public/spaces/:slug/resolve?path=      → { id: string }         (relative .md links)
+ *   GET /api/public/spaces/:slug/search?q=          → { hits: SearchHit[] }  (this space only)
+ *   GET /api/public/spaces/:slug/pages/:id/export.(md|pdf|docx)?children=0|1 → file; 404 unless allowDownload
+ * Files: GET /files/:space/<path> for a public space's non-restricted page files and the files they reference.
+ * Collab: WS /collab/<pageId> admits an anonymous viewer (read-only) for a public space's non-restricted page (tables render live).
+ */
+export interface PublicPagePayload {
+  page: PageDoc;
+  spaceName: string;
+}
+
+/**
+ * "Ask Folio AI" on a public site (13.10.2026) — anonymous visitors ask questions
+ * about THIS space only. Registered outside the session scope; every route 404s
+ * `space not found` unless the space is public AND `allowAssistant` is on, and
+ * is refused (403) in the public demo. Runs are Ask-only and act as the built-in
+ * "Public visitor" system user, confined to the public page set of this one space
+ * (no restricted page, no `.agent/**` content, no `_templates/`, no other space,
+ * no page history). Key: the space's shared key → the instance key → CURSOR_API_KEY
+ * (a personal key never applies) — 409 `Folio AI is not configured for this site`
+ * when there is none.
+ *
+ *   POST /api/public/spaces/:slug/assistant/runs                       body PublicAssistantRunBody → 202 PublicAssistantRunStarted
+ *        Limits per process, sliding hour, checked before any work → 429 + Retry-After:
+ *        PUBLIC_ASSISTANT_RUNS_PER_HOUR per IP (default 20), PUBLIC_ASSISTANT_SPACE_RUNS_PER_HOUR per space (default 200).
+ *        Without `conversationId` a new conversation and a new `guestToken` are created; with it, `guestToken`
+ *        must be the one that conversation was created with (404 otherwise). A `pageId` outside the public set is ignored.
+ *   GET  /api/public/spaces/:slug/assistant/runs/:runId/events?since=&guestToken=   → NDJSON AssistantRunEvent (same stream as the signed-in route)
+ *   POST /api/public/spaces/:slug/assistant/runs/:runId/stop            body { guestToken } → 202 { stopped: true }
+ *   GET  /api/public/spaces/:slug/assistant/conversations/:id?guestToken=           → PublicAssistantConversation
+ * A wrong/missing guest token, a run or conversation of another space, and an unknown id are all the same 404.
+ * The guest token is a bearer secret of that one conversation: keep it client-side (e.g. sessionStorage), never in a URL the visitor shares.
+ */
+export const publicAssistantRunBodySchema = z.object({
+  message: z.string().trim().min(1).max(4000),
+  conversationId: z.string().uuid().optional(),
+  guestToken: z.string().max(128).optional(),
+  /** The page the visitor is reading — navigation context for the answer; ignored unless it is a public page of this space. */
+  pageId: z.string().trim().max(100).optional(),
+});
+export type PublicAssistantRunBody = z.infer<typeof publicAssistantRunBodySchema>;
+
+/** 202 of POST /api/public/spaces/:slug/assistant/runs. `guestToken` is the conversation's token (new or the one sent). */
+export interface PublicAssistantRunStarted {
+  runId: string;
+  conversationId: string;
+  guestToken: string;
+}
+
+/** POST /api/public/spaces/:slug/assistant/runs/:runId/stop. */
+export const publicAssistantStopBodySchema = z.object({ guestToken: z.string().max(128) });
+
+/** GET /api/public/spaces/:slug/assistant/conversations/:id?guestToken= — the chat to restore after a reload. */
+export interface PublicAssistantConversation {
+  messages: Array<Pick<AssistantMessage, 'id' | 'role' | 'content' | 'createdAt'>>;
+  /** The run still in progress in this conversation (subscribe to its events), or null. */
+  activeRunId: string | null;
+}
 
 export const updateSpaceVisibilityBodySchema = z.object({ visibility: spaceVisibilitySchema });
+
+/**
+ * Where pasted/uploaded images of a space go: 'store' = Folio's content-addressed
+ * object storage (default), 'repo' = `assets/` inside the space's content root,
+ * i.e. in the repository next to the docs.
+ */
+export const spaceAssetModeSchema = z.enum(['store', 'repo']);
+export type SpaceAssetMode = z.infer<typeof spaceAssetModeSchema>;
+
+/** PUT /api/spaces/:space/asset-mode (space admin). */
+export const updateSpaceAssetModeBodySchema = z.object({ assetMode: spaceAssetModeSchema });
+export type UpdateSpaceAssetModeBody = z.infer<typeof updateSpaceAssetModeBodySchema>;
+
+/**
+ * POST /api/spaces/:space/assets response. `url` is always a ready-to-use URL on
+ * this origin. `path` is present ONLY for a repo-mode upload: the file's path
+ * relative to the space's content root (e.g. `assets/diagram.png`), which the
+ * editor turns into a page-relative Markdown link so the image also renders on
+ * GitHub.
+ */
+export interface UploadAssetResponse {
+  url: string;
+  path?: string;
+}
 
 /** GET /api/access/matrix — users × spaces grid backing the Access page, §6.2. */
 export interface AccessMatrixUser {
@@ -174,7 +333,7 @@ export interface AccessBulkResult {
 /** GET /api/spaces/:space/access-log and GET /api/users/:id/access share this shape's event rows (round 27 §2.4/§7). */
 export interface AccessLogEntry {
   id: string;
-  action: 'access.grant' | 'access.revoke' | 'access.self_grant' | 'space.visibility';
+  action: 'access.grant' | 'access.revoke' | 'access.self_grant' | 'space.visibility' | 'space.public_settings';
   actorId: string | null;
   actorName: string;
   target: string;
@@ -516,6 +675,14 @@ export const userSchema = z.object({
   lang: uiLanguageSchema.optional(),
   /** Round 15: the handle for @mentions; absent/null = not set. */
   username: usernameSchema.nullable().optional(),
+  /**
+   * Server-side only: `true` for a built-in system account (13.10.2026: the
+   * "Public visitor" user that anonymous public-site assistant runs act as —
+   * db/migrations/039_public_assistant.sql). Absent for every real person, so
+   * no response about a signed-in user carries it. A system account never
+   * signs in and never appears in a people listing.
+   */
+  isSystem: z.boolean().optional(),
 });
 export type User = z.infer<typeof userSchema>;
 
@@ -692,6 +859,8 @@ export interface ReplaceFilePageResponse extends PageMeta {
 /** Instance-wide config a client needs before it's in any particular space. */
 export interface FolioConfig {
   defaultRepoUrl: string | null;
+  /** true when "Connect with GitHub" (OAuth App, github.com only) is configured on this instance — see server/auth/githubConnect.ts. */
+  githubOAuth: boolean;
 }
 
 /** POST /api/git/branches — the branches of a remote repository for the create-space dialog. */
@@ -893,6 +1062,10 @@ export interface GitCredentialInfo {
   provider: 'gitlab' | 'github';
   label: string;
   createdAt: string;
+  /** 'pat' — a pasted access token; 'oauth' — obtained via "Connect with GitHub" (GET /api/auth/github-connect/start). */
+  source: 'pat' | 'oauth';
+  /** The provider account an OAuth token belongs to (e.g. a GitHub login, without "@"); absent for a pasted token. */
+  accountLogin?: string;
 }
 export const saveGitCredentialBodySchema = z.object({
   host: z.string().min(1),
@@ -1102,18 +1275,35 @@ export interface TableDoc {
 // "Ask AI" chat at the bottom of the sidebar, the Ask/Agent modes.
 // All /api/assistant/* routes are browser session (cookie) ONLY, a PAT does not go there.
 
-export type AssistantKeySource = 'personal' | 'environment' | 'none';
+/**
+ * Where the key a run will use comes from. Resolution order (server/assistant/routes.ts
+ * `resolveApiKey(userId, space)`): `personal` (skipped when the instance policy
+ * `personalKeysAllowed` is false) → `space` (the current space's shared key) →
+ * `instance` (instance-wide shared key) → `environment` (CURSOR_API_KEY) → `none`.
+ * Shared keys (space / instance) — see "Shared assistant keys" below.
+ */
+export type AssistantKeySource = 'personal' | 'space' | 'instance' | 'environment' | 'none';
 export type AssistantRunMode = 'ask' | 'agent';
 
-/** GET /api/assistant/settings */
+/**
+ * GET /api/assistant/settings?space=<slug> — `space` is optional: the slug of the space
+ * the chat is opened in, so `apiKeySource` can report that space's shared key.
+ * Without it the space level is skipped.
+ */
 export interface AssistantSettings {
   provider: 'CURSOR';
   /** 'auto' or the id of a Cursor model. */
   model: string;
   apiKeyConfigured: boolean;
   apiKeySource: AssistantKeySource;
-  /** The name of the key that Cursor returned during the check (for personal only). */
+  /** The name of the key that Cursor returned during the check (personal, space or instance key; null for environment/none). */
   apiKeyName: string | null;
+  /**
+   * Instance policy: may members use their own personal key? `false` = the
+   * admin's shared key is used for everyone, the personal-key UI is hidden and
+   * a stored personal key is ignored. Default true.
+   */
+  personalKeysAllowed: boolean;
   /** FOLIO_SECRET is configured — the key can be saved encrypted. */
   encryptionAvailable: boolean;
   /** Node >= 22.13 — the Cursor SDK can be loaded. */
@@ -1123,6 +1313,43 @@ export interface AssistantSettings {
 /** PUT /api/assistant/settings/key — checks the key with Cursor and saves it encrypted. */
 export const saveAssistantKeyBodySchema = z.object({ apiKey: z.string().trim().min(1).max(5000) });
 export type SaveAssistantKeyBody = z.infer<typeof saveAssistantKeyBodySchema>;
+
+// ---------- Shared assistant keys (space / instance), 13.10.2026 — the orchestrator's contract ----------
+// One Cursor key for everyone: an instance admin stores an instance-wide key
+// (/api/admin/assistant/key), a space admin stores a key for one space
+// (/api/spaces/:space/assistant-key). Stored encrypted like the personal key
+// (FOLIO_SECRET), never sent to the browser — only the Cursor key name and who
+// set it when. All routes cookie-only; PUT routes refuse in the public demo.
+// Instance key: requireInstanceAdmin. Space key: canAdministerSpace (space admin
+// or instance admin) — it is operational data in PostgreSQL, not git content.
+
+export type SharedAssistantKeyScope = 'instance' | 'space';
+
+/** GET /api/admin/assistant/key (instance) and GET /api/spaces/:space/assistant-key (space). */
+export interface SharedAssistantKeyInfo {
+  scope: SharedAssistantKeyScope;
+  /** Space slug for `space`, null for `instance`. */
+  space: string | null;
+  configured: boolean;
+  /** The key name Cursor returned during the check; null when not configured. */
+  apiKeyName: string | null;
+  /** Cursor account email returned by the check; may be null. */
+  email: string | null;
+  updatedAt: string | null;
+  updatedBy: { id: string; name: string } | null;
+  /** Instance scope only (null for space): may members still use their own personal key? Default true. */
+  personalKeysAllowed: boolean | null;
+  /** FOLIO_SECRET is configured — the key can be saved encrypted. */
+  encryptionAvailable: boolean;
+  /** Node >= 22.13 — the Cursor SDK can be loaded. */
+  runtimeAvailable: boolean;
+}
+
+/** PUT /api/admin/assistant/key and PUT /api/spaces/:space/assistant-key — checks the key with Cursor and saves it encrypted; DELETE removes it (204). */
+export const saveSharedAssistantKeyBodySchema = saveAssistantKeyBodySchema;
+/** PUT /api/admin/assistant/key-policy (instance admin). */
+export const updateAssistantKeyPolicyBodySchema = z.object({ personalKeysAllowed: z.boolean() });
+export type UpdateAssistantKeyPolicyBody = z.infer<typeof updateAssistantKeyPolicyBodySchema>;
 
 /** POST /api/assistant/settings/check (body `{apiKey?}`; without it the saved key is checked). */
 export interface AssistantConnectionCheck {

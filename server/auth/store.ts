@@ -19,11 +19,20 @@ import type {
   UiLanguage,
   User,
 } from '../../shared/contracts.js';
-import { conflict, notFound } from '../errors.js';
+import { conflict, forbidden, notFound } from '../errors.js';
 import { query, queryOne } from '../db/pool.js';
 import { serverText } from '../serverText.js';
 
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+/**
+ * The built-in "Public visitor" system user (db/migrations/039_public_assistant.sql):
+ * the identity anonymous public-site assistant runs act as. A system user never
+ * signs in, never holds a session or an API token, and is never listed as a
+ * person; its access is decided in session.ts (public spaces only), not by
+ * memberships.
+ */
+export const PUBLIC_VISITOR_USER_ID = '00000000-0000-4000-8000-0000000f0110';
 
 export interface StoredUser extends User {
   /** Round 32 (Google OAuth): NULL for a Google-only account that has never set a password — see passwords.ts's verifyPassword, which treats NULL as "no password can ever match", never comparing against it. */
@@ -46,6 +55,8 @@ interface UserRow {
   username: string | null;
   /** Round 32: NULL = account not linked to Google. */
   google_sub: string | null;
+  /** 039: a built-in system account (the public visitor), never a person. */
+  is_system: boolean;
 }
 
 function rowToStoredUser(row: UserRow): StoredUser {
@@ -62,6 +73,8 @@ function rowToStoredUser(row: UserRow): StoredUser {
     lang: (row.lang as UiLanguage | null) ?? undefined,
     username: row.username ?? undefined,
     googleSub: row.google_sub ?? undefined,
+    // Only ever present (true) on a system account: a real person's user JSON stays exactly as before.
+    ...(row.is_system ? { isSystem: true } : {}),
   };
 }
 function toPublicUser(u: StoredUser): User {
@@ -81,8 +94,9 @@ function hashToken(token: string): string {
 // Users
 // ---------------------------------------------------------------------------
 
+/** Real people only: the built-in system user (migration 039) must not make a fresh instance look set up. */
 export async function hasAnyUsers(): Promise<boolean> {
-  const row = await queryOne<{ exists: boolean }>('SELECT EXISTS(SELECT 1 FROM users) AS exists');
+  const row = await queryOne<{ exists: boolean }>('SELECT EXISTS(SELECT 1 FROM users WHERE NOT is_system) AS exists');
   return row?.exists ?? false;
 }
 
@@ -108,8 +122,22 @@ export async function findUserById(id: string): Promise<User | undefined> {
   return stored ? toPublicUser(stored) : undefined;
 }
 
+/** True for a built-in system account (by id: the public visitor; or by the `is_system` flag of the row). */
+export async function isSystemUserId(id: string): Promise<boolean> {
+  if (id === PUBLIC_VISITOR_USER_ID) return true;
+  const row = await queryOne<{ is_system: boolean }>('SELECT is_system FROM users WHERE id::text = $1', [id]);
+  return row?.is_system ?? false;
+}
+
+/** Slugs of every published (`visibility: 'public'`) space — the only spaces a system user can read (session.ts). */
+export async function listPublicSpaceSlugs(): Promise<string[]> {
+  const rows = await query<{ slug: string }>("SELECT slug FROM spaces WHERE visibility = 'public'");
+  return rows.map((r) => r.slug);
+}
+
+/** Every person (system accounts excluded) — GET /api/users, the access matrix, page-access candidates. */
 export async function listUsers(): Promise<User[]> {
-  const rows = await query<UserRow>('SELECT * FROM users ORDER BY created_at');
+  const rows = await query<UserRow>('SELECT * FROM users WHERE NOT is_system ORDER BY created_at');
   return rows.map((r) => toPublicUser(rowToStoredUser(r)));
 }
 
@@ -120,7 +148,7 @@ export async function listUsers(): Promise<User[]> {
  * membership no longer sees the space at all, so they must not be offered as
  * mentionable in it either) and replaced it with the same visibility rule
  * effectiveRole/membershipsFor use: explicit members of `space`, PLUS every
- * active user when the space's `visibility` is `'instance'` (spec §3 — an
+ * active user when the space's `visibility` is `'instance'` or `'public'` (spec §3 — an
  * implicit viewer can still be @mentioned, same as any other viewer).
  * Restricted to users who have actually chosen a username, name-sorted (no
  * limit/pagination: per DEV-PLAN round 15, "teams are small"). Same as the
@@ -135,7 +163,8 @@ export async function listMentionableUsers(space: string): Promise<MentionableUs
        LEFT JOIN space_members sm ON sm.user_id = u.id AND sm.space_slug = $1
        LEFT JOIN spaces sp ON sp.slug = $1
       WHERE u.username IS NOT NULL
-        AND (sm.user_id IS NOT NULL OR sp.visibility = 'instance')
+        AND NOT u.is_system
+        AND (sm.user_id IS NOT NULL OR sp.visibility IN ('instance', 'public'))
       ORDER BY u.name`,
     [space],
   );
@@ -275,10 +304,18 @@ export interface CreatedSession {
   expiresAt: string;
 }
 
+/** Refuses (403) a system account: whatever path asked for it (login, Google, invite), a system user never gets a session. */
 export async function createSession(userId: string): Promise<CreatedSession> {
   const token = randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-  await query('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)', [hashToken(token), userId, expiresAt]);
+  const rows = await query<{ token_hash: string }>(
+    `INSERT INTO sessions (token_hash, user_id, expires_at)
+     SELECT $1::text, $2::uuid, $3::timestamptz
+      WHERE NOT EXISTS (SELECT 1 FROM users WHERE id = $2::uuid AND is_system)
+     RETURNING token_hash`,
+    [hashToken(token), userId, expiresAt],
+  );
+  if (rows.length === 0) throw forbidden('a system account cannot sign in');
   return { token, expiresAt: expiresAt.toISOString() };
 }
 
@@ -327,7 +364,7 @@ export async function sessionsThatCanReadSpace(space: string, tokens: readonly s
         AND NOT u.disabled
         AND (
           EXISTS (SELECT 1 FROM space_members m WHERE m.space_slug = $1 AND m.user_id = u.id)
-          OR EXISTS (SELECT 1 FROM spaces sp WHERE sp.slug = $1 AND sp.visibility = 'instance')
+          OR EXISTS (SELECT 1 FROM spaces sp WHERE sp.slug = $1 AND sp.visibility IN ('instance', 'public'))
         )`,
     [space, [...byHash.keys()]],
   );
@@ -365,6 +402,7 @@ function rowToApiTokenInfo(row: ApiTokenRow): ApiTokenInfo {
 
 /** Generates + stores a new PAT; the raw token is returned ONLY here — the row keeps just its sha256, same as sessions. */
 export async function createApiToken(userId: string, name: string, scopes: ApiTokenScope[]): Promise<CreatedApiToken> {
+  if (await isSystemUserId(userId)) throw forbidden('a system account cannot hold API tokens');
   const raw = `folio_pat_${randomBytes(16).toString('hex')}`;
   const row = await queryOne<ApiTokenRow>(`INSERT INTO api_tokens (user_id, name, token_hash, scopes) VALUES ($1, $2, $3, $4) RETURNING *`, [
     userId,
@@ -493,9 +531,9 @@ export async function getSpaceVisibility(space: string): Promise<SpaceVisibility
   return row?.visibility;
 }
 
-/** Every space slug currently `visibility: 'instance'` — used by membershipsFor to add each as an implicit viewer entry. */
+/** Every space slug currently `visibility: 'instance'` or `'public'` (a public space is also open to the whole instance) — used by membershipsFor to add each as an implicit viewer entry. */
 export async function listInstanceVisibleSpaceSlugs(): Promise<string[]> {
-  const rows = await query<{ slug: string }>("SELECT slug FROM spaces WHERE visibility = 'instance'");
+  const rows = await query<{ slug: string }>("SELECT slug FROM spaces WHERE visibility IN ('instance', 'public')");
   return rows.map((r) => r.slug);
 }
 
@@ -507,11 +545,14 @@ export async function setSpaceVisibility(space: string, visibility: SpaceVisibil
 
 // ---------------------------------------------------------------------------
 // Access-change log (round 27, spec-access.md §2.4/§7 — audit_log rows for
-// access.grant/access.revoke/access.self_grant/space.visibility, read back
-// for the space's "Access changes" feed and a user's own access panel).
+// access.grant/access.revoke/access.self_grant/space.visibility/space.public_settings,
+// read back for the space's "Access changes" feed and a user's own access panel).
 // ---------------------------------------------------------------------------
 
-const ACCESS_LOG_ACTIONS = ['access.grant', 'access.revoke', 'access.self_grant', 'space.visibility'];
+const ACCESS_LOG_ACTIONS = ['access.grant', 'access.revoke', 'access.self_grant', 'space.visibility', 'space.public_settings'];
+
+/** Space-level events: they have no target user, so they only belong to the space's own feed (never a single user's access panel). */
+const SPACE_LEVEL_ACCESS_LOG_ACTIONS = ['space.visibility', 'space.public_settings'];
 
 interface AuditLogRow {
   id: string;
@@ -550,7 +591,7 @@ export async function listAccessLogForSpace(space: string, limit = 50, language?
   return rows.map((row) => rowToAccessLogEntry(row, language));
 }
 
-/** GET /api/users/:id/access — every access.* event where THIS user was the target (meta.targetUserId), newest first. space.visibility events have no target user, so they're excluded here (they belong to the space's own log, not any one user's). */
+/** GET /api/users/:id/access — every access.* event where THIS user was the target (meta.targetUserId), newest first. space.visibility / space.public_settings events have no target user, so they're excluded here (they belong to the space's own log, not any one user's). */
 export async function listAccessLogForUser(userId: string, limit = 50, language?: string): Promise<AccessLogEntry[]> {
   const rows = await query<AuditLogRow>(
     `SELECT al.id, al.action, al.actor_id, al.target, al.meta, al.at, u.name AS actor_name
@@ -559,7 +600,7 @@ export async function listAccessLogForUser(userId: string, limit = 50, language?
       WHERE al.action = ANY($1) AND al.meta ->> 'targetUserId' = $2
       ORDER BY al.at DESC
       LIMIT $3`,
-    [ACCESS_LOG_ACTIONS.filter((a) => a !== 'space.visibility'), userId, limit],
+    [ACCESS_LOG_ACTIONS.filter((a) => !SPACE_LEVEL_ACCESS_LOG_ACTIONS.includes(a)), userId, limit],
   );
   return rows.map((row) => rowToAccessLogEntry(row, language));
 }

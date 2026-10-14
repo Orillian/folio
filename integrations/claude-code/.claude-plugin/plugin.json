@@ -1,7 +1,7 @@
 {
   "name": "foliowiki",
   "displayName": "Folio Wiki",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Connect Claude Code to a Folio wiki over MCP: search, read and update pages, tables and whiteboards, with a skill that explains how.",
   "author": {
     "name": "Evergreen",

@@ -32,7 +32,14 @@ export type ServerTextKey =
   | 'oauth.allow'
   | 'oauth.deny'
   | 'oauth.errorTitle'
-  | 'oauth.back';
+  | 'oauth.back'
+  | 'gitRepos.tokenInvalid'
+  | 'gitRepos.rateLimited'
+  | 'gitRepos.ssoRequired'
+  | 'gitRepos.ssoRequiredUrl'
+  | 'gitRepos.forbidden'
+  | 'gitRepos.unreachable'
+  | 'gitRepos.failed';
 
 const FALLBACK_LANGUAGE = 'en';
 const BUNDLE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'i18n');

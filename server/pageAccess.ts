@@ -1,3 +1,4 @@
+import { spaceOpenToInstance } from '../shared/contracts.js';
 import type { PageAccessGrantRole, PageAccessInfo, SpaceRole, User } from '../shared/contracts.js';
 import type { PageIndexEntry } from './storage.js';
 import { query, queryOne, withTransaction } from './db/pool.js';
@@ -99,7 +100,7 @@ async function candidateMembers(space: string): Promise<Array<{ userId: string; 
   return users
     .filter((user) => !user.disabled)
     .flatMap((user) => {
-      const role = roles.get(user.id) ?? (visibility === 'instance' ? 'viewer' : undefined);
+      const role = roles.get(user.id) ?? (spaceOpenToInstance(visibility) ? 'viewer' : undefined);
       return role ? [{ userId: user.id, name: user.name, email: user.email, spaceRole: role }] : [];
     })
     .sort((a, b) => a.name.localeCompare(b.name));

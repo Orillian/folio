@@ -26,7 +26,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { AssistantRunMode } from '../../shared/contracts.js';
 import type { User } from '../../shared/contracts.js';
 import { reportUnansweredQuestionInputSchema } from '../../shared/contracts.js';
-import { buildFolioMcpServer } from '../mcp.js';
+import { MCP_WRITE_TOOL_NAMES, buildFolioMcpServer } from '../mcp.js';
+import { isSystemUser } from '../auth/session.js';
 import { MAX_UNANSWERED_REPORTS_PER_RUN, insertUnanswered } from './analytics.js';
 import { listAssistantSkillNames, readAssistantSkill } from './workspace.js';
 
@@ -52,6 +53,9 @@ const WRITE_ONLY_TOOL_NAMES = new Set([
  */
 const MCP_ONLY_TOOL_NAMES = new Set(['search', 'fetch']);
 
+/** Not offered to a public-site run at all (the MCP server refuses them for a public actor too): history shows authors and old revisions, which a public site never does. */
+const NOT_ON_PUBLIC_SITE_TOOL_NAMES = new Set(['page_history', 'page_at_sha']);
+
 export interface AssistantToolsHandle {
   tools: Record<string, SDKCustomTool>;
   close: () => Promise<void>;
@@ -68,6 +72,12 @@ export interface AssistantToolContext {
   conversationId: string;
   space: string | null;
   pageId: string | null;
+  /**
+   * Public sites: the published space an anonymous visitor's run is confined to
+   * (server/assistant/publicRoutes.ts). Becomes McpActor.publicSpace — see its
+   * doc comment in mcp.ts. Such a run is Ask-only.
+   */
+  publicSpace?: string | null;
 }
 
 export const REPORT_UNANSWERED_TOOL = 'report_unanswered_question';
@@ -157,10 +167,15 @@ async function buildReadSkillTool(): Promise<SDKCustomTool> {
 
 /** Builds the assistant's in-process tool set for one run, and a close() to tear the client/server pair down again once the run is over. */
 export async function buildAssistantTools(user: User, runMode: AssistantRunMode, context: AssistantToolContext): Promise<AssistantToolsHandle> {
+  const publicSpace = context.publicSpace?.trim() || undefined;
+  // A public-site run (an anonymous visitor) is read-only, always; and the system user it acts as never runs unconfined.
+  if (publicSpace !== undefined && runMode !== 'ask') throw new Error('a public-site assistant run is Ask-only');
+  if (publicSpace === undefined && isSystemUser(user)) throw new Error('a system user can only run confined to a public site');
   const server = buildFolioMcpServer({
     user,
     scopes: runMode === 'agent' ? ['read', 'write'] : ['read'],
-    tokenId: 'assistant',
+    tokenId: publicSpace !== undefined ? 'assistant-public' : 'assistant',
+    ...(publicSpace !== undefined ? { publicSpace } : {}),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'folio-assistant', version: '1.0.0' });
@@ -171,6 +186,7 @@ export async function buildAssistantTools(user: User, runMode: AssistantRunMode,
   for (const tool of mcpTools) {
     if (MCP_ONLY_TOOL_NAMES.has(tool.name)) continue;
     if (runMode === 'ask' && WRITE_ONLY_TOOL_NAMES.has(tool.name)) continue;
+    if (publicSpace !== undefined && (MCP_WRITE_TOOL_NAMES.has(tool.name) || NOT_ON_PUBLIC_SITE_TOOL_NAMES.has(tool.name))) continue;
     tools[tool.name] = {
       description: tool.description,
       inputSchema: tool.inputSchema as unknown as Record<string, SDKJsonValue>,

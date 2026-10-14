@@ -180,6 +180,10 @@ describe('QA-3 P1: admin endpoints are unreachable via a PAT, whatever its scope
     { name: 'GET /api/admin/assistant/unanswered', method: 'GET', url: () => '/api/admin/assistant/unanswered', cookieStatus: 200 },
     // a missing conversation is a 404 for the admin — but a PAT is refused before the lookup (403)
     { name: 'GET /api/admin/assistant/conversations/:id', method: 'GET', url: () => '/api/admin/assistant/conversations/00000000-0000-4000-8000-000000000000', cookieStatus: 404 },
+    // the shared (instance-wide) AI key: manage it, never via a PAT
+    { name: 'GET /api/admin/assistant/key', method: 'GET', url: () => '/api/admin/assistant/key', cookieStatus: 200 },
+    { name: 'DELETE /api/admin/assistant/key', method: 'DELETE', url: () => '/api/admin/assistant/key', cookieStatus: 204 },
+    { name: 'PUT /api/admin/assistant/key-policy', method: 'PUT', url: () => '/api/admin/assistant/key-policy', payload: () => ({ personalKeysAllowed: true }), cookieStatus: 200 },
 
     // --- server/trash/routes.ts (instance-admin setting) ------------------
     { name: 'PUT /api/trash/settings', method: 'PUT', url: () => '/api/trash/settings', payload: () => ({ retentionDays: 30 }), cookieStatus: 200 },

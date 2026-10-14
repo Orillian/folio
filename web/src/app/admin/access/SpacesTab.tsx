@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, ChevronDown, ChevronRight, Download, ExternalLink, Globe, Lock, MoreHorizontal, Pencil, RefreshCw, Trash2, UserPlus } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Download, ExternalLink, Globe, Lock, MoreHorizontal, Pencil, RefreshCw, Trash2, UserPlus, Users } from 'lucide-react';
 import type { AccessMatrixResponse, SpaceVisibility } from '@shared/contracts';
 import { api } from '../../api';
 import { formatDateTime } from '../../formatDate';
@@ -9,6 +9,7 @@ import { useApiErrorText } from '../../errorText';
 import { useToast } from '../../ui/Toast';
 import { MembersDialog } from '../../sidebar/MembersDialog';
 import { VisibilityConfirmDialog } from './VisibilityConfirmDialog';
+import { VISIBILITY_OPTIONS, accessLogDetail, makeVisibilityLabelKey, nextVisibilityOnToggle, visibilityBadgeClass, visibilityLabelKey } from './logic';
 import { SyncStatusChip } from '../../git/SyncStatusChip';
 import { normalizeRepoUrlForDisplay } from '../../sidebar/gitRepos';
 import { Menu, MenuItem } from '../../ui/Menu';
@@ -27,7 +28,7 @@ export function SpacesTab({ matrix }: SpacesTabProps) {
   const showToast = useToast();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [managingMembers, setManagingMembers] = useState<string | null>(null);
-  const [visibilityTarget, setVisibilityTarget] = useState<{ slug: string; name: string; next: SpaceVisibility } | null>(null);
+  const [visibilityTarget, setVisibilityTarget] = useState<{ slug: string; name: string; next: SpaceVisibility; current?: SpaceVisibility } | null>(null);
   const [renameTarget, setRenameTarget] = useState<{ slug: string; name: string } | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<{ slug: string; name: string; pageCount: number } | null>(null);
@@ -133,15 +134,11 @@ export function SpacesTab({ matrix }: SpacesTabProps) {
                       <button
                         type="button"
                         onClick={() =>
-                          setVisibilityTarget({ slug: space.slug, name: space.name, next: space.visibility === 'instance' ? 'private' : 'instance' })
+                          setVisibilityTarget({ slug: space.slug, name: space.name, next: nextVisibilityOnToggle(space.visibility), current: space.visibility })
                         }
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ${
-                          space.visibility === 'instance'
-                            ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300'
-                            : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300'
-                        }`}
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ${visibilityBadgeClass(space.visibility)}`}
                       >
-                        {space.visibility === 'instance' ? t('access.spaces.visibilityInstance') : t('access.spaces.visibilityPrivate')}
+                        {t(visibilityLabelKey(space.visibility))}
                       </button>
                     </td>
                     <td className="px-3 py-2 text-neutral-600 dark:text-neutral-400">
@@ -188,15 +185,18 @@ export function SpacesTab({ matrix }: SpacesTabProps) {
                               >
                                 {t('admin.spaces.exportZip')}
                               </MenuItem>
-                              <MenuItem
-                                icon={space.visibility === 'instance' ? <Lock size={14} /> : <Globe size={14} />}
-                                onSelect={() => {
-                                  close();
-                                  setVisibilityTarget({ slug: space.slug, name: space.name, next: space.visibility === 'instance' ? 'private' : 'instance' });
-                                }}
-                              >
-                                {space.visibility === 'instance' ? t('access.spaces.makePrivate') : t('access.spaces.makeInstance')}
-                              </MenuItem>
+                              {VISIBILITY_OPTIONS.filter((option) => option !== (space.visibility ?? 'private')).map((option) => (
+                                <MenuItem
+                                  key={option}
+                                  icon={option === 'private' ? <Lock size={14} /> : option === 'instance' ? <Users size={14} /> : <Globe size={14} />}
+                                  onSelect={() => {
+                                    close();
+                                    setVisibilityTarget({ slug: space.slug, name: space.name, next: option, current: space.visibility });
+                                  }}
+                                >
+                                  {t(makeVisibilityLabelKey(option))}
+                                </MenuItem>
+                              ))}
                               <MenuItem
                                 icon={<UserPlus size={14} />}
                                 onSelect={() => {
@@ -263,6 +263,7 @@ export function SpacesTab({ matrix }: SpacesTabProps) {
           space={visibilityTarget.slug}
           spaceName={visibilityTarget.name}
           next={visibilityTarget.next}
+          current={visibilityTarget.current}
           busy={setVisibility.isPending}
           onCancel={() => setVisibilityTarget(null)}
           onConfirm={() => setVisibility.mutate({ slug: visibilityTarget.slug, visibility: visibilityTarget.next })}
@@ -362,7 +363,7 @@ function SpaceAccessLog({ space }: { space: string }) {
         {data.entries.map((entry) => (
           <li key={entry.id}>
             {formatDateTime(entry.at, i18n.language)} · {entry.actorName} · {t(`access.log.${entry.action.replace('.', '_')}`)}
-            {typeof entry.meta.role === 'string' && ` → ${entry.meta.role}`}
+            {accessLogDetail(entry, t)}
           </li>
         ))}
       </ul>

@@ -1,4 +1,5 @@
-import type { AccessMatrixResponse, AccessMatrixSpace, AccessMatrixUser, SpaceRole } from '@shared/contracts';
+import { spaceOpenToInstance } from '@shared/contracts';
+import type { AccessLogEntry, AccessMatrixResponse, AccessMatrixSpace, AccessMatrixUser, SpaceRole, SpaceVisibility } from '@shared/contracts';
 
 /**
  * Round 27 (access and rights) — pure, framework-free helpers backing the
@@ -22,7 +23,8 @@ export type MatrixCellState =
 /** `explicitRole` is `roles[userId]?.[space.slug]` — undefined when there's no row in space_members. */
 export function matrixCellState(space: Pick<AccessMatrixSpace, 'visibility'>, explicitRole: SpaceRole | undefined): MatrixCellState {
   if (explicitRole) return { kind: 'explicit', role: explicitRole };
-  if (space.visibility === 'instance') return { kind: 'implicit-viewer' };
+  // 'public' gives every active user the same implicit viewer role 'instance' does (anonymous visitors on top of it).
+  if (spaceOpenToInstance(space.visibility)) return { kind: 'implicit-viewer' };
   return { kind: 'none' };
 }
 
@@ -52,6 +54,38 @@ export function chipsForUser(roles: Record<string, SpaceRole> | undefined, max =
 /** §6.1's "no access" filter: zero explicit memberships. Implicit instance-visibility access deliberately doesn't count — that's the space being open, not this person having been granted anything. */
 export function hasNoExplicitAccess(roles: Record<string, SpaceRole> | undefined): boolean {
   return Object.keys(roles ?? {}).length === 0;
+}
+
+// ---------------------------------------------------------------------------
+// Space visibility: private / instance-wide / public (published as a website)
+// ---------------------------------------------------------------------------
+
+export const VISIBILITY_OPTIONS: readonly SpaceVisibility[] = ['private', 'instance', 'public'];
+
+/** i18n key (app namespace) of the visibility's name — a missing value reads as the default, private. */
+export function visibilityLabelKey(visibility: SpaceVisibility | undefined): string {
+  return visibility === 'public' ? 'access.spaces.visibilityPublic' : visibility === 'instance' ? 'access.spaces.visibilityInstance' : 'access.spaces.visibilityPrivate';
+}
+
+/** i18n key of the action "make it <visibility>". */
+export function makeVisibilityLabelKey(visibility: SpaceVisibility): string {
+  return visibility === 'public' ? 'access.spaces.makePublic' : visibility === 'instance' ? 'access.spaces.makeInstance' : 'access.spaces.makePrivate';
+}
+
+/**
+ * What clicking a space's visibility badge proposes: private <-> instance-wide, and a public space steps
+ * back to private. Going PUBLIC is deliberately not one click on a badge — it is chosen from the actions
+ * menu / the Publish dialog, where its consequences are spelled out.
+ */
+export function nextVisibilityOnToggle(visibility: SpaceVisibility | undefined): SpaceVisibility {
+  return visibility === 'private' || visibility === undefined ? 'instance' : 'private';
+}
+
+/** Tailwind classes of the badge: grey private, blue instance-wide, green public. */
+export function visibilityBadgeClass(visibility: SpaceVisibility | undefined): string {
+  if (visibility === 'public') return 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300';
+  if (visibility === 'instance') return 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300';
+  return 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300';
 }
 
 // ---------------------------------------------------------------------------
@@ -109,4 +143,34 @@ export function copyMembershipsPlan(
     plan.push({ userId, space: targetSpace, role: sourceRole });
   }
   return plan;
+}
+
+// ---------------------------------------------------------------------------
+// Access-change feed: the short detail shown after an entry's action label.
+// audit_log.meta is free-form JSON, so every field is type-checked before use.
+// ---------------------------------------------------------------------------
+
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+/**
+ * What follows the "<actor> · <action label>" part of a feed row: the role of a grant ("→ editor"), the
+ * new visibility ("→ Public"), or the four publishing settings
+ * ("(download: on, assistant: off, domain: docs.example.com)"). `null` when the entry carries nothing to show.
+ */
+export function accessLogDetail(entry: Pick<AccessLogEntry, 'action' | 'meta'>, t: Translate): string | null {
+  const { meta } = entry;
+  if (entry.action === 'space.visibility') {
+    const v = meta.visibility;
+    return v === 'public' || v === 'instance' || v === 'private' ? ` → ${t(visibilityLabelKey(v))}` : null;
+  }
+  if (entry.action === 'space.public_settings') {
+    const state = (on: boolean) => t(on ? 'access.log.settingOn' : 'access.log.settingOff');
+    const parts: string[] = [];
+    if (typeof meta.allowDownload === 'boolean') parts.push(t('access.log.settingDownload', { state: state(meta.allowDownload) }));
+    if (typeof meta.allowAssistant === 'boolean') parts.push(t('access.log.settingAssistant', { state: state(meta.allowAssistant) }));
+    if (typeof meta.subdomain === 'string' && meta.subdomain) parts.push(t('access.log.settingSubdomain', { value: meta.subdomain }));
+    if (typeof meta.domain === 'string' && meta.domain) parts.push(t('access.log.settingDomain', { value: meta.domain }));
+    return parts.length > 0 ? ` (${parts.join(', ')})` : null;
+  }
+  return typeof meta.role === 'string' ? ` → ${meta.role}` : null;
 }

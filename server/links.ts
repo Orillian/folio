@@ -218,6 +218,116 @@ export function rewriteRelativeLinks(body: string, sourceDir: string, oldTargetR
   return changed ? rewritten : body;
 }
 
+/** Where a path ends up after a move: an exact file match, or anything under a moved directory (its prefix swapped). Unmoved paths come back as-is. */
+function mapMovedPath(p: string, movedFiles: ReadonlyMap<string, string>, movedDirs: ReadonlyMap<string, string>): string {
+  const file = movedFiles.get(p);
+  if (file !== undefined) return file;
+  for (const [from, to] of movedDirs) {
+    if (p === from) return to;
+    if (p.startsWith(`${from}/`)) return `${to}${p.slice(from.length)}`;
+  }
+  return p;
+}
+
+/**
+ * Re-aims every relative link/image in `body` after the document and/or its
+ * targets moved — the move counterpart of rewriteRelativeLinks (a slug rename
+ * keeps depth, so it can use the narrower function; a move cannot). Each
+ * relative href is resolved against `oldDir` (where the doc used to live),
+ * the target is mapped through the move (`movedFiles`: exact old->new
+ * relPaths; `movedDirs`: old->new directory prefixes, which also covers the
+ * implicit `dir/` -> `dir/index.md` form and non-page files such as images
+ * next to a moved index page), and the result is written relative to
+ * `newDir`. A link that still resolves to the right place as written (e.g.
+ * two co-moved pages linking each other) keeps its original text verbatim.
+ * Handles a doc that moved, a doc that only links to something that moved
+ * (`oldDir === newDir`), or both at once. Scheme:/root-relative/pure-#fragment
+ * hrefs are untouched; `?query`, `#hash` and a `"title"` suffix are
+ * preserved. Returns the SAME string reference when nothing changed.
+ */
+export function rebaseRelativeLinks(
+  body: string,
+  oldDir: string,
+  newDir: string,
+  movedFiles: ReadonlyMap<string, string>,
+  movedDirs: ReadonlyMap<string, string> = new Map(),
+): string {
+  let changed = false;
+  const rewritten = body.replace(LINK_RE_CAPTURED, (full: string, bracketText: string, hrefRaw: string) => {
+    const trimmed = hrefRaw.trim();
+    const spaceIdx = trimmed.search(/\s/);
+    const pathPart = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
+    const titleSuffix = spaceIdx === -1 ? '' : trimmed.slice(spaceIdx);
+
+    if (/^[a-z][a-z0-9+.-]*:/i.test(pathPart) || pathPart.startsWith('/')) return full;
+
+    let p = pathPart;
+    let hash = '';
+    const hashIdx = p.indexOf('#');
+    if (hashIdx !== -1) {
+      hash = p.slice(hashIdx);
+      p = p.slice(0, hashIdx);
+    }
+    let queryStr = '';
+    const qIdx = p.indexOf('?');
+    if (qIdx !== -1) {
+      queryStr = p.slice(qIdx);
+      p = p.slice(0, qIdx);
+    }
+    if (!p) return full; // pure #fragment link within the same page
+
+    const resolvedOld = resolveRelative(oldDir, p);
+    if (resolvedOld === null) return full; // already escaped the space: broken before the move, leave it
+    const target = mapMovedPath(resolvedOld, movedFiles, movedDirs);
+    if (resolveRelative(newDir, p) === target) return full; // still resolves to the right place as written
+
+    let newHref = relativeHref(newDir, target) || '.';
+    if (p.endsWith('/') && !newHref.endsWith('/')) newHref += '/';
+    changed = true;
+    return `${bracketText}(${newHref}${queryStr}${hash}${titleSuffix})`;
+  });
+  return changed ? rewritten : body;
+}
+
+/**
+ * Belt-and-braces candidate sources for a move/rename: every doc in `space`
+ * whose indexed text mentions the file name (or, for an index page, the
+ * directory name) of any of `relPaths`, plus the base names of `dirs`. The links table can lag behind the
+ * files (a link recorded 'broken' when its target was not indexed yet), so the
+ * backlink list alone may miss a source; the rewriters are no-ops on a doc
+ * where nothing resolves to a moved path, so over-selecting is harmless.
+ */
+export async function findDocsMentioning(space: string, relPaths: string[], dirs: string[] = []): Promise<string[]> {
+  const names = new Set<string>(dirs.map((d) => d.split('/').pop() ?? '').filter(Boolean));
+  for (const rel of relPaths) {
+    const parts = rel.split('/');
+    const file = parts[parts.length - 1];
+    if (file) names.add(file);
+    if (/^(index|readme)\.md$/i.test(file) && parts.length > 1) names.add(parts[parts.length - 2]);
+  }
+  if (names.size === 0) return [];
+  const patterns = [...names].map((n) => `%${n.replace(/[\\%_]/g, '\\$&')}%`);
+  const rows = await query<{ id: string }>(
+    `SELECT id FROM pages_index WHERE space_slug = $1 AND kind = 'doc' AND plain_text ILIKE ANY($2::text[])`,
+    [space, patterns],
+  );
+  return rows.map((r) => r.id);
+}
+
+/** Ids of docs in `space` with a non-page (asset) link resolving to `dir` or anything under it — the sources a directory move leaves dangling beyond the page backlinks. Read before the move: the index is stale-by-design after it. */
+export async function getAssetLinkSources(space: string, dir: string): Promise<string[]> {
+  if (!dir) return [];
+  const rows = await query<{ id: string }>(
+    `SELECT DISTINCT p.id
+       FROM links l
+       JOIN pages_index p ON p.id = l.source_page_id
+      WHERE p.space_slug = $1 AND l.kind = 'asset'
+        AND (l.target_path = $2 OR left(l.target_path, length($2) + 1) = $2 || '/')`,
+    [space, dir],
+  );
+  return rows.map((r) => r.id);
+}
+
 /** Every page that links TO `targetPageId` (kind='page' links only). No visibility filtering here — callers (routes.ts) intersect with the caller's visible spaces. */
 export async function getBacklinks(targetPageId: string): Promise<PageMeta[]> {
   const rows = await query<BacklinkRow>(

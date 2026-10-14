@@ -3,13 +3,14 @@ import type { FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
-import { Globe, Link2, Lock, ShieldCheck, Trash2 } from 'lucide-react';
+import { Earth, Globe, Link2, Lock, ShieldCheck, Trash2 } from 'lucide-react';
 import type { SpaceRole, SpaceVisibility, User } from '@shared/contracts';
 import { api } from '../api';
 import { formatDate, formatDateTime } from '../formatDate';
 import { useApiErrorText } from '../errorText';
 import { useAuth } from '../auth/AuthProvider';
 import { roleLabel } from '../auth/roles';
+import { VISIBILITY_OPTIONS, makeVisibilityLabelKey, visibilityLabelKey } from '../admin/access/logic';
 import { InviteDialog } from '../invites/InviteDialog';
 import { Modal } from '../ui/Modal';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
@@ -22,6 +23,13 @@ export interface MembersDialogProps {
 }
 
 const ROLE_OPTIONS: SpaceRole[] = ['viewer', 'editor', 'admin'];
+
+/** The confirmation text of each visibility change; 'public' says out loud that anyone on the internet can read. */
+const CONFIRM_KEYS: Record<SpaceVisibility, { title: string; body: string }> = {
+  private: { title: 'members.visibility.confirmPrivateTitle', body: 'members.visibility.confirmPrivateBody' },
+  instance: { title: 'members.visibility.confirmInstanceTitle', body: 'members.visibility.confirmInstanceBody' },
+  public: { title: 'members.visibility.confirmPublicTitle', body: 'members.visibility.confirmPublicBody' },
+};
 
 /** GET/PUT/DELETE /api/spaces/:space/members — space admin+. */
 export function MembersDialog({ space, onClose }: MembersDialogProps) {
@@ -47,6 +55,7 @@ export function MembersDialog({ space, onClose }: MembersDialogProps) {
       setVisibilityTarget(null);
       queryClient.invalidateQueries({ queryKey: ['spaces'] });
       queryClient.invalidateQueries({ queryKey: ['access'] });
+      queryClient.invalidateQueries({ queryKey: ['space-public-settings', space] });
       showToast(t('members.visibility.changed'), 'info');
     },
     onError: (err) => {
@@ -115,17 +124,27 @@ export function MembersDialog({ space, onClose }: MembersDialogProps) {
       <div className="flex max-h-[60vh] flex-col gap-4 overflow-y-auto">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-800">
           <span className="inline-flex items-center gap-1.5 text-neutral-700 dark:text-neutral-300">
-            {visibility === 'instance' ? <Globe size={14} className="opacity-70" /> : <Lock size={14} className="opacity-70" />}
-            {t('members.visibility.label')}:{' '}
-            <strong>{visibility === 'instance' ? t('access.spaces.visibilityInstance') : t('access.spaces.visibilityPrivate')}</strong>
+            {visibility === 'public' ? (
+              <Earth size={14} className="opacity-70" />
+            ) : visibility === 'instance' ? (
+              <Globe size={14} className="opacity-70" />
+            ) : (
+              <Lock size={14} className="opacity-70" />
+            )}
+            {t('members.visibility.label')}: <strong>{t(visibilityLabelKey(visibility))}</strong>
           </span>
-          <button
-            type="button"
-            onClick={() => setVisibilityTarget(visibility === 'instance' ? 'private' : 'instance')}
-            className="rounded-md border border-neutral-300 px-2.5 py-1 text-xs text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-          >
-            {visibility === 'instance' ? t('access.spaces.makePrivate') : t('access.spaces.makeInstance')}
-          </button>
+          <span className="flex flex-wrap gap-1.5">
+            {VISIBILITY_OPTIONS.filter((option) => option !== visibility).map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setVisibilityTarget(option)}
+                className="rounded-md border border-neutral-300 px-2.5 py-1 text-xs text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                {t(makeVisibilityLabelKey(option))}
+              </button>
+            ))}
+          </span>
         </div>
         {isLoading && <p className="text-neutral-400">{t('ui.loading')}</p>}
 
@@ -220,13 +239,13 @@ export function MembersDialog({ space, onClose }: MembersDialogProps) {
 
       {visibilityTarget && (
         <ConfirmDialog
-          title={visibilityTarget === 'instance' ? t('members.visibility.confirmInstanceTitle', { space: spaceName }) : t('members.visibility.confirmPrivateTitle', { space: spaceName })}
-          confirmLabel={visibilityTarget === 'instance' ? t('access.spaces.makeInstance') : t('access.spaces.makePrivate')}
+          title={t(CONFIRM_KEYS[visibilityTarget].title, { space: spaceName })}
+          confirmLabel={t(makeVisibilityLabelKey(visibilityTarget))}
           busy={setVisibility.isPending}
           onCancel={() => setVisibilityTarget(null)}
           onConfirm={() => setVisibility.mutate(visibilityTarget)}
         >
-          {visibilityTarget === 'instance' ? t('members.visibility.confirmInstanceBody') : t('members.visibility.confirmPrivateBody')}
+          {t(CONFIRM_KEYS[visibilityTarget].body)}
         </ConfirmDialog>
       )}
 

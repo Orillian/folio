@@ -20,6 +20,25 @@ function translator(lang: string) {
 
 const en = translator('en');
 
+describe('matchApiErrorRule — public sites', () => {
+  it('names the three messages of the publish dialog and the public routes', () => {
+    expect(matchApiErrorRule('subdomain is already taken')?.key).toBe('errors.subdomainTaken');
+    expect(matchApiErrorRule('domain is already in use')?.key).toBe('errors.domainInUse');
+    expect(matchApiErrorRule('not a public site')?.key).toBe('errors.notPublicSite');
+  });
+
+  it('shows them in every language, never the English the server wrote', () => {
+    for (const lang of UI_LANGUAGES) {
+      const t = translator(lang);
+      for (const message of ['subdomain is already taken', 'domain is already in use', 'not a public site']) {
+        const text = apiErrorText(t, new ApiError(message === 'not a public site' ? 404 : 409, message));
+        expect(text, `${lang}: ${message}`).not.toBe(message);
+        expect(text.startsWith('errors.'), `${lang}: ${message}`).toBe(false);
+      }
+    }
+  });
+});
+
 describe('matchApiErrorRule', () => {
   it('names the login failure the report opens with', () => {
     expect(matchApiErrorRule('invalid email or password')).toEqual({ key: 'errors.invalidCredentials', values: undefined });

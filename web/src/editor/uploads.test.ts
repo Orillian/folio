@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   altTextFor,
+  assetLinkTarget,
   lineInsertEdit,
   linkTextFor,
   markdownFor,
@@ -124,5 +125,32 @@ describe('replacePlaceholderEdit', () => {
 
   it('refuses an empty placeholder rather than matching everywhere', () => {
     expect(replacePlaceholderEdit('anything', '', 'X')).toBeNull();
+  });
+});
+
+describe('assetLinkTarget', () => {
+  it('keeps a store-mode URL exactly as the server returned it', () => {
+    expect(assetLinkTarget('/a/abc123/photo.png', 'guides/setup.md')).toBe('/a/abc123/photo.png');
+    expect(assetLinkTarget({ url: '/a/abc123/photo.png' }, 'guides/setup.md')).toBe('/a/abc123/photo.png');
+  });
+
+  it('writes a repo-mode upload relative to the page, one level up for a nested page', () => {
+    const up = { url: '/files/docs/assets/diagram.png', path: 'assets/diagram.png' };
+    expect(assetLinkTarget(up, 'guides/setup.md')).toBe('../assets/diagram.png');
+    expect(assetLinkTarget(up, 'a/b/c/page.md')).toBe('../../../assets/diagram.png');
+  });
+
+  it('needs no prefix for a page at the content root', () => {
+    expect(assetLinkTarget({ url: '/files/docs/assets/d.png', path: 'assets/d.png' }, 'index.md')).toBe('assets/d.png');
+    expect(assetLinkTarget({ url: '/files/docs/assets/d.png', path: 'assets/d.png' }, '')).toBe('assets/d.png');
+  });
+
+  it('wraps targets that markdown cannot take bare', () => {
+    expect(assetLinkTarget({ url: '/x', path: 'assets/a(1).png' }, 'guides/setup.md')).toBe('<../assets/a(1).png>');
+  });
+
+  it('produces markdown that the live-preview resolver maps back to the stored file', () => {
+    const target = assetLinkTarget({ url: '/files/docs/assets/diagram.png', path: 'assets/diagram.png' }, 'guides/setup.md');
+    expect(markdownFor('Diagram.png', target, true)).toBe('![Diagram](../assets/diagram.png)');
   });
 });

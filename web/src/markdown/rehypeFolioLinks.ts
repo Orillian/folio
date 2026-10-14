@@ -22,7 +22,8 @@
  */
 import { visit } from 'unist-util-visit';
 import type { Root, Element, ElementContent } from 'hast';
-import { parseFolioLink, type FolioLinkRef } from './folioLinks';
+import { folioLinkNavPath, parseFolioLink, type FolioLinkRef } from './folioLinks';
+import type { MarkdownPublicSite } from './publicSite';
 import { ensureFolioLinkResolved, folioLinkFailed, resolvedFolioLink, type ResolvedFolioLink } from './folioLinkIndex';
 
 export interface FolioPageLinksOptions {
@@ -37,15 +38,69 @@ export interface FolioPageLinksOptions {
    * the plain URL exactly like any other unresolved link.
    */
   shareToken?: string;
+  /**
+   * Set when rendering a page of a public site (anonymous visitors). Same reason as
+   * `shareToken` for skipping the title resolution (both endpoints need a session),
+   * but links to the site's OWN pages are rewritten to the site's URL for that page
+   * (path or host mode — the caller's `pageUrl`), keeping the authored label; links
+   * to other spaces stay as they are (sent to the instance when the site is on
+   * another host, where a root-relative `/s/...` would not exist).
+   */
+  publicSite?: Pick<MarkdownPublicSite, 'space' | 'pageUrl' | 'homeUrl' | 'instanceUrl'>;
   /** Defaults to folioLinkIndex.ts's module cache — injectable so tests can exercise "already resolved" / "known to have failed" without touching that (session-wide, singleton) cache. */
   resolve?: (ref: FolioLinkRef) => ResolvedFolioLink | undefined;
   hasFailed?: (ref: FolioLinkRef) => boolean;
   ensureResolve?: (ref: FolioLinkRef) => void;
 }
 
+function originOf(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Points an anchor at an in-app URL: the click handler (markdown/index.tsx) navigates client-side on `data-folio-nav`. */
+function pointAt(node: Element, url: string): void {
+  node.properties.href = url;
+  node.properties.dataFolioNav = url;
+}
+
+/** Public-site flavour of the rewrite — see FolioPageLinksOptions.publicSite. */
+function rewritePublicSiteLink(
+  node: Element,
+  href: string,
+  origin: string | undefined,
+  site: NonNullable<FolioPageLinksOptions['publicSite']>,
+): void {
+  const instanceOrigin = originOf(site.instanceUrl);
+  // A link may name the page on this very origin or on the instance's (the site can be served from a subdomain / custom domain).
+  const ref = parseFolioLink(href, origin) ?? (instanceOrigin && instanceOrigin !== origin ? parseFolioLink(href, instanceOrigin) : null);
+  if (!ref) return;
+  if (ref.space === site.space && ref.kind === 'page') {
+    pointAt(node, site.pageUrl(ref.id));
+    return;
+  }
+  if (ref.space === site.space && ref.kind === 'space') {
+    pointAt(node, site.homeUrl);
+    return;
+  }
+  // Another space (or a folder listing, which has no public URL): the app on the
+  // instance decides what an anonymous visitor may see there. On a site served from
+  // another host the root-relative route would not exist, so point at the instance.
+  if (instanceOrigin && instanceOrigin !== origin) {
+    node.properties.href = `${instanceOrigin}${folioLinkNavPath(ref)}`;
+    node.properties.target = '_blank';
+    node.properties.rel = ['noopener', 'noreferrer'];
+  }
+}
+
 export function rehypeFolioPageLinks({
   origin,
   shareToken,
+  publicSite,
   resolve = resolvedFolioLink,
   hasFailed = folioLinkFailed,
   ensureResolve = ensureFolioLinkResolved,
@@ -56,6 +111,11 @@ export function rehypeFolioPageLinks({
       if (node.tagName !== 'a') return;
       const href = node.properties.href;
       if (typeof href !== 'string' || !href) return;
+
+      if (publicSite) {
+        rewritePublicSiteLink(node, href, origin, publicSite);
+        return;
+      }
 
       const ref = parseFolioLink(href, origin);
       if (!ref) return;

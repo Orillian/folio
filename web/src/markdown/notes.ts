@@ -2,8 +2,9 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import { remarkUnderline } from '@shared/underline';
+import { phrasingToPlainText } from '@shared/inlineText';
 import { visit } from 'unist-util-visit';
-import type { Root, Blockquote, ListItem, Paragraph, PhrasingContent, Text, InlineCode } from 'mdast';
+import type { Root, Blockquote, ListItem, Paragraph, PhrasingContent, Text } from 'mdast';
 import { stripFrontmatter } from './frontmatter';
 import { matchAlertMarker, type AlertType } from './alerts';
 import { t } from './i18n/register';
@@ -22,23 +23,17 @@ export interface NoteEntry {
 }
 
 /**
- * Flattens phrasing content to plain text, the same way headingPositions's
- * headingText does — except a hard `break` node becomes a real `\n` rather
- * than being dropped, since callout body text (below) needs to tell one
- * source line from the next to find its "first non-empty line". A markdown
- * *soft* line break needs no such handling: mdast-util-from-markdown already
- * keeps it as a literal `\n` inside the enclosing Text node's own value,
- * never as a separate node.
+ * Flattens phrasing content to plain text with the same resolver the outline's
+ * headings use (`==x==`, `:status[x]`, links, emphasis → their words), except
+ * a hard `break` node becomes a real `\n` rather than a space, since callout
+ * body text (below) needs to tell one source line from the next to find its
+ * "first non-empty line". A markdown *soft* line break needs no such
+ * handling: mdast-util-from-markdown already keeps it as a literal `\n`
+ * inside the enclosing Text node's own value, never as a separate node — which
+ * is also why whitespace is not collapsed here.
  */
 function inlineText(nodes: readonly PhrasingContent[]): string {
-  let text = '';
-  for (const node of nodes) {
-    if (node.type === 'text') text += (node as Text).value;
-    else if (node.type === 'inlineCode') text += (node as InlineCode).value;
-    else if (node.type === 'break') text += '\n';
-    else if ('children' in node) text += inlineText(node.children as PhrasingContent[]);
-  }
-  return text;
+  return phrasingToPlainText(nodes, { breakText: '\n', collapse: false });
 }
 
 /** A checklist item's display text: its own paragraph, content only — never a nested sub-list/blockquote's. */

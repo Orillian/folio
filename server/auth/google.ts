@@ -318,6 +318,12 @@ export function registerGoogleAuthRoutes(app: FastifyInstance): void {
       { findByGoogleSub: store.findStoredUserByGoogleSub, findByEmail: store.findStoredUserByEmail },
     );
 
+    // A system account (the public visitor, migration 039) never signs in — not even if a Google account claimed its email.
+    if (resolution.kind !== 'create' && resolution.user.isSystem) {
+      request.log.warn({ userId: resolution.user.id }, 'google oauth: rejected, system account');
+      return redirectToLoginError(reply, request, 'disabled');
+    }
+
     let user: { id: string; disabled?: boolean };
     if (resolution.kind === 'existing') {
       user = resolution.user;

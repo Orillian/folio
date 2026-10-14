@@ -169,17 +169,15 @@ export interface ReactionSelectionState {
 }
 
 /**
- * The one element the "add reaction" button belongs to, or null for no button.
- *
- * Shown only when exactly one reactable element is selected (bound text counts
- * as its container), in the editor (not View), with the selection tool and no
+ * True when the editor is in the state in which per-selection affordances (the reaction
+ * and "Make heading" buttons) may show: the editor (not View), the selection tool and no
  * gesture in progress (drag, resize, rotate, text editing, drawing a shape).
  */
-export function reactionTarget<T extends ExcalidrawElement>(elements: readonly T[], appState: ReactionSelectionState): T | null {
-  if (appState.viewModeEnabled) return null;
-  if (appState.activeTool.type !== 'selection') return null;
+export function selectionIsIdle(appState: ReactionSelectionState): boolean {
+  if (appState.viewModeEnabled) return false;
+  if (appState.activeTool.type !== 'selection') return false;
   // Same rule Excalidraw uses to suppress its own affordances while the user is mid-gesture.
-  if (
+  return !(
     appState.cursorButton === 'down' ||
     appState.isResizing ||
     appState.isRotating ||
@@ -189,9 +187,18 @@ export function reactionTarget<T extends ExcalidrawElement>(elements: readonly T
     appState.multiElement ||
     appState.resizingElement ||
     appState.selectionElement
-  ) {
-    return null;
-  }
+  );
+}
+
+/**
+ * The one element the "add reaction" button belongs to, or null for no button.
+ *
+ * Shown only when exactly one reactable element is selected (bound text counts
+ * as its container), in the editor (not View), with the selection tool and no
+ * gesture in progress (drag, resize, rotate, text editing, drawing a shape).
+ */
+export function reactionTarget<T extends ExcalidrawElement>(elements: readonly T[], appState: ReactionSelectionState): T | null {
+  if (!selectionIsIdle(appState)) return null;
   const selected = Object.keys(appState.selectedElementIds).filter((id) => appState.selectedElementIds[id]);
   if (selected.length === 0 || selected.length > 2) return null;
   const byId = new Map(elements.map((el) => [el.id, el] as const));

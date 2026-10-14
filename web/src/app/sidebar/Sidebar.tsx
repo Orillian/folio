@@ -8,6 +8,9 @@ import {
   ExternalLink,
   FileText,
   GitBranch,
+  Globe,
+  KeyRound,
+  Image as ImageIcon,
   LayoutDashboard,
   LayoutTemplate,
   Loader2,
@@ -43,9 +46,12 @@ import { StarredSection } from './StarredSection';
 import { AgentSection } from './AgentSection';
 import { MembersDialog } from './MembersDialog';
 import { ConnectGitDialog } from './ConnectGitDialog';
+import { ImageStorageDialog } from './ImageStorageDialog';
 import { ResetToRemoteDialog } from '../git/ResetToRemoteDialog';
 import { normalizeRepoUrlForDisplay } from './gitRepos';
 import { ExportSettingsDialog } from '../export/ExportSettingsDialog';
+import { SpaceAssistantKeyDialog } from './SpaceAssistantKeyDialog';
+import { PublishSpaceDialog } from './PublishSpaceDialog';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { newPageTitleKey } from './slugUtils';
 import { resolvePlusTargetDir, siblingsAtDir } from './treeUtils';
@@ -119,6 +125,10 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose }: 
   const [managingMembers, setManagingMembers] = useState(false);
   // R23 tail: the space-level PDF header/footer dialog (space menu, admin-gated).
   const [editingExportSettings, setEditingExportSettings] = useState(false);
+  const [editingAssistantKey, setEditingAssistantKey] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  // Space setting: where pasted/uploaded images go (Folio storage vs. assets/ in the repository).
+  const [editingImageStorage, setEditingImageStorage] = useState(false);
   // "Connect git" on a local space (owner ask, this round) — same admin gate
   // as the rest of this menu, see ConnectGitDialog's own doc comment.
   const [connectingGit, setConnectingGit] = useState(false);
@@ -387,6 +397,41 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose }: 
                   >
                     {t('sidebar.spaceMenu.exportSettings')}
                   </MenuItem>
+                  {/* The space's own Folio AI (Cursor) key: members without a personal
+                      key chat with the assistant on it. Space-admin gate like its
+                      neighbors; the server checks canAdministerSpace on
+                      /api/spaces/:space/assistant-key. */}
+                  <MenuItem
+                    icon={<KeyRound size={14} />}
+                    onSelect={() => {
+                      close();
+                      setEditingAssistantKey(true);
+                    }}
+                  >
+                    {t('sidebar.spaceMenu.assistantKey')}
+                  </MenuItem>
+                  {/* Publish the space as a public website: visibility (private / instance /
+                      public), the site's subdomain / custom domain and its visitor opt-ins.
+                      Space-admin gate like its neighbors; the server checks canAdministerSpace
+                      on /api/spaces/:space/public-settings. */}
+                  <MenuItem
+                    icon={<Globe size={14} />}
+                    onSelect={() => {
+                      close();
+                      setPublishing(true);
+                    }}
+                  >
+                    {t('sidebar.spaceMenu.publish')}
+                  </MenuItem>
+                  <MenuItem
+                    icon={<ImageIcon size={14} />}
+                    onSelect={() => {
+                      close();
+                      setEditingImageStorage(true);
+                    }}
+                  >
+                    {t('sidebar.spaceMenu.imageStorage')}
+                  </MenuItem>
                   {/* Trash round: this space's trash — same /trash page the user
                       menu's admin section opens, pre-filtered to this space.
                       Gated by the same canManageMembers (= space admin) check
@@ -533,6 +578,11 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose }: 
         {managingMembers && <MembersDialog space={space} onClose={() => setManagingMembers(false)} />}
 
         {editingExportSettings && <ExportSettingsDialog space={space} onClose={() => setEditingExportSettings(false)} />}
+
+        {editingAssistantKey && <SpaceAssistantKeyDialog space={space} onClose={() => setEditingAssistantKey(false)} />}
+
+        {publishing && <PublishSpaceDialog space={space} onClose={() => setPublishing(false)} />}
+        {editingImageStorage && <ImageStorageDialog space={space} onClose={() => setEditingImageStorage(false)} />}
 
         {connectingGit && <ConnectGitDialog space={space} onClose={() => setConnectingGit(false)} />}
 

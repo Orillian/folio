@@ -28,6 +28,7 @@ import type { MentionLookup } from './mentions';
 import { rehypeHighlight } from '@shared/highlight';
 import { remarkUnderline } from '@shared/underline';
 import { folioSanitizeSchema } from './sanitizeSchema';
+import type { MarkdownPublicSite } from './publicSite';
 
 export interface RenderOptions {
   space: string;
@@ -50,6 +51,12 @@ export interface RenderOptions {
    * `/s/...` links can ever match, never an absolute one.
    */
   origin?: string;
+  /**
+   * Set when rendering a page of a public site: links to the site's own pages are rewritten to
+   * its URLs (rehypeFolioPageLinks). Image/file URLs need nothing — they resolve to `/files/<space>/…`
+   * exactly as without a share token.
+   */
+  publicSite?: Pick<MarkdownPublicSite, 'space' | 'pageUrl' | 'homeUrl' | 'instanceUrl'>;
   /** Test-only override for rehypeFolioPageLinks' resolve/hasFailed/ensureResolve — see its own doc comment. Production callers never pass this, defaulting to the real folioLinkIndex.ts cache. */
   folioLinks?: Pick<FolioPageLinksOptions, 'resolve' | 'hasFailed' | 'ensureResolve'>;
 }
@@ -149,7 +156,7 @@ export function renderMarkdownToHtml(
     .use(remarkDirectiveFallback)
     .use(remarkRehype, { allowDangerousHtml: true })
     .use(rehypeRaw)
-    .use(rehypeFolioPageLinks, { origin: options.origin, shareToken: options.shareToken, ...options.folioLinks })
+    .use(rehypeFolioPageLinks, { origin: options.origin, shareToken: options.shareToken, publicSite: options.publicSite, ...options.folioLinks })
     .use(rehypeRelativeLinks, options)
     .use(rehypeTableExtensions)
     .use(rehypeCellLists)

@@ -101,8 +101,30 @@ export function applyPageMeta(html: string, meta: PageMeta, absoluteUrl: string)
   return `${head.replace(/\s*$/, '\n')}    ${lines.join('\n    ')}\n  ${html.slice(headClose)}`;
 }
 
-/** index.html with this instance's preview meta for the request at `${requestOrigin}${pathname}`. */
-export function renderIndexHtml(html: string, requestOrigin: string, pathname: string): string {
+/** A published space the page belongs to (publicSites.publicSiteForShell). */
+export interface PublicSiteMeta {
+  slug: string;
+  name: string;
+  /** Served on the site's own host: the SPA mounts the site at '/', which it learns from the `folio-public-site` meta tag. */
+  hostMode: boolean;
+}
+
+/**
+ * index.html with this instance's preview meta for the request at
+ * `${requestOrigin}${pathname}`. For a published space (`site`) the title is
+ * the space's name, and on the site's own host the `folio-public-site` meta
+ * tag tells the SPA which space to mount; the canonical URL is the host the
+ * visitor is actually on, not PUBLIC_URL.
+ */
+export function renderIndexHtml(html: string, requestOrigin: string, pathname: string, site?: PublicSiteMeta): string {
   const origin = publicUrlOrOrigin(requestOrigin);
-  return applyPageMeta(html, resolvePageMeta(origin), `${origin}${pathname}`);
+  if (!site) return applyPageMeta(html, resolvePageMeta(origin), `${origin}${pathname}`);
+
+  const base = resolvePageMeta(origin);
+  const meta: PageMeta = { ...base, title: site.name, description: `${site.name} \u2014 published with Folio` };
+  const rendered = applyPageMeta(html, meta, `${site.hostMode ? requestOrigin : origin}${pathname}`);
+  if (!site.hostMode) return rendered;
+  const tag = `<meta name="folio-public-site" content="${escapeHtmlAttr(site.slug)}" />`;
+  const headClose = rendered.indexOf('</head>');
+  return headClose === -1 ? rendered : `${rendered.slice(0, headClose)}  ${tag}\n  ${rendered.slice(headClose)}`;
 }

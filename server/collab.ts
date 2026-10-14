@@ -34,6 +34,7 @@ import { translitSlug } from './translit.js';
 import * as links from './links.js';
 import * as shares from './shares.js';
 import { shareGrantsPage } from './export/shareScope.js';
+import { isPublicPage } from './publicSites.js';
 import { query, queryOne } from './db/pool.js';
 import type { GitIdentity } from './git.js';
 import { badRequest } from './errors.js';
@@ -2781,6 +2782,15 @@ export async function rewriteLinksAfterMove(moved: storage.SlugRenameMove[]): Pr
     }
   }
 
+  // Docs that merely MENTION a moved name but have no recorded backlink (index lag): every move is a candidate for them; rewriteRelativeLinks is a no-op where nothing resolves.
+  const space = moved.length > 0 ? (await storage.getEntry(moved[0].id))?.space : undefined;
+  if (space) {
+    const allTargets = moved.map((m) => ({ oldRelPath: m.oldRelPath, newRelPath: m.newRelPath }));
+    for (const sourceId of await links.findDocsMentioning(space, moved.map((m) => m.oldRelPath))) {
+      if (!rewritesBySource.has(sourceId)) rewritesBySource.set(sourceId, allTargets);
+    }
+  }
+
   for (const [sourceId, targets] of rewritesBySource) {
     const srcEntry = await storage.getEntry(sourceId);
     if (!srcEntry || srcEntry.kind !== 'doc') continue; // boards never carry markdown links (see scanSpace)
@@ -2792,6 +2802,50 @@ export async function rewriteLinksAfterMove(moved: storage.SlugRenameMove[]): Pr
       await flushDoc(sourceId);
     }
   }
+}
+
+/**
+ * Move orchestration: storage.movePageTracked does the mechanical move (and
+ * snapshots every moved page's backlinks first); this layer then fixes the
+ * links a changed LOCATION breaks — unlike a slug rename, which keeps depth.
+ * Two kinds of document need a rewrite, handled in ONE pass per document so a
+ * page that is both moved and linked-to is read and written once:
+ *  - every moved doc (the page plus its subtree): its own outgoing relative
+ *    links and images now start from a different directory;
+ *  - every doc linking to something that moved (page backlinks, and asset
+ *    links into a moved directory).
+ * Each rewrite goes through the live-doc-aware editDocBody + flushDoc, like
+ * rewriteLinksAfterMove, so the one dedicated commit ("docs: move <old> ->
+ * <new>") captures the file moves and every link fix together. Board, table,
+ * form and pdf pages move as plain files (only docs carry markdown links) but
+ * can still be link targets.
+ */
+export async function movePage(id: string, toParentPath: string, author: GitIdentity): Promise<PageMeta> {
+  const { meta, moved, movedDirs, assetLinkSources } = await storage.movePageTracked(id, toParentPath);
+  if (moved.length === 0) return meta; // already at the destination: nothing moved, nothing to relink or commit
+
+  const movedFiles = new Map(moved.map((m) => [m.oldRelPath, m.newRelPath] as const));
+  const movedDirMap = new Map(movedDirs.map((d) => [d.from, d.to] as const));
+  // Directory a moved doc's body was written against (its OLD one); unmoved sources keep their current dir.
+  const oldDirOfMoved = new Map(moved.map((m) => [m.id, m.oldRelPath.includes('/') ? m.oldRelPath.slice(0, m.oldRelPath.lastIndexOf('/')) : ''] as const));
+  const sourceIds = new Set<string>([...oldDirOfMoved.keys(), ...assetLinkSources, ...moved.flatMap((m) => m.backlinks.map((b) => b.id))]);
+  // Belt and braces: docs that merely mention a moved name even if the links table lags behind (rebase is a no-op where nothing resolves).
+  for (const id of await links.findDocsMentioning(meta.space, moved.map((m) => m.oldRelPath), movedDirs.map((d) => d.from))) sourceIds.add(id);
+
+  for (const sourceId of sourceIds) {
+    const srcEntry = await storage.getEntry(sourceId);
+    if (!srcEntry || srcEntry.kind !== 'doc') continue;
+    const currentBody = isDocLive(sourceId) ? (getLiveText(sourceId) ?? (await storage.readFreshDocBody(sourceId))) : await storage.readFreshDocBody(sourceId);
+    const rebased = links.rebaseRelativeLinks(currentBody, oldDirOfMoved.get(sourceId) ?? srcEntry.dirPath, srcEntry.dirPath, movedFiles, movedDirMap);
+    if (rebased !== currentBody) {
+      await editDocBody(sourceId, rebased);
+      await flushDoc(sourceId);
+    }
+  }
+
+  const primary = moved[0];
+  await gitSync.commitNow(meta.space, `docs: move ${primary.oldRelPath} -> ${primary.newRelPath}`, author);
+  return meta;
 }
 
 // ---------------------------------------------------------------------------
@@ -2873,6 +2927,42 @@ interface MinimalEmitter {
   on(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
+/** Top-level y-protocol message type of a frame, or -1 for a malformed one. */
+function frameTopType(raw: ArrayBuffer | Uint8Array): number {
+  try {
+    const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+    return decoding.readVarUint(decoding.createDecoder(bytes));
+  } catch {
+    return -1;
+  }
+}
+
+/**
+ * Public sites (visibility 'public'): an anonymous visitor's connection is not
+ * only read-only (makeReadOnly) but also SILENT — no awareness in either
+ * direction. Inbound awareness is dropped so visitors never show up as
+ * collaborators; outbound awareness is dropped so the names, colours and
+ * cursors of the people editing the page never reach the public internet.
+ * Only sync frames (the document itself, which IS public) pass. Must run
+ * BEFORE setupWSConnection, like makeReadOnly.
+ */
+function makeSilentViewer(conn: unknown): void {
+  const emitter = conn as MinimalEmitter & { send: (data: unknown, ...rest: unknown[]) => unknown };
+  const originalOn = emitter.on.bind(emitter);
+  emitter.on = ((event: string, listener: (...args: unknown[]) => void) => {
+    if (event !== 'message') return originalOn(event, listener);
+    return originalOn('message', (data: unknown) => {
+      const raw = data as ArrayBuffer | Uint8Array;
+      if (frameTopType(raw) === MESSAGE_SYNC && isReadOnlySafeFrame(raw)) listener(data);
+    });
+  }) as MinimalEmitter['on'];
+  const originalSend = emitter.send.bind(emitter);
+  emitter.send = (data: unknown, ...rest: unknown[]) => {
+    if (frameTopType(data as ArrayBuffer | Uint8Array) === MESSAGE_AWARENESS) return undefined;
+    return originalSend(data, ...rest);
+  };
+}
+
 /**
  * Patches `conn.on('message', ...)` in place so that when setupWSConnection
  * (below) registers its own listener, incoming update/syncStep2 frames never
@@ -2940,6 +3030,8 @@ export function attachToServer(httpServer: HttpServer): void {
 
       let role: Awaited<ReturnType<typeof session.effectiveRole>>;
       let guestIdentity: { name: string; email: string } | undefined;
+      /** Anonymous visitor of a public site: read-only AND silent (makeSilentViewer). */
+      let publicVisitor = false;
 
       // Fix/share-identity: the SESSION wins whenever it grants this user any
       // real access (viewer+) to THIS page — own name/colour in presence, own
@@ -2983,19 +3075,31 @@ export function attachToServer(httpServer: HttpServer): void {
         // connections that race it.
         const shareToken = url.searchParams.get('share');
         const share = shareToken ? await shares.resolveShareToken(shareToken) : undefined;
-        if (!share) {
-          rejectUpgrade(socket, user ? 403 : 401, user ? 'Forbidden' : 'Unauthorized');
-          return;
+        let granted = false;
+        if (share) {
+          if (share.pageId === docName) {
+            role = share.mode === 'edit' ? 'editor' : 'viewer';
+            granted = true;
+          } else if (await shareGrantsPage(shareToken!, docName)) {
+            role = 'viewer';
+            granted = true;
+          }
+          if (granted) guestIdentity = { name: `Guest via share ${share.id.slice(0, 8)}`, email: 'guest@folio.local' };
         }
-        if (share.pageId === docName) {
-          role = share.mode === 'edit' ? 'editor' : 'viewer';
-        } else if (await shareGrantsPage(shareToken!, docName)) {
+        // Public sites: a page of a PUBLISHED space (not restricted, not
+        // `.agent/**`, not a template) opens, read-only, for anybody — that is
+        // what lets a table render live on the public site. Never an editor, and
+        // never a restricted page: isPublicPage answers false for those.
+        if (!granted && (await isPublicPage(entry))) {
           role = 'viewer';
-        } else {
+          guestIdentity = { name: 'Public visitor', email: 'guest@folio.local' };
+          publicVisitor = true;
+          granted = true;
+        }
+        if (!granted) {
           rejectUpgrade(socket, user ? 403 : 401, user ? 'Forbidden' : 'Unauthorized');
           return;
         }
-        guestIdentity = { name: `Guest via share ${share.id.slice(0, 8)}`, email: 'guest@folio.local' };
       }
 
       if (!session.roleAtLeast(role, 'viewer')) {
@@ -3022,7 +3126,8 @@ export function attachToServer(httpServer: HttpServer): void {
       }
 
       wss.handleUpgrade(req, socket, head, (conn) => {
-        if (role === 'viewer') makeReadOnly(conn);
+        if (publicVisitor) makeSilentViewer(conn);
+        else if (role === 'viewer') makeReadOnly(conn);
         setupWSConnection(conn, req, { docName });
         // After setupWSConnection, so our listener runs alongside its own.
         (conn as MinimalEmitter).on('message', (...args: unknown[]) => {

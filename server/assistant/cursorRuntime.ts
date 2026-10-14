@@ -27,6 +27,8 @@ export interface RunAssistantInput {
   space: string | null;
   pageId: string | null;
   runMode: AssistantRunMode;
+  /** Public sites: the published space an anonymous visitor's run is confined to (tools, workspace and prompt). */
+  publicSpace?: string | null;
   signal?: AbortSignal;
   onRun?: (run: Run) => void;
   onEvent?: (event: SDKMessage) => void;
@@ -140,12 +142,14 @@ export async function runCursorAssistant(input: RunAssistantInput): Promise<stri
     currentPath: input.currentPath,
     space: input.space,
     pageId: input.pageId,
+    publicSpace: input.publicSpace ?? null,
   });
   const toolsHandle = await buildAssistantTools(input.user, input.runMode, {
     runId: input.runId,
     conversationId: input.conversation.id,
     space: input.space,
     pageId: input.pageId,
+    publicSpace: input.publicSpace ?? null,
   });
   ensureAssistantCursorPermissions();
   const sdk = await configureSdk();
@@ -178,6 +182,8 @@ export async function runCursorAssistant(input: RunAssistantInput): Promise<stri
       const prompt = [
         workspace.systemPrompt,
         '',
+        // Public sites: who the "user" is, before anything else can be read as permission to do more.
+        ...(workspace.publicSiteNotice ? ['## Public website visitor', '', workspace.publicSiteNotice, ''] : []),
         // Owner spec (21.09.2026): `.agent/**` rules pages, admin-authored
         // per space — prepended right after the base system prompt (before
         // Folio's own reference material) so they read as instructions the

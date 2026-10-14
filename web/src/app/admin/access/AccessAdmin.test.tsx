@@ -139,6 +139,29 @@ describe('AccessAdmin', () => {
     expect(screen.queryByText(/\{\{space\}\}/)).toBeNull();
   });
 
+  it('Spaces tab: a public space is badged "Public", the badge steps it back to private, and "Make public" is in the actions menu with the internet-wide warning', async () => {
+    currentUser = ADMIN_USER;
+    const git = { repoUrl: null, branch: 'main', rootPath: '', status: 'clean', ahead: 0, behind: 0, lastSyncAt: null, lastSyncByName: null, lastSyncByEmail: null, lastError: null };
+    const space = (slug: string, name: string, visibility: string) => ({ slug, name, kind: 'local', pageCount: 1, members: [], visibility, adminCount: 2, git });
+    stubApi([space('site', 'Site', 'public'), space('team', 'Team', 'private')]);
+    renderPage();
+    await screen.findByText('Editor Person');
+    fireEvent.click(screen.getByRole('tab', { name: 'Spaces' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Public' }));
+    expect(screen.getByRole('heading', { name: 'Make "Site" private?' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    // The private space's actions menu offers both other steps; choosing "Make public" says who can read.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Space actions' })[1]);
+    expect(screen.getByRole('menuitem', { name: 'Make instance-wide' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Make public' }));
+    expect(screen.getByRole('heading', { name: 'Publish "Team" on the internet?' })).toBeTruthy();
+    expect(
+      screen.getByText('Anyone on the internet will be able to read this space without signing in. Restricted pages and .agent rules stay hidden.'),
+    ).toBeTruthy();
+  });
+
   it('Matrix tab: an instance-visibility space with no explicit row renders the grey implicit-viewer cell, not a role dropdown', async () => {
     currentUser = ADMIN_USER;
     stubApi();

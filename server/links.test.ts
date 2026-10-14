@@ -113,3 +113,87 @@ describe('rewriteRelativeLinks (round 22 slug-rename link rewriter, pure — no 
     expect(out).toBe(body); // untouched: classify() never resolves a bare "old-name" to a README.md-indexed page either
   });
 });
+
+describe('rebaseRelativeLinks (move link rewriter, pure — no DB)', () => {
+  const none = new Map<string, string>();
+
+  it('re-relativizes links and images of a doc that moved deeper', () => {
+    const body = '![img](../assets/a.png) [sib](sibling.md) [up](../top.md)\n';
+    // docs/page.md -> docs/archive/old/page.md; targets stay put
+    const out = links.rebaseRelativeLinks(body, 'docs', 'docs/archive/old', none);
+    expect(out).toBe('![img](../../../assets/a.png) [sib](../../sibling.md) [up](../../../top.md)\n');
+  });
+
+  it('re-relativizes links of a doc that moved shallower, collapsing ../ chains', () => {
+    const body = '[a](../../x/y.md) ![i](../../assets/p.png) [s](same.md)\n';
+    // a/b/page.md -> page.md
+    const out = links.rebaseRelativeLinks(body, 'a/b', '', none);
+    expect(out).toBe('[a](x/y.md) ![i](assets/p.png) [s](a/b/same.md)\n');
+  });
+
+  it('keeps links between two co-moved pages verbatim', () => {
+    const files = new Map([
+      ['a/one.md', 'z/one.md'],
+      ['a/two.md', 'z/two.md'],
+    ]);
+    const body = '[two](./two.md) [two2](two.md#h "T")\n';
+    expect(links.rebaseRelativeLinks(body, 'a', 'z', files)).toBe(body);
+  });
+
+  it('maps a link to a moved target and rewrites it from the new dir', () => {
+    const files = new Map([['a/target.md', 'b/c/target.md']]);
+    const body = '[t](target.md) [t2](../a/target.md)\n';
+    // the source stays in "a"
+    expect(links.rebaseRelativeLinks(body, 'a', 'a', files)).toBe('[t](../b/c/target.md) [t2](../b/c/target.md)\n');
+  });
+
+  it('composes: a doc that moved AND links to another moved page and an unmoved one', () => {
+    const files = new Map([
+      ['a/src.md', 'b/src.md'],
+      ['a/other.md', 'b/other.md'],
+    ]);
+    const body = '[o](other.md) [u](../unmoved.md)\n';
+    expect(links.rebaseRelativeLinks(body, 'a', 'b', files)).toBe(body);
+    // the moved page links to a page that moved elsewhere
+    const files2 = new Map([['a/other.md', 'c/other.md']]);
+    expect(links.rebaseRelativeLinks('[o](other.md)\n', 'a', 'b', files2)).toBe('[o](../c/other.md)\n');
+  });
+
+  it('handles moved directories: explicit index, implicit dir link, trailing slash, and non-page files inside', () => {
+    const dirs = new Map([['notes', 'archive/notes']]);
+    const files = new Map([['notes/index.md', 'archive/notes/index.md']]);
+    const body = '[e](notes/index.md) [i](notes) [s](notes/) ![p](notes/pic.png)\n';
+    expect(links.rebaseRelativeLinks(body, '', '', files, dirs)).toBe(
+      '[e](archive/notes/index.md) [i](archive/notes) [s](archive/notes/) ![p](archive/notes/pic.png)\n',
+    );
+  });
+
+  it('a doc inside a moved directory keeps links to its neighbours, but links leaving the directory are re-aimed', () => {
+    const dirs = new Map([['notes', 'archive/notes']]);
+    const body = '![p](pic.png) [out](../elsewhere.md) [kid](child/page.md)\n';
+    expect(links.rebaseRelativeLinks(body, 'notes', 'archive/notes', none, dirs)).toBe('![p](pic.png) [out](../../elsewhere.md) [kid](child/page.md)\n');
+  });
+
+  it('preserves ?query, #hash and "title" when re-aiming', () => {
+    const body = '[a](x.md#sec "Title") [b](x.md?q=1) [c](x.md?q=1#h)\n';
+    const out = links.rebaseRelativeLinks(body, 'a', 'a/b', none);
+    expect(out).toBe('[a](../x.md#sec "Title") [b](../x.md?q=1) [c](../x.md?q=1#h)\n');
+  });
+
+  it('leaves external, root-relative, mailto and pure-anchor hrefs alone', () => {
+    const body = '[a](https://e.com/x.md) [b](/abs/x.md) [c](mailto:a@b.c) [d](#top) ![e](data:image/png;base64,AA)\n';
+    const out = links.rebaseRelativeLinks(body, 'a', 'x/y/z', none);
+    expect(out).toBe(body);
+  });
+
+  it('returns the same reference when nothing changes (unmoved doc, unmoved targets)', () => {
+    const body = '[a](x.md) ![i](../p.png)\n';
+    expect(links.rebaseRelativeLinks(body, 'd', 'd', none)).toBe(body);
+    expect(links.rebaseRelativeLinks(body, 'd', 'd', new Map([['q/other.md', 'r/other.md']]))).toBe(body);
+  });
+
+  it('leaves a link that already escaped the space (broken before the move) untouched', () => {
+    const body = '[a](../../outside.md)\n';
+    expect(links.rebaseRelativeLinks(body, 'a', 'b/c', none)).toBe(body);
+  });
+});

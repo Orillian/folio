@@ -8,6 +8,7 @@ import {
   createPageBodySchema,
   createShareLinkBodySchema,
   updateShareLinkBodySchema,
+  updateSpaceAssetModeBodySchema,
   createSpaceGit,
   connectSpaceGitBodySchema,
   copyPageBodySchema,
@@ -39,6 +40,7 @@ import type {
   SharedPagePayload,
   SpaceInfo,
   SpaceRole,
+  UploadAssetResponse,
   SpaceVisibility,
   SpaceGitInfo,
   ResetToRemoteResponse,
@@ -50,6 +52,7 @@ import { decodeScenePayload, extractScenePayload } from './confluenceWhiteboard.
 import * as tables from './tables/service.js';
 import * as forms from './forms/service.js';
 import { searchPages } from './search.js';
+import { buildPageDoc } from './pageDoc.js';
 import * as links from './links.js';
 import * as assets from './assets.js';
 import * as git from './git.js';
@@ -80,6 +83,7 @@ import * as pageAccess from './pageAccess.js';
 import { resolveCopyScope } from './copyScope.js';
 import { findTrashItemId, recordPageChange, snapshotPageChange } from './pageChanges.js';
 import * as bootScan from './bootScan.js';
+import { isGitHubConnectEnabled } from './auth/githubConnect.js';
 
 /** PUBLIC_URL is normally set; this is only the fallback when it's not (round 8: "URL built from PUBLIC_URL, fallback request origin"). */
 function requestOrigin(request: FastifyRequest): string {
@@ -226,7 +230,7 @@ export function registerRoutes(app: FastifyInstance): void {
 
   /** Instance-wide config the client needs before it knows which space it's in. Any authenticated user (no space role check — this is instance-level, not space-scoped). */
   app.get('/api/config', async (): Promise<FolioConfig> => {
-    return { defaultRepoUrl: process.env.FOLIO_DEFAULT_REPO_URL || null };
+    return { defaultRepoUrl: process.env.FOLIO_DEFAULT_REPO_URL || null, githubOAuth: isGitHubConnectEnabled() };
   });
 
   /**
@@ -299,7 +303,16 @@ export function registerRoutes(app: FastifyInstance): void {
     if (!host) throw badRequest('host is required');
     const cred = await userGitCredentials.getDecryptedTokenForHost(request.authUser!.id, host);
     if (!cred) throw notFound('a saved git credential for this host');
-    return gitProviders.listRepos(userGitCredentials.normalizeHost(host), cred.provider, cred.token);
+    try {
+      return await gitProviders.listRepos(userGitCredentials.normalizeHost(host), cred.provider, cred.token);
+    } catch (err) {
+      // A provider failure (bad token, rate limit, SAML SSO, unreachable) is answered with a stable `code`
+      // and a localized message instead of a silent empty list.
+      if (err instanceof gitProviders.GitProviderError) {
+        throw err.toLocalizedHttpError(resolveTextLanguage(request.authUser?.lang, request.headers['accept-language']));
+      }
+      throw err;
+    }
   });
 
   // Round 19 point 6-api: GET /api/git/tree?credentialId=&repoUrl=&branch=&path=
@@ -476,7 +489,7 @@ export function registerRoutes(app: FastifyInstance): void {
         space = await storage.createSpaceFromRepo({
           name: body.name,
           repoUrl: body.repoUrl,
-          branch: body.branch ?? 'main',
+          branch: body.branch ?? (await git.resolveRemoteDefaultBranch(body.repoUrl, token)) ?? 'main',
           rootPath: body.rootPath ?? '',
           createdBy: user.id,
           token,
@@ -619,7 +632,25 @@ export function registerRoutes(app: FastifyInstance): void {
     return info;
   });
 
-  app.post('/api/spaces/:space/assets', async (request, reply) => {
+  /**
+   * "Store images in the repository" (space setting, store | repo). Admin of the
+   * SPACE ITSELF, same gate as export-settings: switching to 'repo' makes every
+   * later image upload write into the space's repository (a content decision),
+   * so it is not instance-admin-only. Existing images stay where they are — the
+   * mode only decides where NEW uploads go.
+   */
+  app.put('/api/spaces/:space/asset-mode', async (request) => {
+    assertNotDemo('Changing where images are stored');
+    const { space } = request.params as { space: string };
+    await session.requireSpaceRole(request, space, 'admin');
+    session.requireWriteScope(request);
+    const body = parseBody(updateSpaceAssetModeBodySchema, request.body);
+    await storage.setSpaceAssetMode(space, body.assetMode);
+    recordAudit(request.authUser!.id, 'space.asset_mode', space, { assetMode: body.assetMode });
+    return { slug: space, assetMode: body.assetMode };
+  });
+
+  app.post('/api/spaces/:space/assets', async (request, reply): Promise<UploadAssetResponse> => {
     const { space } = request.params as { space: string };
     await session.requireSpaceRole(request, space, 'editor');
     session.requireWriteScope(request);
@@ -628,10 +659,17 @@ export function registerRoutes(app: FastifyInstance): void {
     const buffer = await file.toBuffer();
 
     const info = await storage.getSpaceInfo(space);
-    const result =
-      info?.assetMode === 'repo'
-        ? await storage.saveAssetIntoRepo(space, file.filename, buffer)
-        : await assets.putAsset(buffer, { mime: file.mimetype, filename: file.filename }, request.authUser!.id);
+    let result: UploadAssetResponse;
+    if (info?.assetMode === 'repo') {
+      result = await storage.saveAssetIntoRepo(space, file.filename, buffer);
+      // A new file in the working tree: attribute it to the uploader and let the
+      // standard debounced auto-commit pick it up (commitAll stages everything,
+      // so assets/ rides along with the page edit that references it).
+      gitSync.recordEditor(space, { name: request.authUser!.name, email: request.authUser!.email });
+      gitSync.noteActivity(space);
+    } else {
+      result = await assets.putAsset(buffer, { mime: file.mimetype, filename: file.filename }, request.authUser!.id);
+    }
     reply.status(201);
     return result;
   });
@@ -751,37 +789,7 @@ export function registerRoutes(app: FastifyInstance): void {
   app.get('/api/pages/:id', async (request) => {
     const { id } = request.params as { id: string };
     const entry = await session.requirePageRole(request, id, 'viewer');
-    if (entry.kind === 'doc') {
-      const markdown = collab.isDocLive(id) ? (collab.getLiveText(id) ?? entry.body ?? '') : await storage.readFreshDocBody(id);
-      const doc: PageDoc = { ...storage.toPageMeta(entry), markdown };
-      return doc;
-    }
-    // Round 26: a table's content rides this route as `markdown` (the whole
-    // .table.md, schema included) — PageDoc is deliberately NOT extended for
-    // tables, see DEV-PLAN R26's contract note. Without this arm a table fell
-    // through to readBoardSvg below and 400'd.
-    if (entry.kind === 'table') {
-      const doc: PageDoc = { ...storage.toPageMeta(entry), markdown: await tables.readTableMarkdown(id) };
-      return doc;
-    }
-    // Round FORMS: same "rides this route as `markdown`" shape as a table —
-    // a form has no collab room, so this is always the fresh file (no
-    // live-doc branch to prefer). The web side parses it with
-    // shared/forms/codec.ts, same way it would parse a table's.
-    if (entry.kind === 'form') {
-      const doc: PageDoc = { ...storage.toPageMeta(entry), markdown: await storage.readFreshFormRaw(id) };
-      return doc;
-    }
-    // A pdf/office page's bytes ride GET /api/pages/:id/file instead — this
-    // route answers with plain metadata (no markdown/svg field), same shape
-    // a board/doc's meta has before its content is filled in.
-    if (entry.kind === 'pdf' || entry.kind === 'office') {
-      const doc: PageDoc = { ...storage.toPageMeta(entry) };
-      return doc;
-    }
-    const svg = await storage.readBoardSvg(id);
-    const doc: PageDoc = { ...storage.toPageMeta(entry), svg };
-    return doc;
+    return buildPageDoc(entry);
   });
 
   /** Content-Type for a pdf/office page's bytes — see officeFormat's own doc comment for the extension-to-format mapping. */
@@ -1032,8 +1040,10 @@ export function registerRoutes(app: FastifyInstance): void {
     const before = snapshotPageChange(entry);
     session.requireWriteScope(request);
     await session.requireAgentWriteAllowed(request.authUser!, entry.space, storage.normalizeDirParam(body.toParentPath));
-    gitSync.recordEditor(entry.space, { name: request.authUser!.name, email: request.authUser!.email });
-    const result = await storage.movePage(id, body.toParentPath);
+    const author = { name: request.authUser!.name, email: request.authUser!.email };
+    gitSync.recordEditor(entry.space, author);
+    // Rewrites links broken by the new location and commits the move as one unit (collab.movePage).
+    const result = await collab.movePage(id, body.toParentPath, author);
     const after = snapshotPageChange(await storage.requireEntry(id));
     if (before.path !== after.path) await recordPageChange(request.authUser!.id, 'page.move', id, entry.space, before, after);
     gitSync.noteActivity(entry.space);
@@ -1563,29 +1573,7 @@ export function registerPublicShareRoutes(app: FastifyInstance): void {
     const spaceInfo = await storage.getSpaceInfo(entry.space);
     const spaceName = spaceInfo?.name ?? entry.space;
 
-    let page: PageDoc;
-    if (entry.kind === 'doc') {
-      const markdown = collab.isDocLive(entry.id) ? (collab.getLiveText(entry.id) ?? entry.body ?? '') : await storage.readFreshDocBody(entry.id);
-      page = { ...storage.toPageMeta(entry), markdown };
-    } else if (entry.kind === 'table') {
-      // Round 26: same table arm as the authenticated GET /api/pages/:id above.
-      // This one has no client-side workaround — a share guest has no page id
-      // until this payload arrives — so without it a shared table link was dead.
-      page = { ...storage.toPageMeta(entry), markdown: await tables.readTableMarkdown(entry.id) };
-    } else if (entry.kind === 'form') {
-      // Round FORMS: a form's OWN share link is how the owner's "public"
-      // toggle actually reaches an anonymous visitor — the same shape a
-      // table's share arm just above uses, no collab room to prefer.
-      page = { ...storage.toPageMeta(entry), markdown: await storage.readFreshFormRaw(entry.id) };
-    } else if (entry.kind === 'pdf' || entry.kind === 'office') {
-      // Sharing a pdf/office page's file isn't implemented yet (see the
-      // round's report) — meta only, so this at least doesn't 500
-      // (readBoardSvg below would throw "page is not a board") if a share
-      // link is ever created for one.
-      page = { ...storage.toPageMeta(entry) };
-    } else {
-      page = { ...storage.toPageMeta(entry), svg: await storage.readBoardSvg(entry.id) };
-    }
+    const page: PageDoc = await buildPageDoc(entry);
 
     const payload: SharedPagePayload = { mode, page, spaceName };
     if (share.includeChildren) {

@@ -34,7 +34,8 @@ async function toAuthState(user: User): Promise<AuthState> {
 /** Space-member endpoints accept either a user id or an email as the :identifier segment. */
 async function resolveUserIdentifier(identifier: string) {
   const stored = identifier.includes('@') ? await store.findStoredUserByEmail(identifier) : await store.findStoredUserById(identifier);
-  if (!stored) throw new HttpError(404, 'user not found');
+  // A system account (the public visitor) is not a person: it can never be made a member of anything.
+  if (!stored || stored.isSystem) throw new HttpError(404, 'user not found');
   return stored;
 }
 
@@ -80,7 +81,8 @@ export function registerPublicAuthRoutes(app: FastifyInstance): void {
     // bcrypt comparison always runs — see passwords.ts's DUMMY_HASH.
     const stored = await store.findStoredUserByEmail(email);
     const passwordOk = await verifyPassword(body.password, stored?.passwordHash ?? null);
-    if (!stored || stored.disabled || !passwordOk) throw unauthorized('invalid email or password');
+    // A system account (the public visitor, migration 039) has no password and never signs in — refused like a wrong password.
+    if (!stored || stored.disabled || stored.isSystem || !passwordOk) throw unauthorized('invalid email or password');
 
     const { token } = await store.createSession(stored.id);
     session.setSessionCookie(reply, token);
@@ -135,7 +137,8 @@ export function registerProtectedAuthRoutes(app: FastifyInstance): void {
     session.requireInstanceAdmin(request);
     const { id } = request.params as { id: string };
     const target = await store.findStoredUserById(id);
-    if (!target) throw new HttpError(404, 'user not found');
+    // A system account is not listed as a person and cannot be edited (no password, no admin flag, no name change).
+    if (!target || target.isSystem) throw new HttpError(404, 'user not found');
     const body = parseBody(updateUserBodySchema, lowerCaseUsernameField(request.body));
 
     // Public demo: a shared demo login must keep working for the next visitor.
