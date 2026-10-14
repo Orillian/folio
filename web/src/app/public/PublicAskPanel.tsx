@@ -50,9 +50,9 @@ export interface PublicAskPanelProps {
 }
 
 /**
- * "Ask AI about this space": a floating button on a public site that opens a chat over the site's pages,
- * for anonymous visitors. The conversation is read-only Q&A on the server side (public routes, the
- * "Public visitor" system user); this component is only the chat UI — the run itself lives in
+ * "Ask AI about this space": a button in the public site's header that toggles a chat over the site's
+ * pages (a fixed sheet under the header), for anonymous visitors. The conversation is read-only Q&A on the
+ * server side (public routes, the "Public visitor" system user); this component is only the chat UI — the run itself lives in
  * usePublicAsk, which stays mounted while the panel is closed, so an answer keeps streaming and a reload
  * restores the conversation (publicAsk.ts remembers it per site in localStorage).
  *
@@ -119,23 +119,29 @@ export function PublicAskPanel({ site, pageId }: PublicAskPanelProps) {
 
   return (
     <>
-      {!open && (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          aria-haspopup="dialog"
-          className="ph-no-capture fixed bottom-14 right-4 z-[60] flex items-center gap-2 rounded-full bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg hover:bg-neutral-700 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
-        >
-          {ask.isRunning ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <Sparkles size={15} aria-hidden="true" />}
-          {t('publicSite.ask.button')}
-        </button>
-      )}
+      {/* The header button toggles the sheet. Short visible label from md up (icon only on a phone); the full sentence is the tooltip and the accessible name. */}
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={t('publicSite.ask.button')}
+        title={t('publicSite.ask.button')}
+        className={`ph-no-capture flex h-9 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-sm text-neutral-700 hover:border-neutral-400 hover:bg-neutral-50 max-md:min-h-10 max-md:min-w-10 max-md:justify-center dark:text-neutral-200 dark:hover:border-neutral-600 dark:hover:bg-neutral-800 ${
+          open
+            ? 'border-neutral-400 bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-800'
+            : 'border-neutral-300 bg-white dark:border-neutral-700 dark:bg-neutral-900'
+        }`}
+      >
+        {ask.isRunning ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <Sparkles size={15} aria-hidden="true" />}
+        <span className="hidden md:inline">{t('publicSite.ask.buttonShort')}</span>
+      </button>
 
       <section
         role="dialog"
         aria-label={t('publicSite.ask.title')}
         hidden={!open}
-        className="ph-no-capture fixed inset-x-2 bottom-2 z-[60] flex h-[min(80vh,720px)] flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white text-neutral-900 shadow-2xl md:inset-x-auto md:bottom-14 md:right-4 md:w-[420px] dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+        className="ph-no-capture fixed inset-x-2 bottom-2 z-[60] flex h-[min(80vh,720px)] flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white text-neutral-900 shadow-2xl md:inset-x-auto md:bottom-4 md:right-4 md:top-16 md:h-auto md:max-h-[720px] md:w-[420px] dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
       >
         <div className="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-3 py-2.5 dark:border-neutral-800">
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">

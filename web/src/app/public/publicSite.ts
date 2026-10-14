@@ -17,6 +17,9 @@ import { PUBLIC_SITE_PATH_PREFIX, type PublicSiteInfo } from '@shared/contracts'
 /** The part of PublicSiteInfo that decides where links point. */
 export type PublicSiteRef = Pick<PublicSiteInfo, 'space' | 'mode'>;
 
+/** The product site the "Powered by Folio" link points to (promotion), not the visitor's own Folio instance. */
+export const FOLIO_PRODUCT_URL = 'https://foliowiki.online';
+
 /** Name of the meta tag the server writes into index.html when the SPA is served on a site's own host. */
 export const PUBLIC_SITE_META_NAME = 'folio-public-site';
 
@@ -47,7 +50,7 @@ export function publicFileUrl(space: string, path: string): string {
 }
 
 /**
- * The same page inside the app, for the footer's "Sign in" link. `signin=1` tells the app not to bounce an
+ * The same page inside the app, for the sidebar footer's "Sign in" link. `signin=1` tells the app not to bounce an
  * anonymous visitor straight back to the public site (auth/AuthProvider.tsx) — without it a public space
  * could never reach its own login screen through this link.
  */

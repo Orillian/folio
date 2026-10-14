@@ -104,6 +104,21 @@ function RoutedView({ site }: { site: PublicSiteInfo }) {
   return <PublicSiteView site={site} pageId={id} />;
 }
 
+/** The left column. */
+function sidebar() {
+  return screen.getByRole('complementary', { name: 'Docs' });
+}
+
+/** The pinned area at the bottom of the left column: the aside's last child. */
+function sidebarFooter() {
+  return sidebar().lastElementChild as HTMLElement;
+}
+
+/** The top bar over the page. */
+function header() {
+  return screen.getByRole('banner');
+}
+
 function treeLinks() {
   const nav = screen.getByRole('navigation', { name: 'Pages' });
   return Array.from(nav.querySelectorAll('a'));
@@ -132,14 +147,108 @@ describe('PublicSiteView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Expand “Guide”' }));
     expect(screen.getByRole('link', { name: 'Install' }).getAttribute('href')).toBe('/public/docs/p/p2');
 
-    // Footer: the way into the app for people who have an account; `signin=1` so the app does not bounce them back here.
-    expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('https://folio.example.com/s/docs/p/p1?signin=1');
-    expect(screen.getByRole('link', { name: 'Powered by Folio' }).getAttribute('href')).toBe('https://folio.example.com');
+    // Sidebar footer: the way into the app for people who have an account (`signin=1` so the app does not bounce them back here)
+    // and the product credit, which points at the product site (not this instance) and is a plain link — no nofollow.
+    const footer = sidebarFooter();
+    expect(within(footer).getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('https://folio.example.com/s/docs/p/p1?signin=1');
+    const poweredBy = within(footer).getByRole('link', { name: 'Powered by Folio' });
+    expect(poweredBy.getAttribute('href')).toBe('https://foliowiki.online');
+    expect(poweredBy.getAttribute('target')).toBe('_blank');
+    expect(poweredBy.getAttribute('rel')).toContain('noopener');
+    expect(poweredBy.getAttribute('rel') ?? '').not.toContain('nofollow');
+    // They live in the left column only: nothing is left under the main area.
+    expect(screen.getAllByRole('link', { name: 'Sign in' })).toHaveLength(1);
+    expect(screen.getAllByRole('link', { name: 'Powered by Folio' })).toHaveLength(1);
+    expect(document.querySelector('footer')).toBeNull();
 
     // Nothing here is a login wall, and no request went to a session route.
     expect(screen.queryByText('Log in to Folio')).toBeNull();
     expect(screen.queryByLabelText('Email')).toBeNull();
     for (const [url] of fetchMock.mock.calls) expect(String(url).startsWith('/api/public/')).toBe(true);
+  });
+
+  it('puts "Space home" above the page tree in the left column, highlighted while the home is open', async () => {
+    stubFetch();
+    const { unmount } = renderSite(SITE, '/public/docs');
+    await waitFor(() => expect(treeLinks().length).toBeGreaterThan(0));
+
+    const home = within(sidebar()).getByRole('link', { name: 'Space home' });
+    expect(home.getAttribute('href')).toBe('/public/docs');
+    expect(home.getAttribute('aria-current')).toBe('page');
+    // Above the tree, not inside it.
+    const tree = screen.getByRole('navigation', { name: 'Pages' });
+    expect(home.compareDocumentPosition(tree) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(tree.contains(home)).toBe(false);
+    unmount();
+
+    // On another page it is a plain link again; on the home page's own /p/<id> URL it counts as open.
+    const other = renderSite(SITE, '/public/docs/p/p3');
+    await waitFor(() => expect(screen.getByTestId('markdown-body').textContent).toContain('All the options.'));
+    expect(within(sidebar()).getByRole('link', { name: 'Space home' }).getAttribute('aria-current')).toBeNull();
+    other.unmount();
+
+    renderSite(SITE, '/public/docs/p/p1');
+    await waitFor(() => expect(screen.getByTestId('markdown-body').textContent).toContain('Welcome to the guide.'));
+    expect(within(sidebar()).getByRole('link', { name: 'Space home' }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('in host mode "Space home" and the tree are rooted at "/"', async () => {
+    stubFetch();
+    renderSite({ ...SITE, mode: 'host' }, '/');
+    await waitFor(() => expect(treeLinks().length).toBeGreaterThan(0));
+    expect(within(sidebar()).getByRole('link', { name: 'Space home' }).getAttribute('href')).toBe('/');
+  });
+
+  it('has search in the header (not in the left column), and Ask AI only when the space allows it', async () => {
+    stubFetch();
+    const { unmount } = renderSite(SITE, '/public/docs');
+    await waitFor(() => expect(treeLinks().length).toBeGreaterThan(0));
+
+    expect(within(header()).getByRole('button', { name: 'Search this site' })).toBeTruthy();
+    expect(within(sidebar()).queryByRole('button', { name: 'Search this site' })).toBeNull();
+    expect(screen.queryByRole('searchbox')).toBeNull(); // the input appears in the dialog the button opens
+    expect(within(header()).queryByRole('button', { name: 'Ask AI about this space' })).toBeNull();
+    unmount();
+
+    renderSite({ ...SITE, allowAssistant: true, allowDownload: true }, '/public/docs');
+    const ask = await within(header()).findByRole('button', { name: 'Ask AI about this space' });
+    // Short visible label, the full sentence as the accessible name and tooltip.
+    expect(ask.textContent).toBe('Ask AI');
+    expect(ask.getAttribute('title')).toBe('Ask AI about this space');
+    expect(ask.getAttribute('aria-expanded')).toBe('false');
+    expect(within(sidebar()).queryByRole('button', { name: 'Ask AI about this space' })).toBeNull();
+
+    // Header order, left to right: breadcrumbs, search, Ask AI, download.
+    const download = await within(header()).findByRole('button', { name: 'Download' });
+    const crumbs = within(header()).getByRole('navigation', { name: 'Breadcrumbs' });
+    const search = within(header()).getByRole('button', { name: 'Search this site' });
+    const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(crumbs, search)).toBe(true);
+    expect(follows(search, ask)).toBe(true);
+    expect(follows(ask, download)).toBe(true);
+
+    // It toggles the chat sheet, which is the same PublicAskPanel (a dialog that stays out of the way while closed).
+    expect(screen.queryByRole('dialog', { name: 'Ask AI' })).toBeNull();
+    fireEvent.click(ask);
+    expect(await screen.findByRole('dialog', { name: 'Ask AI' })).toBeTruthy();
+    expect(ask.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(ask);
+    expect(screen.queryByRole('dialog', { name: 'Ask AI' })).toBeNull();
+  });
+
+  it('keeps the left column\'s footer inside it, so the phone menu carries "Sign in" and "Powered by Folio"', async () => {
+    stubFetch();
+    renderSite(SITE, '/public/docs');
+    await waitFor(() => expect(treeLinks().length).toBeGreaterThan(0));
+
+    // The menu button is in the header; the aside is the collapsible column that holds the footer.
+    expect(within(header()).getByRole('button', { name: 'Open the page menu' })).toBeTruthy();
+    expect(sidebar().contains(screen.getByRole('link', { name: 'Sign in' }))).toBe(true);
+    expect(sidebar().contains(screen.getByRole('link', { name: 'Powered by Folio' }))).toBe(true);
+    // The footer is the last thing in the column, after the tree.
+    const footer = sidebarFooter();
+    expect(footer.contains(screen.getByRole('link', { name: 'Sign in' }))).toBe(true);
+    expect(screen.getByRole('navigation', { name: 'Pages' }).compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('titles the tab "<page> · <space name>" and builds breadcrumbs from the tree path', async () => {
@@ -198,23 +307,66 @@ describe('PublicSiteView', () => {
     expect(await screen.findByRole('button', { name: 'Download' })).toBeTruthy();
   });
 
-  it('searches this space only, debounced, and links hits to the site', async () => {
+  it('searches this space only, debounced, from a dialog the header button opens, and links hits to the site', async () => {
     const hit: SearchHit = { id: 'p2', space: 'docs', path: 'guide/install.md', title: 'Install', snippet: 'Run the installer' };
     const fetchMock = stubFetch({ '/api/public/spaces/docs/search?q=inst': { hits: [hit] } });
     renderSite(SITE, '/public/docs');
     await waitFor(() => expect(treeLinks().length).toBeGreaterThan(0));
 
-    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'inst' } });
+    fireEvent.click(within(header()).getByRole('button', { name: 'Search this site' }));
+    const input = screen.getByRole('searchbox');
+    expect(screen.getByRole('dialog', { name: 'Search this site' })).toBeTruthy();
+    expect(document.activeElement).toBe(input);
+
+    fireEvent.change(input, { target: { value: 'inst' } });
     const result = await screen.findByRole('link', { name: /Install\s*Run the installer/ });
     expect(result.getAttribute('href')).toBe('/public/docs/p/p2');
     expect(fetchMock).toHaveBeenCalledWith('/api/public/spaces/docs/search?q=inst', expect.anything());
-    // While a query is active the results replace the tree.
-    expect(screen.queryByRole('navigation', { name: 'Pages' })).toBeNull();
+    // The tree stays where it is; the results are in the dialog, not in the left column.
+    expect(screen.getByRole('navigation', { name: 'Pages' })).toBeTruthy();
+    expect(sidebar().contains(result)).toBe(false);
 
-    // Following a hit clears the box and brings the tree back.
+    // Following a hit closes the dialog and forgets the query.
     fireEvent.click(result);
-    expect(await screen.findByRole('navigation', { name: 'Pages' })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole('searchbox')).toBeNull());
+    expect(screen.queryByRole('dialog', { name: 'Search this site' })).toBeNull();
+    fireEvent.click(within(header()).getByRole('button', { name: 'Search this site' }));
     expect((screen.getByRole('searchbox') as HTMLInputElement).value).toBe('');
+  });
+
+  it('opens the search with Ctrl+K, takes Enter on the highlighted hit and closes on Escape', async () => {
+    const hits: SearchHit[] = [
+      { id: 'p2', space: 'docs', path: 'guide/install.md', title: 'Install', snippet: 'Run the installer' },
+      { id: 'p3', space: 'docs', path: 'p3.md', title: 'Reference', snippet: 'Install options' },
+    ];
+    stubFetch({ '/api/public/spaces/docs/search?q=inst': { hits } });
+    renderSite(SITE, '/public/docs');
+    await waitFor(() => expect(treeLinks().length).toBeGreaterThan(0));
+
+    fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
+    const input = screen.getByRole('searchbox');
+    fireEvent.change(input, { target: { value: 'inst' } });
+    await screen.findByRole('link', { name: /Reference\s*Install options/ }); // the tree has a plain "Reference" row too
+
+    // ArrowDown moves to the second hit; Enter opens it.
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByTestId('markdown-body').textContent).toContain('All the options.'));
+    expect(screen.queryByRole('searchbox')).toBeNull();
+
+    fireEvent.keyDown(document, { key: 'k', metaKey: true });
+    fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Escape' });
+    expect(screen.queryByRole('searchbox')).toBeNull();
+  });
+
+  it('says what happened when nothing matches', async () => {
+    stubFetch({ '/api/public/spaces/docs/search?q=zzz': { hits: [] } });
+    renderSite(SITE, '/public/docs');
+    fireEvent.click(await within(header()).findByRole('button', { name: 'Search this site' }));
+    expect(screen.getByText('Type to search the pages of this site.')).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'zzz' } });
+    expect(await screen.findByText('Nothing found for “zzz”')).toBeTruthy();
   });
 });
 

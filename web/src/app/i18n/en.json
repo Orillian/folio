@@ -278,9 +278,14 @@
   "routes": {
     "notFound": {
       "generic": "This page doesn't exist.",
-      "maybeNoAccess": "The page or space may exist but you might not have access to it. Ask the space administrator to grant you access.",
       "title": "Not found",
       "pageNotFound": "Page not found."
+    },
+    "noAccess": {
+      "title": "No access",
+      "space": "You don't have access to the space “{{space}}”.",
+      "restrictedPage": "This page is restricted to specific people. Ask the page owner or a space admin to add you.",
+      "generic": "You don't have access to this page."
     },
     "root": {
       "connectionError": "Could not reach the Folio server. Make sure the server is running, then reload the page.",
@@ -344,7 +349,6 @@
       "crashed": "This page could not be shown.",
       "loading": "Loading the page…",
       "notFound": "This page wasn't found — it may have been deleted or moved.",
-      "forbidden": "You don't have access to this page.",
       "loadFailed": "Could not load the page"
     }
   },
@@ -1547,6 +1551,9 @@
       "title": "This space is not public",
       "hint": "The site may have been unpublished, or the address is wrong. If you have an account, sign in to open it in Folio."
     },
+    "nav": {
+      "home": "Space home"
+    },
     "tree": {
       "label": "Pages",
       "expand": "Expand “{{title}}”",
@@ -1558,6 +1565,8 @@
     "search": {
       "placeholder": "Search this site…",
       "label": "Search this site",
+      "button": "Search",
+      "hint": "Type to search the pages of this site.",
       "clear": "Clear search",
       "searching": "Searching…",
       "noResults": "Nothing found for “{{query}}”",
@@ -1571,6 +1580,7 @@
     },
     "ask": {
       "button": "Ask AI about this space",
+      "buttonShort": "Ask AI",
       "title": "Ask AI",
       "intro": "Answers come from the pages of {{space}} only.",
       "placeholder": "Ask a question about this site…",

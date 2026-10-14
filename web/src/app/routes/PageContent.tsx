@@ -26,6 +26,7 @@ import { ReplaceFileDropZone } from '../files/ReplaceFileDropZone';
 import { TablePageView, tableRole, type TableViewState } from './TablePageView';
 import { FormPageView } from './FormPageView';
 import { NotFound } from './NotFound';
+import { NoAccess } from './NoAccess';
 import '../i18n/register';
 
 export interface PageContentProps {
@@ -82,8 +83,8 @@ export async function fetchPage(id: string): Promise<PageDoc> {
 export function PageContent({ id }: PageContentProps) {
   const { t } = useTranslation('app');
   // The space comes from the URL, not from `data`: when a page did not open
-  // (403/404), the page itself is exactly what is missing — and that is when
-  // the "ask for access" button is needed.
+  // (403/404), the page itself is exactly what is missing — and the 403
+  // screen (NoAccess) needs the space to decide whether to offer access.
   const { space: routeSpace } = useParams<{ space: string }>();
   // The welcome wizard opens the first document ready to type in. It says so
   // through router state, never the URL: every link to a page — pasted,
@@ -217,9 +218,13 @@ export function PageContent({ id }: PageContentProps) {
   }
 
   if (isError || !data) {
-    if (error instanceof ApiError && (error.status === 404 || error.status === 403)) {
-      // Both read as «404» to the user; the hint covers the private-space case.
-      return <NotFound message={t('routes.page.notFound')} hint={t('routes.notFound.maybeNoAccess')} space={routeSpace} />;
+    // 404: the page really is not there. 403: it exists, the caller has no
+    // right to it (a private space without membership, or a restricted page).
+    if (error instanceof ApiError && error.status === 404) {
+      return <NotFound message={t('routes.page.notFound')} />;
+    }
+    if (error instanceof ApiError && error.status === 403) {
+      return <NoAccess space={routeSpace} page />;
     }
     // No network and nothing of this page on this device: not a failure to
     // apologise for in red, just something that has to wait.

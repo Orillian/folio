@@ -37,6 +37,12 @@ vi.mock('./PageContent', () => ({
   PageContent: ({ id }: { id: string }) => <div data-testid="page-content">{id}</div>,
 }));
 
+// NoAccess asks AuthProvider for the caller's role in the space; the real
+// answer needs the whole auth bootstrap. No role = a non-member.
+vi.mock('../auth/AuthProvider', () => ({
+  useSpaceRole: () => undefined,
+}));
+
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) } as Response;
 }
@@ -131,17 +137,23 @@ describe('SpaceHome', () => {
     });
     renderHome();
     await waitFor(() => expect(screen.getByText(/Space "repo-space" not found/)).toBeTruthy());
+    // A space that is not there cannot be asked for: no rights hint, no button.
+    expect(screen.getByText('404')).toBeTruthy();
+    expect(screen.queryByText(/access/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Request access' })).toBeNull();
   });
 
-  it('shows the 404 screen with an access hint on 403 — no raw English error (QA-3 #9, 07.09 owner)', async () => {
+  it('shows the "no access" screen with a request button on 403 — not a 404, no raw English error', async () => {
     stub({
       resolve: () => jsonResponse({ error: 'requires viewer+ role in this space' }, 403),
       tree: () => jsonResponse({ tree: [] }),
     });
     renderHome();
-    await waitFor(() => expect(screen.getByText('404')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'No access' })).toBeTruthy());
+    expect(screen.queryByText('404')).toBeNull();
     expect(screen.queryByText(/requires viewer\+ role/)).toBeNull();
-    expect(screen.getByText(/might not have access/)).toBeTruthy();
+    expect(screen.getByText(/You don't have access to the space “repo-space”/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Request access' })).toBeTruthy();
   });
 
   it('localizes a non-404/403 server error instead of printing its English text', async () => {

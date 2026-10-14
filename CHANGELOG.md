@@ -4,6 +4,19 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Page not found" and "no access" are different screens.** A page or space
+  that does not exist shows 404 with no "Request access" button. A page or
+  space that exists but you cannot open shows "No access": a "Request access"
+  button when you have no role in the space, or a note to ask the page owner
+  when the page itself is restricted to specific people. Anonymous visitors
+  never see the button.
+- **Public site layout.** Search and "Ask AI" moved into the header, like the
+  main app; "Space home" is back above the page tree; "Sign in" and "Powered
+  by Folio" (now linking to foliowiki.online) sit at the bottom of the left
+  column, and the footer under the content is gone.
+
 ## [0.2.0] - 2026-10-14
 
 Folio can now publish a space as a public website, pay for Folio AI with a key

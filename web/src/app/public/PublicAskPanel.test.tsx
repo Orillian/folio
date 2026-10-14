@@ -72,8 +72,13 @@ function renderPanel(pageId?: string) {
   );
 }
 
+/** The header's "Ask AI" button: short visible label, the full sentence as its accessible name. */
+async function askButton() {
+  return screen.findByRole('button', { name: 'Ask AI about this space' });
+}
+
 async function openPanel() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Ask AI about this space' }));
+  fireEvent.click(await askButton());
   return (await screen.findByRole('textbox')) as HTMLTextAreaElement;
 }
 
@@ -83,6 +88,38 @@ function ask(input: HTMLTextAreaElement, text: string) {
 }
 
 describe('<PublicAskPanel>', () => {
+  it('is a header button that toggles the chat sheet, and remembers the open state for the tab', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json(404, { error: 'not found' })));
+    const first = renderPanel();
+
+    const button = await askButton();
+    expect(button.textContent).toBe('Ask AI');
+    expect(button.getAttribute('title')).toBe('Ask AI about this space');
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('dialog', { name: 'Ask AI' })).toBeNull();
+
+    fireEvent.click(button);
+    expect(await screen.findByRole('dialog', { name: 'Ask AI' })).toBeTruthy();
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(sessionStorage.getItem('folio:public-ask-open:docs')).toBe('1');
+
+    // The button stays put while the sheet is open (it is the toggle), and a second click closes it.
+    fireEvent.click(button);
+    expect(screen.queryByRole('dialog', { name: 'Ask AI' })).toBeNull();
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(sessionStorage.getItem('folio:public-ask-open:docs')).toBe('0');
+
+    // Escape and the sheet's own close button close it as well; a remount comes back open when it was left open.
+    fireEvent.click(button);
+    await screen.findByRole('dialog', { name: 'Ask AI' });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Ask AI' })).toBeNull();
+    fireEvent.click(button);
+    first.unmount();
+    renderPanel();
+    expect(await screen.findByRole('dialog', { name: 'Ask AI' })).toBeTruthy();
+  });
+
   it('streams the answer into the chat and remembers the conversation', async () => {
     const events = liveStream();
     const requests: { url: string; init?: RequestInit }[] = [];

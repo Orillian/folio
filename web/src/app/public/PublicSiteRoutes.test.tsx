@@ -4,7 +4,7 @@
  * people may have copied from the main host or from inside the app are forwarded there.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import i18next from 'i18next';
@@ -98,17 +98,34 @@ describe('PublicHostRoutes', () => {
     stubFetch();
     renderAt('/', <PublicHostRoutes slug="docs" />);
     await waitFor(() => expect(screen.getByTestId('markdown-body').textContent).toBe('body of p1'));
+    // The header search lives in the site view: its button is the same node across navigations, and so is a half-typed query in its dialog.
+    const searchButton = screen.getByRole('button', { name: 'Search this site' });
+    fireEvent.click(searchButton);
     const search = screen.getByRole('searchbox') as HTMLInputElement;
     fireEvent.change(search, { target: { value: 'half-typed' } });
 
     act(() => navigateTo('/p/p2'));
     await waitFor(() => expect(screen.getByTestId('markdown-body').textContent).toBe('body of p2'));
+    expect(screen.getByRole('button', { name: 'Search this site' })).toBe(searchButton);
     expect(screen.getByRole('searchbox')).toBe(search);
     expect(search.value).toBe('half-typed');
 
     act(() => navigateTo('/'));
     await waitFor(() => expect(screen.getByTestId('markdown-body').textContent).toBe('body of p1'));
+    expect(screen.getByRole('button', { name: 'Search this site' })).toBe(searchButton);
     expect(screen.getByRole('searchbox')).toBe(search);
+  });
+
+  it('lays the shell out the same on the site\'s own host: search in the header, Space home and the footer links in the left column', async () => {
+    stubFetch();
+    renderAt('/', <PublicHostRoutes slug="docs" />);
+    await waitFor(() => expect(screen.getByTestId('markdown-body').textContent).toBe('body of p1'));
+
+    expect(within(screen.getByRole('banner')).getByRole('button', { name: 'Search this site' })).toBeTruthy();
+    const side = screen.getByRole('complementary', { name: 'Docs' });
+    expect(within(side).getByRole('link', { name: 'Space home' }).getAttribute('href')).toBe('/');
+    expect(within(side).getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('https://folio.example.com/s/docs/p/p1?signin=1');
+    expect(within(side).getByRole('link', { name: 'Powered by Folio' }).getAttribute('href')).toBe('https://foliowiki.online');
   });
 
   it('forwards /public/<slug>/… and /s/<slug>/… to the host-mode URLs, keeping the query', async () => {

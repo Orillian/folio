@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Menu as MenuIcon, X } from 'lucide-react';
+import { ChevronRight, House, LogIn, Menu as MenuIcon, X } from 'lucide-react';
 import type { PublicSiteInfo } from '@shared/contracts';
 import { api, ApiError } from '../api';
 import { getTopLevelNodes, treeNodeDisplayTitle } from '../sidebar/treeUtils';
@@ -12,7 +12,7 @@ import { PublicPageBody } from './PublicPageBody';
 import { PublicSearch } from './PublicSearch';
 import { PublicTree } from './PublicTree';
 import { pathToNode } from './treePaths';
-import { PUBLIC_SITE_QUERY_KEY, appPageUrl, publicHomeUrl, publicPageUrl } from './publicSite';
+import { FOLIO_PRODUCT_URL, PUBLIC_SITE_QUERY_KEY, appPageUrl, publicHomeUrl, publicPageUrl } from './publicSite';
 import '../i18n/register';
 
 export interface PublicSiteViewProps {
@@ -22,17 +22,20 @@ export interface PublicSiteViewProps {
 }
 
 /**
- * The public site's shell: a left column (the space name as the home link, search, the page tree),
- * a main column (breadcrumbs, the page, download / assistant actions) and a footer with the
- * "Powered by Folio" and "Sign in" links. Rendered OUTSIDE <AuthProvider> (see App.tsx), so
- * nothing in it may touch a session: it reads the anonymous /api/public/** routes only and
- * builds every link with publicSite.ts. On a phone the left column folds behind a menu button.
+ * The public site's shell, laid out like the app's: a left column (the space name, "Space home", the
+ * page tree, and a footer pinned to its bottom with "Sign in" and "Powered by Folio") and a main column
+ * whose header carries the breadcrumbs, search, "Ask AI" and download, over the page. Rendered OUTSIDE
+ * <AuthProvider> (see App.tsx), so nothing in it may touch a session: it reads the anonymous
+ * /api/public/** routes only and builds every link with publicSite.ts. On a phone the left column
+ * (footer included) folds behind a menu button, and the header's search and Ask AI shrink to icons.
  */
 export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
   const { t } = useTranslation('app');
   const [menuOpen, setMenuOpen] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
   const effectiveId = pageId ?? site.homePageId ?? undefined;
+  // The home is open at its own URL, and on the home page's `/p/<id>` URL too (the breadcrumbs treat it as the root as well).
+  const atHome = !effectiveId || effectiveId === site.homePageId;
 
   const treeQuery = useQuery({
     queryKey: [PUBLIC_SITE_QUERY_KEY, site.space, 'tree'],
@@ -95,11 +98,13 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
       {menuOpen && <div className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
 
       <aside
+        aria-label={site.name}
         className={`${
           menuOpen ? 'fixed inset-y-0 left-0 z-40 flex shadow-xl' : 'hidden'
         } w-72 max-w-[85vw] shrink-0 flex-col border-r border-neutral-200 bg-neutral-50 md:static md:z-auto md:flex md:max-w-none md:shadow-none dark:border-neutral-800 dark:bg-neutral-900`}
       >
-        <div className="flex shrink-0 items-center gap-2 px-4 py-3">
+        {/* Same row as the app sidebar's top (h-14, hairline below), so the two columns line up with the header. */}
+        <div className="flex h-14 shrink-0 items-center gap-2 border-b border-neutral-200 px-4 dark:border-neutral-800">
           <Link
             to={publicHomeUrl(site)}
             onClick={() => setMenuOpen(false)}
@@ -116,33 +121,66 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
             <X size={16} aria-hidden="true" />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto pb-3">
-          <PublicSearch site={site} onNavigate={() => setMenuOpen(false)}>
-            <div className="px-2">
-              {treeQuery.isLoading && <p className="px-1.5 py-2 text-xs text-neutral-400">{t('ui.loading')}</p>}
-              {treeQuery.isError && <p className="px-1.5 py-2 text-xs text-red-600 dark:text-red-400">{t('publicSite.treeFailed')}</p>}
-              {treeQuery.data && (
-                <PublicTree
-                  site={site}
-                  nodes={nodes}
-                  currentId={effectiveId}
-                  onNavigate={() => setMenuOpen(false)}
-                  ariaLabel={t('publicSite.tree.label')}
-                />
-              )}
-            </div>
-          </PublicSearch>
+
+        {/* The app sidebar's "Space home" row: highlighted while the home is open (the home page, or the page list of a space without one). */}
+        <Link
+          to={publicHomeUrl(site)}
+          onClick={() => setMenuOpen(false)}
+          aria-current={atHome ? 'page' : undefined}
+          className={`mx-2 mt-2 flex shrink-0 items-center gap-2 rounded-md px-2 py-2 text-left text-sm md:py-1.5 ${
+            atHome
+              ? 'bg-neutral-200/70 font-medium text-neutral-900 dark:bg-neutral-700/60 dark:text-neutral-50'
+              : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800/70'
+          }`}
+        >
+          <House size={14} className="opacity-60" aria-hidden="true" />
+          {t('publicSite.nav.home')}
+        </Link>
+
+        <div className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+          {treeQuery.isLoading && <p className="px-1.5 py-2 text-xs text-neutral-400">{t('ui.loading')}</p>}
+          {treeQuery.isError && <p className="px-1.5 py-2 text-xs text-red-600 dark:text-red-400">{t('publicSite.treeFailed')}</p>}
+          {treeQuery.data && (
+            <PublicTree
+              site={site}
+              nodes={nodes}
+              currentId={effectiveId}
+              onNavigate={() => setMenuOpen(false)}
+              ariaLabel={t('publicSite.tree.label')}
+            />
+          )}
+        </div>
+
+        {/* Pinned to the bottom like the app sidebar's user menu: the way into the app, and the product credit. */}
+        <div className="shrink-0 border-t border-neutral-200 p-2 dark:border-neutral-800">
+          <a
+            href={appPageUrl(site, effectiveId)}
+            className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-neutral-700 hover:bg-neutral-100 md:py-1.5 dark:text-neutral-300 dark:hover:bg-neutral-800/70"
+          >
+            <LogIn size={14} className="opacity-60" aria-hidden="true" />
+            {t('publicSite.signIn')}
+          </a>
+          {/* The product site, for promotion: a plain link (no nofollow) that opens in a new tab. */}
+          <a
+            href={FOLIO_PRODUCT_URL}
+            target="_blank"
+            rel="noopener"
+            className="block px-2 py-1 text-xs text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-300"
+          >
+            {t('publicSite.poweredBy')}
+          </a>
         </div>
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+        {/* Heights and padding as the app's header (header/Header.tsx). No backdrop-blur and no z-index on purpose: the Ask AI sheet and the search dialog are `fixed` inside it, and a backdrop-filter would make the header their containing block. */}
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-neutral-200 bg-white px-3 dark:border-neutral-800 dark:bg-neutral-950">
           <button
             type="button"
             aria-label={t('publicSite.openMenu')}
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen(true)}
-            className="rounded p-1.5 text-neutral-600 hover:bg-neutral-100 md:hidden dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className="inline-flex shrink-0 items-center justify-center rounded-md p-1.5 text-neutral-500 hover:bg-neutral-100 max-md:min-h-10 max-md:min-w-10 md:hidden dark:hover:bg-neutral-800"
           >
             <MenuIcon size={18} aria-hidden="true" />
           </button>
@@ -173,12 +211,13 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
               ))}
             </ol>
           </nav>
-          <div className="flex shrink-0 items-center gap-1">
-            {site.allowDownload && page && page.kind !== 'folder' && (
+          <PublicSearch site={site} />
+          {site.allowAssistant && <PublicAssistantSlot site={site} pageId={effectiveId} />}
+          {site.allowDownload && page && page.kind !== 'folder' && (
+            <div className="shrink-0">
               <PublicDownloadMenu space={site.space} pageId={page.id} pagePath={page.path} title={page.title} />
-            )}
-            {site.allowAssistant && <PublicAssistantSlot site={site} pageId={effectiveId} />}
-          </div>
+            </div>
+          )}
         </header>
 
         <main ref={mainRef} className="min-h-0 flex-1 overflow-auto">
@@ -206,15 +245,6 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
             </div>
           )}
         </main>
-
-        <footer className="flex shrink-0 items-center gap-3 border-t border-neutral-200 px-4 py-2 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-          <a href={site.instanceUrl} target="_blank" rel="noopener" className="hover:text-neutral-800 dark:hover:text-neutral-200">
-            {t('publicSite.poweredBy')}
-          </a>
-          <a href={appPageUrl(site, effectiveId)} className="ml-auto hover:text-neutral-800 dark:hover:text-neutral-200">
-            {t('publicSite.signIn')}
-          </a>
-        </footer>
       </div>
     </div>
   );

@@ -7,6 +7,7 @@ import { excludeTemplatesFolder, findSpaceRootPage, getTopLevelNodes } from '../
 import { PageContent } from './PageContent';
 import { FolderListing } from './FolderView';
 import { NotFound } from './NotFound';
+import { NoAccess } from './NoAccess';
 import '../i18n/register';
 
 /**
@@ -44,8 +45,9 @@ export function SpaceHome() {
 
   const indexMissing = home.isError && home.error instanceof ApiError && home.error.status === 404;
   // A private space the user is not a member of answers 403 (it exists, they
-  // can't see it). Owner's call (07.09.2026): show the same 404 screen with a
-  // «maybe you lack access — ask for it» line instead of a red API error.
+  // can't see it). Owner's call (07.09.2026): a dedicated "no access" screen
+  // (NoAccess, with a request-access button) instead of a red API error — and
+  // not the 404 screen, which is for a space that really is not there.
   const noAccess = home.isError && home.error instanceof ApiError && home.error.status === 403;
 
   // Same key the sidebar and FolderView use, so this is a cache read rather
@@ -76,9 +78,12 @@ export function SpaceHome() {
   }
 
   // The space itself is gone (or was never there): the tree endpoint says so too.
-  if (indexMissing || noAccess) {
-    return <NotFound message={t('routes.spaceHome.notFound', { space })} hint={t('routes.notFound.maybeNoAccess')} space={space} />;
+  if (indexMissing) {
+    return <NotFound message={t('routes.spaceHome.notFound', { space })} />;
   }
+
+  // The space exists but the caller has no role in it.
+  if (noAccess) return <NoAccess space={space} />;
 
   return (
     <div className="p-8 text-sm text-red-600 dark:text-red-400">

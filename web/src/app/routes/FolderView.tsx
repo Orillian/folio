@@ -4,11 +4,12 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ClipboardList, FileText, FileType2, Folder, LayoutDashboard, Presentation, Sheet, Table2 } from 'lucide-react';
 import { officeFormat, type TreeNode } from '@shared/contracts';
-import { api } from '../api';
+import { api, ApiError } from '../api';
 import { useDocumentTitle } from '../hooks';
 import { useSetHeaderInfo } from '../Shell';
 import { findNodeByPath, treeNodeDisplayTitle } from '../sidebar/treeUtils';
 import { NotFound } from './NotFound';
+import { NoAccess } from './NoAccess';
 import '../i18n/register';
 
 function humanize(segment: string): string {
@@ -97,7 +98,7 @@ export function FolderView() {
   const params = useParams();
   const path = params['*'] ?? '';
 
-  const { data, isLoading, isError, refetch } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['tree', space],
     queryFn: () => api.getTree(space),
   });
@@ -114,6 +115,14 @@ export function FolderView() {
   }
 
   if (isError || !data) {
+    // The tree endpoint answers per space: 404 — no such space, 403 — it
+    // exists and the caller has no role in it.
+    if (error instanceof ApiError && error.status === 404) {
+      return <NotFound message={t('routes.spaceHome.notFound', { space })} />;
+    }
+    if (error instanceof ApiError && error.status === 403) {
+      return <NoAccess space={space} />;
+    }
     return (
       <div className="p-8 text-sm text-red-600 dark:text-red-400">
         {t('routes.folder.loadFailed')}{' '}
@@ -125,7 +134,7 @@ export function FolderView() {
   }
 
   if (!node || node.kind !== 'folder') {
-    return <NotFound message={t('routes.folder.notFound')} hint={t('routes.notFound.maybeNoAccess')} space={space} />;
+    return <NotFound message={t('routes.folder.notFound')} />;
   }
 
   return <FolderListing space={space} title={title} entries={node.children} />;

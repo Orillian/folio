@@ -9,8 +9,9 @@ export interface PublicAssistantSlotProps {
 
 /**
  * Mount point of the visitor-facing "Ask Folio AI" for a public site. Rendered by the site's header only
- * when the space allows it (`site.allowAssistant`). The panel is position:fixed (a floating button and a
- * sheet), so it adds nothing to the header's layout.
+ * when the space allows it (`site.allowAssistant`). It contributes the header's "Ask AI" button; the chat
+ * sheet it toggles is position:fixed, so it adds nothing more to the header's layout (which therefore must not
+ * have a backdrop-filter / transform of its own — that would make the sheet position against the header).
  */
 export function PublicAssistantSlot({ site, pageId }: PublicAssistantSlotProps) {
   return <PublicAskPanel site={site} pageId={pageId} />;

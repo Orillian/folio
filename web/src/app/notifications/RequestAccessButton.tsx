@@ -6,7 +6,8 @@ import { useApiErrorText } from '../errorText';
 import '../i18n/register';
 
 /**
- * "Ask for access" on the 404/"maybe no rights" screen (routes/NotFound.tsx).
+ * "Ask for access" on the "no access" screen (routes/NoAccess.tsx) — shown
+ * only for a space that exists and where the caller has no role.
  *
  * After success the button is gone — a "request sent" line stays: the server
  * is idempotent anyway (a repeated press returns the same live request), but a
