@@ -415,7 +415,7 @@ it exactly as they read a space with `instance` visibility.
 - **Tags:** a tag tree in the sidebar (`a/b` nests), a list of a tag's pages and a
   **bulk rename** (`#tag` in the text and `tags:` in the front matter, only on
   pages you can edit). `labels:` is a synonym of `tags:`: new tags are written as `tags:`, an existing `labels:` is only ever edited in place, never moved or removed.
-- **Search:** words, `"exact phrase"`, `-word`, `OR`, `tag:`, `path:`, `kind:`,
+- **Search:** words, `"exact phrase"`, `-word`, `tag:`, `in:folder/`, `kind:`,
   `status:`, `prop:key=value`, plus **saved searches** (up to 50 per person) in Cmd+K.
 - **Space files** are indexed as files: attachments and `assets/` are not in the
   tree or in search, but links to them are resolved, counted in backlinks and

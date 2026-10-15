@@ -120,7 +120,7 @@ written; Dataview, Canvas and plugins are not supported.
   overwritten; `labels:` is read, `tags:` is written.
 - **Tags and search.** A tag tree in the sidebar with bulk rename
   (`POST /api/spaces/:space/tags/rename`), and one search grammar everywhere (UI,
-  REST, MCP): `"phrase"`, `-word`, `OR`, `tag:`, `path:`, `kind:`, `status:`,
+  REST, MCP): `"phrase"`, `-word`, `tag:`, `in:folder/`, `kind:`, `status:`,
   `prop:key=value`; saved searches (up to 50 per person, migration 044).
 
 ### Changed
