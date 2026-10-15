@@ -73,7 +73,7 @@ what is not there.
    plugins, an inline PDF viewer or audio/video player for `![[file.pdf]]` (a
    link to the file instead), per-type callout colours and icons (Obsidian's
    types map onto five looks), and Obsidian's rule that an unclosed `%%` hides
-   the rest of the note (it stays text here). Space files (attachments, `assets/`) are indexed as files, not as pages: they are
+   the rest of the note (it stays text here). In the Live editor an image embed written as `![[image.png]]` shows as its name, not as the picture (Reading, PDF and DOCX show the picture; `![](image.png)` is a picture everywhere), and a note embed is not drawn inline while editing. Space files (attachments, `assets/`) are indexed as files, not as pages: they are
    not in the tree or in search, an attachment is found by name with Obsidian's rules
    and a missing one is listed among unresolved links. `.canvas` and `.base` files
    are not shown. Properties are written only in Folio's own format: a Folio key

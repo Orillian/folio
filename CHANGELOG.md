@@ -4,6 +4,21 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-15
+
+Your Obsidian vault or `docs/` folder becomes a team wiki in the browser, and
+the files stay untouched. A vault connects with a light footprint (no `id` is
+written, `git status` stays clean) and Folio reads Obsidian markup: wikilinks
+and embeds, callouts, `%%comments%%`, block ids, tags and formulas, with a
+properties panel and types, a tag tree with rename, one search grammar with
+operators and saved searches, an index of space files, and a page index with
+metadata, unresolved links and orphans (the MCP server now has 26 tools).
+Also in this release: a "Site & PDF" settings page backed by a `.folio/`
+folder, SEO for public sites (per-page `<head>`, `robots.txt`, `sitemap.xml`),
+six docs-as-code fixes found by testing real documentation repositories, and
+fixes from a test on real Obsidian vaults. Obsidian markup is read, not
+written; Dataview, Canvas and plugins are not supported.
+
 ### Added
 
 - **A "Site & PDF" settings page and a `.folio/` folder in the repository.**
@@ -62,9 +77,7 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   `[[Note#Heading]]`, `[[Note#^block]]`, `![[Note]]` and `![[image.png]]`) are
   indexed with Obsidian's shortest-path rules, so they show up in backlinks and
   in the broken-link count, and renaming or moving a page rewrites them in their
-  own form. Code blocks and inline code are never indexed or rewritten. Folio
-  does not create wikilinks, and does not show them yet: in a page they are
-  still plain text. Adds migration 041.
+  own form. Code blocks and inline code are never indexed or rewritten. Adds migration 041.
 - **A richer page index.** Each page is parsed once, when the space is scanned
   and when the page is saved, and the index now holds its headings (with the
   same anchors as the outline), `^block-id`s, tags (`#tag` in the text outside
