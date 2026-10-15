@@ -37,6 +37,7 @@ import { withSpaceLock } from '../db/redis.js';
 import { badRequest, conflict, forbidden, notFound } from '../errors.js';
 import { canReadTrashedTarget, MemberCache, resolveRestoredAccess } from './access.js';
 import { getTrashRoot } from './paths.js';
+import * as propsSidecar from '../propsSidecar.js';
 
 const TRASH_KINDS: TrashKind[] = ['doc', 'board', 'table', 'pdf', 'office', 'form', 'folder', 'space'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -393,6 +394,8 @@ async function restorePageItem(actor: User, row: TrashRow): Promise<TrashRestore
         throw err;
       }
     }
+    // The property sidecars the item took along (boards / files), at the restored paths — unless one is there already.
+    await restoreSidecars(row, spaceRoot, restoredPathMapper(row, destRel));
     await storage.scanSpace(space, undefined, restoredAccess);
     await query('DELETE FROM trash_items WHERE id = $1', [row.id]);
     await cleanupEmptyTrashDirs(path.dirname(srcAbs));
@@ -431,6 +434,24 @@ async function restorePageItem(actor: User, row: TrashRow): Promise<TrashRestore
     console.error(`[trash] restore commit failed for "${space}":`, err);
   });
   return result;
+}
+
+/** Writes back the property sidecars a trash item recorded (TrashPagePayload.props). Best effort: a sidecar never fails a restore. */
+async function restoreSidecars(row: TrashRow, contentRootAbs: string, mapPath: (oldRel: string) => string | undefined): Promise<void> {
+  const props = (row.payload as { props?: unknown } | null)?.props;
+  if (!Array.isArray(props)) return;
+  for (const item of props as Array<{ path?: unknown; content?: unknown }>) {
+    if (typeof item?.path !== 'string' || typeof item.content !== 'string') continue;
+    const target = mapPath(item.path);
+    if (!target) continue;
+    try {
+      if ((await propsSidecar.readSidecarText(contentRootAbs, target)) !== null) continue;
+      await propsSidecar.putSidecarText(contentRootAbs, target, item.content);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[trash] could not restore the properties of ${target}:`, err);
+    }
+  }
 }
 
 /** Claims back, at their restored paths, the ids a light-footprint trash item recorded (TrashPagePayload.ids). */

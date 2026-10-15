@@ -7,8 +7,10 @@
  * like every list-shaped read, so a page the caller may not read is never
  * listed or counted; `_templates/` are left out (the tag list does the same).
  *
- * RENAME (POST /api/spaces/:space/tags/rename). Every document that carries
- * `from` (or a child `from/…`) in the page index is looked at; the tag is
+ * RENAME (POST /api/spaces/:space/tags/rename). Every page that carries
+ * `from` (or a child `from/…`) in the page index is looked at — a data table's
+ * or form's own `tags:` and a board's / file's sidecar (`.folio/<path>.props.yaml`)
+ * too, since 15.10.2026, and in the same commit; in a document the tag is
  * rewritten in two places and nowhere else:
  *  - the BODY: each `#from…` token the page parser indexes as a tag (the same
  *    text nodes of the same mdast, the same boundary rule — after whitespace or
@@ -55,6 +57,8 @@ import { sqlParam, visiblePagesSql, type PageViewer } from './accessSql.js';
 import { reindexSavedPage } from './indexV2/store.js';
 import { normalizeTag } from './indexV2/parse.js';
 import { parseMarkdownAst } from './markdownAst.js';
+import { parseSidecar, putSidecarText, readSidecarText, sidecarRelPath, unwrapSidecar, usesSidecar, wrapSidecar } from './propsSidecar.js';
+import { ownProperties } from './reservedPropertyKeys.js';
 import * as storage from './storage.js';
 
 // Same CJS interop fallback as storage.ts / frontmatter.ts.
@@ -481,7 +485,7 @@ export async function renameTag(options: RenameTagOptions): Promise<RenameTagRes
       const candidates = await query<{ id: string }>(
         `SELECT DISTINCT p.id
            FROM page_tags t JOIN pages_index p ON p.id = t.page_id
-          WHERE p.space_slug = $1 AND p.kind = 'doc' AND (t.tag = $2 OR t.tag LIKE $3)
+          WHERE p.space_slug = $1 AND p.kind <> 'folder' AND (t.tag = $2 OR t.tag LIKE $3)
           ORDER BY p.id`,
         [space, from, `${escapeLike(from)}/%`],
       );
@@ -493,16 +497,17 @@ export async function renameTag(options: RenameTagOptions): Promise<RenameTagRes
 
       for (const { id } of candidates) {
         const entry = await storage.getEntry(id);
-        if (!entry || entry.kind !== 'doc') continue;
+        if (!entry) continue;
         if (isAgentPath(entry.relPath) && !administers) continue; // does not exist for this caller
         if (!session.roleAtLeast(await session.effectivePageRole(user, entry), 'editor')) {
           pagesSkipped++;
           continue;
         }
         try {
-          if (await renamePageTag(entry, from, to)) {
+          const changedFile = entry.kind === 'doc' ? ((await renamePageTag(entry, from, to)) ? entry.absPath : undefined) : await renameOwnPropertyTag(entry, from, to);
+          if (changedFile) {
             pagesChanged++;
-            touched.push(path.relative(repoDir, entry.absPath).split(path.sep).join('/'));
+            touched.push(path.relative(repoDir, changedFile).split(path.sep).join('/'));
           }
         } catch (err) {
           // One page that cannot be written must not stop the rest of the rename; it is reported as skipped.
@@ -528,6 +533,37 @@ export async function renameTag(options: RenameTagOptions): Promise<RenameTagRes
     },
     { ttlMs: 120_000, waitMs: 15_000 },
   );
+}
+
+/**
+ * Renames the tag in the own properties of a table / form (its front matter, next to the reserved keys — only
+ * `tags:` / `labels:` lines change) or a board / file (its sidecar). Returns the file written, or undefined.
+ */
+async function renameOwnPropertyTag(entry: storage.PageIndexEntry, from: string, to: string): Promise<string | undefined> {
+  const ref = { id: entry.id, space: entry.space, relPath: entry.relPath };
+  if (entry.kind === 'table' || entry.kind === 'form') {
+    let own: Record<string, unknown> = {};
+    const { written } = await storage.rewriteTableFormFrontmatter(entry.id, (raw, fresh) => {
+      const next = renameTagInFrontmatter(raw, from, to);
+      if (next === undefined) return null;
+      own = ownProperties(fresh.kind, matter(next, {}).data as Record<string, unknown>);
+      return next;
+    });
+    if (!written) return undefined;
+    await reindexSavedPage(ref, '', own);
+    return entry.absPath;
+  }
+  if (!usesSidecar(entry.kind)) return undefined;
+  const root = storage.getSpaceDir(entry.space);
+  const text = await readSidecarText(root, entry.relPath);
+  if (text === null || !parseSidecar(text).parseable) return undefined;
+  const renamed = renameTagInFrontmatter(wrapSidecar(text), from, to);
+  if (renamed === undefined) return undefined;
+  const next = unwrapSidecar(renamed);
+  await putSidecarText(root, entry.relPath, next);
+  await query('UPDATE pages_index SET updated_at = $2 WHERE id = $1', [entry.id, new Date().toISOString()]);
+  await reindexSavedPage(ref, '', parseSidecar(next).data);
+  return path.join(root, ...sidecarRelPath(entry.relPath).split('/'));
 }
 
 /** Renames the tag in one page's body and front matter. True when the page changed. */

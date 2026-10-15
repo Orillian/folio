@@ -102,7 +102,9 @@ afterEach(() => {
   collab.session = null;
 });
 
-function mount(props: { readOnly?: boolean; chromeStart?: boolean; mode?: EditorMode; title?: string; lightFootprint?: boolean } = {}): HTMLElement {
+function mount(
+  props: { readOnly?: boolean; chromeStart?: boolean; mode?: EditorMode; title?: string; lightFootprint?: boolean; slots?: boolean | 'by-mode' } = {},
+): HTMLElement {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -122,6 +124,16 @@ function mount(props: { readOnly?: boolean; chromeStart?: boolean; mode?: Editor
           collabUrl="ws://localhost/collab"
           readOnly={props.readOnly}
           defaultMode={props.mode}
+          chromeLead={
+            props.slots === 'by-mode'
+              ? (mode) => <button type="button">Lead in {mode}</button>
+              : props.slots
+                ? <button type="button">Properties (2)</button>
+                : undefined
+          }
+          belowChrome={
+            props.slots === 'by-mode' ? (mode) => <div data-testid="below">Body in {mode}</div> : props.slots ? <div data-testid="below">Body</div> : undefined
+          }
           chromeStart={props.chromeStart ? <button type="button">Add a cover</button> : undefined}
         />
       </QueryClientProvider>,
@@ -427,6 +439,37 @@ describe('PageEditor mode switch on a phone', () => {
 
     expect(menuButton(container)).toBeNull();
     expect(container.querySelector('.folio-editor__readonly')).not.toBeNull();
+  });
+});
+
+describe('PageEditor chrome-lead and below-chrome slots', () => {
+  it('shows the lead first in the chrome row and the body right under it, in reading mode', () => {
+    const container = mount({ slots: true });
+    const chrome = container.querySelector('.folio-editor__chrome')!;
+    const lead = chrome.querySelector('.folio-editor__chrome-lead');
+    expect(lead?.textContent).toBe('Properties (2)');
+    expect(chrome.firstElementChild).toBe(lead);
+    expect(chrome.nextElementSibling?.getAttribute('data-testid')).toBe('below');
+  });
+
+  it('keeps the lead beside chrome-start when editing, and renders nothing without them', () => {
+    const container = mount({ slots: true, chromeStart: true });
+    act(() => modeButtons(container)[1].click());
+    const chrome = container.querySelector('.folio-editor__chrome')!;
+    expect(chrome.querySelector('.folio-editor__chrome-lead')).not.toBeNull();
+    expect(chrome.querySelector('.folio-editor__chrome-start')).not.toBeNull();
+    expect(mount().querySelector('.folio-editor__chrome-lead')).toBeNull();
+  });
+
+  it('hands the current mode to slots given as functions (the properties are read-only in reading)', () => {
+    const container = mount({ slots: 'by-mode' });
+    expect(container.querySelector('.folio-editor__chrome-lead')?.textContent).toBe('Lead in reading');
+    expect(container.querySelector('[data-testid="below"]')?.textContent).toBe('Body in reading');
+    act(() => modeButtons(container)[1].click());
+    expect(container.querySelector('.folio-editor__chrome-lead')?.textContent).toBe('Lead in live');
+    expect(container.querySelector('[data-testid="below"]')?.textContent).toBe('Body in live');
+    act(() => modeButtons(container)[2].click());
+    expect(container.querySelector('[data-testid="below"]')?.textContent).toBe('Body in source');
   });
 });
 

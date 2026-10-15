@@ -46,6 +46,7 @@ import {
 } from '../shared/contracts.js';
 import { sanitizeSiteCss, siteAssetNameFromRef } from '../shared/siteCss.js';
 import { withSpaceLock } from './db/redis.js';
+import { ensureSidecarDirs } from './propsSidecar.js';
 import { badRequest, conflict, HttpError, notFound } from './errors.js';
 import { MAX_EXPORT_CSS_BYTES, sanitizeExportCss } from './export/css.js';
 import { sanitizeSvgForEmbedding } from './export/headerFooterImages.js';
@@ -853,14 +854,69 @@ export async function writeFolioSettingsFile(
   build: (current: { content: string; etag: string } | null) => string | null,
 ): Promise<boolean> {
   if (!isSettingsFileName(file)) throw badRequest(`not a settings file: ${file}`);
+  return writeFolioFile(space, actor, file, build);
+}
+
+/**
+ * The one writer of `.folio/` files other than the appearance set: settings
+ * files (`properties.json`) and the page property sidecars (propsSidecar.ts,
+ * `<path>.props.yaml` at any depth). Under the space's lock, no symlink
+ * followed (`.folio/` and every folder under it must be real directories), an
+ * atomic write, ONE commit of exactly that path. `build` gets the file as it
+ * is now (or null) and returns the new content; null, or the same content,
+ * leaves it; '' deletes the file (`settings: remove .folio/<rel>`) and the
+ * folders it leaves empty. `build` may throw (a 409 of the caller): nothing is
+ * written then. Returns whether the file changed.
+ */
+export async function writeFolioFile(
+  space: string,
+  actor: GitIdentity,
+  relUnderFolio: string,
+  build: (current: { content: string; etag: string } | null) => string | null | Promise<string | null>,
+): Promise<boolean> {
+  const parts = relUnderFolio.split('/');
+  if (parts.some((part) => part === '' || part === '.' || part === '..') || relUnderFolio.startsWith(`${ASSETS_DIR}/`)) {
+    throw badRequest(`not a .folio file: ${relUnderFolio}`);
+  }
   if (!(await storage.spaceExists(space))) throw notFound('space');
   return withSpaceLock(space, async () => {
-    const current = await readFolioText(space, file);
-    const next = build(current);
+    const nested = parts.length > 1;
+    const current = nested ? await readNestedFolioText(space, relUnderFolio) : await readFolioText(space, relUnderFolio);
+    const next = await build(current);
     if (next === null || next === current?.content) return false;
-    const rel = path.posix.join(APPEARANCE_DIR, file);
-    const touched = await applyPlan(space, new Map([[rel, next]]), new Map());
-    await commitTouched(space, touched, `settings: update ${rel}`, actor);
+    if (next === '' && !current) return false;
+    const rel = path.posix.join(APPEARANCE_DIR, relUnderFolio);
+    if (next !== '' && nested) await ensureSidecarDirs(storage.getSpaceDir(space), path.posix.dirname(rel));
+    const touched = await applyPlan(space, new Map([[rel, next === '' ? null : next]]), new Map());
+    if (next === '' && nested) await pruneEmptyFolioDirs(space, path.posix.dirname(rel));
+    await commitTouched(space, touched, `settings: ${next === '' ? 'remove' : 'update'} ${rel}`, actor);
     return true;
   });
+}
+
+/** A file at any depth under `.folio/`, every folder on the way a real directory; null otherwise. Not cached. */
+async function readNestedFolioText(space: string, relUnderFolio: string): Promise<{ content: string; etag: string } | null> {
+  let abs = appearanceDir(space);
+  for (const part of relUnderFolio.split('/').slice(0, -1)) {
+    if (!(await dirIsSafe(abs))) return null;
+    abs = path.join(abs, part);
+  }
+  if (!(await dirIsSafe(abs))) return null;
+  const file = path.join(abs, path.posix.basename(relUnderFolio));
+  if (!(await plainStat(file, 'file'))) return null;
+  const buf = await fs.readFile(file);
+  return { content: buf.toString('utf8'), etag: sha1(buf) };
+}
+
+/** rmdir of the empty folders from `relDir` (content-root relative) up to, not including, `.folio`. */
+async function pruneEmptyFolioDirs(space: string, relDir: string): Promise<void> {
+  let dir = relDir;
+  while (dir.startsWith(`${APPEARANCE_DIR}/`)) {
+    try {
+      await fs.rmdir(path.join(storage.getSpaceDir(space), ...dir.split('/')));
+    } catch {
+      return;
+    }
+    dir = path.posix.dirname(dir);
+  }
 }

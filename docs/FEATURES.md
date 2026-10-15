@@ -411,10 +411,22 @@ it exactly as they read a space with `instance` visibility.
   `.obsidian/types.json` when that file is absent. Saving rewrites only the front
   matter block; every other byte of the file stays. `id` cannot be changed, and a
   Folio key holding a value Folio would not write itself (`status: deprecated`)
-  is shown as a foreign value and never overwritten.
+  is shown as a foreign value and never overwritten. **Reading mode is read-only:**
+  properties are shown there, and added, edited or removed in Live and Source.
+- **Properties on data tables, forms, boards and files** (PDF, Office): the same
+  panel, as a thin row above the page with "Properties (N)" at its top left.
+  A table or a form keeps them in its own front matter, next to Folio's reserved
+  keys (the table schema, the form fields): those are never shown, never edited,
+  and a table or form save never drops the properties. A board or a file keeps
+  them in a sidecar, `.folio/<path>.props.yaml` (`docs/report.pdf` →
+  `.folio/docs/report.pdf.props.yaml`): created with the first property, deleted
+  with the last, one commit per save, and it follows the page through renames,
+  moves, the trash and a restore. Their tags and properties work in search
+  (`tag:`, `prop:`) and in MCP `get_page_metadata`; whoever can edit the page can
+  edit them.
 - **Tags:** a tag tree in the sidebar (`a/b` nests), a list of a tag's pages and a
-  **bulk rename** (`#tag` in the text and `tags:` in the front matter, only on
-  pages you can edit). `labels:` is a synonym of `tags:`: new tags are written as `tags:`, an existing `labels:` is only ever edited in place, never moved or removed.
+  **bulk rename** (`#tag` in the text and `tags:` in the front matter, plus the
+  tags of tables, forms, boards and files, only on pages you can edit). `labels:` is a synonym of `tags:`: new tags are written as `tags:`, an existing `labels:` is only ever edited in place, never moved or removed.
 - **Search:** words, `"exact phrase"`, `-word`, `tag:`, `in:folder/`, `kind:`,
   `status:`, `prop:key=value`, plus **saved searches** (up to 50 per person) in Cmd+K.
 - **Space files** are indexed as files: attachments and `assets/` are not in the

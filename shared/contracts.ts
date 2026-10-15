@@ -677,16 +677,31 @@ export interface PagePropertiesResponse {
   /** Keys the editor must not offer for editing (id). */
   readOnly: string[];
   canEdit: boolean;
-  /** sha1 of the file's front matter block as it is on disk (delimiters included), null when the file has none — send it back as the PUT's `etag`. Added by the A1 server (14.10.2026). */
+  /**
+   * Optimistic lock token — send it back as the PUT's `etag`. A document: sha1 of its front matter block as it is on
+   * disk (delimiters included), null without one. A table / form: sha1 of its own properties (the reserved keys
+   * left out, so a schema edit does not invalidate it). A board / PDF / Office page: sha1 of the sidecar file,
+   * null without one. Added by the A1 server (14.10.2026).
+   */
   etag: string | null;
+  /**
+   * Boards, PDFs and Office pages (15.10.2026): the sidecar their properties live in, relative to the space's
+   * content root (`.folio/docs/report.pdf.props.yaml`) — present even before the file exists. Absent for documents,
+   * tables and forms (their properties are the page file's own front matter).
+   */
+  sidecar?: string;
 }
 /**
  * PUT /api/pages/:id/properties — editor+ on the page, cookie or write-scope PAT.
- * Replaces the editable front matter keys with `properties` (a key missing from
+ * Replaces the editable properties with `properties` (a key missing from
  * `properties` is removed; `id` can never be changed; Folio keys keep their
- * validation; `tags` is written as `tags:` even if the file had `labels:` —
- * then `labels:` is removed); byte-preserves the body and unknown formatting
- * (same guarantees as mergeFrontmatter). One commit like a page save.
+ * validation; an existing `labels:` is never removed or migrated by omission);
+ * byte-preserves the body and unknown formatting (same guarantees as
+ * mergeFrontmatter). Documents: the file's front matter, the debounced commit
+ * like a page save. Tables / forms: their own keys of the block — a reserved
+ * key (`columns`, `fields`, …) sent is a 400. Boards / PDFs / Office pages: the
+ * sidecar `.folio/<path>.props.yaml`, created by the first property, deleted
+ * with the last, ONE commit of that file (`settings: update|remove …`).
  */
 export const updatePagePropertiesBodySchema = z.object({
   properties: z.record(z.string().min(1).max(100), z.unknown()),

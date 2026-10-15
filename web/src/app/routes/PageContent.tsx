@@ -16,7 +16,7 @@ import { useSpaceRole } from '../auth/AuthProvider';
 import { canEditContent, canManageMembers } from '../auth/roles';
 import { OutlinePanel } from '../outline/OutlinePanel';
 import { PageChrome } from '../page-meta/PageChrome';
-import { PropertiesPanel } from '../properties/PropertiesPanel';
+import { PagePropertiesBar, PropertiesBody, PropertiesToggle, usePropertiesOpen } from '../properties/PropertiesPanel';
 import { PageConflictBanner } from '../git/PageConflictBanner';
 import { AgentDemoNote } from '../AgentDemoNote';
 import { trackPageOpen, type PageKind } from '../../analytics';
@@ -128,6 +128,8 @@ export function PageContent({ id }: PageContentProps) {
     refetchOnWindowFocus: true,
   });
   const isLocalPage = useIsLocalPage(id);
+  // One open state for the toggle (chrome row) and the body (under it).
+  const [propsOpen, setPropsOpen] = usePropertiesOpen(data?.space ?? '');
   // A page that could not be loaded because there was no network comes back
   // by itself when there is one again: with networkMode 'always' React Query
   // no longer treats a reconnect as a reason to refetch.
@@ -249,6 +251,7 @@ export function PageContent({ id }: PageContentProps) {
     return (
       <div className="flex h-full flex-col">
         <PageConflictBanner space={data.space} pageId={data.id} />
+        {!isLocalPage && <PagePropertiesBar pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} className="px-3 pt-1" />}
         <div className="ph-mask min-h-0 flex-1">
           <TablePageView pageId={data.id} role={tableRole(role)} space={data.space} onViewState={setTableViewState} />
         </div>
@@ -264,6 +267,8 @@ export function PageContent({ id }: PageContentProps) {
     return (
       <div className="ph-mask flex h-full flex-col overflow-y-auto">
         <PageConflictBanner space={data.space} pageId={data.id} />
+        {/* Aligned with the form itself (FormPageView: a centred max-w-xl column with p-6). */}
+        <PagePropertiesBar pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} className="mx-auto w-full max-w-xl px-6 pt-3" />
         <FormPageView pageId={data.id} space={data.space} markdown={data.markdown ?? ''} canEdit={editable} />
       </div>
     );
@@ -279,6 +284,7 @@ export function PageContent({ id }: PageContentProps) {
       <div className="flex h-full flex-col">
         <PageConflictBanner space={data.space} pageId={data.id} />
         <PageChrome pageId={data.id} space={data.space} icon={data.icon} canEdit={chromeEditable} allowCover={false} compact />
+        {!isLocalPage && <PagePropertiesBar pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} className="px-3 pt-1" />}
         <div className="ph-no-capture min-h-0 flex-1">
           {/* Viewers never mount BoardEditor — DEV-PLAN Round 2: "boards render
               the fetched svg statically instead of BoardEditor" for that role. */}
@@ -296,6 +302,7 @@ export function PageContent({ id }: PageContentProps) {
       <div className="flex h-full flex-col">
         <PageConflictBanner space={data.space} pageId={data.id} />
         <PageChrome pageId={data.id} space={data.space} icon={data.icon} canEdit={editable} allowCover={false} compact />
+        <PagePropertiesBar pageId={data.id} space={data.space} canEdit={chromeEditable} canManageTypes={canManageMembers(spaceRole)} className="px-3 pt-1" />
         <ReplaceFileDropZone space={data.space} pageId={data.id} pagePath={data.path} canEdit={chromeEditable} className="ph-no-capture min-h-0 flex-1">
           <PdfView pageId={data.id} title={data.title} version={data.updatedAt} />
         </ReplaceFileDropZone>
@@ -313,6 +320,7 @@ export function PageContent({ id }: PageContentProps) {
       <div className="flex h-full flex-col">
         <PageConflictBanner space={data.space} pageId={data.id} />
         <PageChrome pageId={data.id} space={data.space} icon={data.icon} canEdit={editable} allowCover={false} compact />
+        <PagePropertiesBar pageId={data.id} space={data.space} canEdit={chromeEditable} canManageTypes={canManageMembers(spaceRole)} className="px-3 pt-1" />
         <ReplaceFileDropZone space={data.space} pageId={data.id} pagePath={data.path} canEdit={chromeEditable} className="ph-no-capture min-h-0 flex-1">
           <OfficeView pageId={data.id} title={data.title} format={officeFormat(data.path) ?? 'docx'} version={data.updatedAt} />
         </ReplaceFileDropZone>
@@ -345,10 +353,6 @@ export function PageContent({ id }: PageContentProps) {
           {data.cover && (
             <PageChrome pageId={data.id} space={data.space} icon={data.icon} cover={data.cover} canEdit={chromeEditable} />
           )}
-          {/* Obsidian wave 3: the page's front matter, collapsed to one line by default. Not for a page that exists only on this device (the server has no file to read yet). */}
-          {!isLocalPage && (
-            <PropertiesPanel pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} />
-          )}
           <div className="ph-mask min-h-0 flex-1">
             <PageEditor
               pageId={data.id}
@@ -359,6 +363,28 @@ export function PageContent({ id }: PageContentProps) {
               collabUrl={collabUrl}
               readOnly={!editable}
               defaultMode={startEditing ? 'live' : 'reading'}
+              // Reading is reading (owner, 15.10.2026): in reading mode the properties are shown, never added,
+              // edited or removed — even by an editor; Live and Source edit them.
+              chromeLead={
+                isLocalPage
+                  ? undefined
+                  : (mode) => (
+                      <PropertiesToggle pageId={data.id} space={data.space} canEdit={editable && mode !== 'reading'} open={propsOpen} onToggle={() => setPropsOpen((v) => !v)} />
+                    )
+              }
+              belowChrome={
+                isLocalPage
+                  ? undefined
+                  : (mode) => (
+                      <PropertiesBody
+                        pageId={data.id}
+                        space={data.space}
+                        canEdit={editable && mode !== 'reading'}
+                        canManageTypes={canManageMembers(spaceRole)}
+                        open={propsOpen}
+                      />
+                    )
+              }
               chromeStart={
                 data.cover ? undefined : (
                   <PageChrome pageId={data.id} space={data.space} icon={data.icon} cover={data.cover} canEdit={chromeEditable} compact />

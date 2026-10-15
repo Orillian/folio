@@ -10,7 +10,7 @@ Website: <https://foliowiki.online> · Featured in [Self-Host Weekly (9 Oct 2026
 
 No install, no sign-up: open it and pick Sam on the sign-in screen. Shared login, data resets every 24 hours; don't enter personal data or API keys.
 
-![A page in Folio](docs/images/document.png)
+![Folio: a page with Folio AI at work, a whiteboard and a data table](docs/images/overview.png)
 
 Folio was built to replace Confluence and Notion for a real team — and it was
 built by AI agents, in the open. The plans, specs and hand-off notes the agents

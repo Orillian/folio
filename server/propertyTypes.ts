@@ -15,8 +15,10 @@
  * properties panel down. Nothing here follows a symlink.
  *
  * `known` is what the space's front matter actually holds — every key of
- * `pages_index.frontmatter` on the documents the caller may read (accessSql.ts,
- * `_templates/` excluded; `id` left out: Folio's, never typed), with the type
+ * `pages_index.frontmatter` on the pages the caller may read — documents, and
+ * since 15.10.2026 the own properties of tables, forms, boards and files too
+ * (accessSql.ts, `_templates/` excluded; a document's `id` left out: Folio's,
+ * never typed), with the type
  * inferred from the values (the most common one; a tie goes to the more
  * specific type, text last) and the number of pages; an empty value votes for nothing.
  * Inference: `tags`/`labels` -> tags, `aliases` -> aliases, a number -> number,
@@ -147,7 +149,7 @@ export async function listKnownProperties(space: string, viewer: PageViewer): Pr
             COUNT(DISTINCT p.id)::int AS pages
        FROM pages_index p
        CROSS JOIN LATERAL jsonb_each(CASE WHEN jsonb_typeof(p.frontmatter) = 'object' THEN p.frontmatter ELSE '{}'::jsonb END) AS e
-      WHERE p.space_slug = $1 AND p.kind = 'doc' AND e.key <> 'id' AND ${visible}
+      WHERE p.space_slug = $1 AND p.kind <> 'folder' AND (p.kind <> 'doc' OR e.key <> 'id') AND ${visible}
       GROUP BY 1, 2`,
     params,
   );

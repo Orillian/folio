@@ -41,7 +41,9 @@ import { AGENT_FOLDER } from './agentPath.js';
 import { serverText } from './serverText.js';
 import { docIndexText } from './indexText.js';
 import { inlineMarkdownToPlainText } from '../shared/inlineText.js';
-import { mergeFrontmatter, type FolioFrontmatter } from './frontmatter.js';
+import { carryFrontmatterKeys, mergeFrontmatter, writeFrontmatterKeys, type FolioFrontmatter, type FrontmatterKeyEdit } from './frontmatter.js';
+import * as propsSidecar from './propsSidecar.js';
+import { ownProperties, reservedKeysOf } from './reservedPropertyKeys.js';
 import * as spaceFiles from './spaceFiles.js';
 
 // gray-matter is CJS (`export =`). `import * as matterNS` typechecks and runs fine
@@ -451,14 +453,28 @@ export function splitLeadingFrontmatter(markdown: string): { icon?: string; cove
  * `order` threaded through TableDoc. `lineWidth: -1` matches the codec's own
  * dump options so long labels/descriptions still never wrap.
  */
-export function withTablePageFields(raw: string, order: number | undefined, icon: string | undefined): string {
-  const parsed = matter(raw);
-  const data: Record<string, unknown> = { ...parsed.data };
-  if (order === undefined) delete data.order;
-  else data.order = order;
-  if (icon === undefined) delete data.icon;
-  else data.icon = icon;
-  return matter.stringify(parsed.content, data, { lineWidth: -1 } as Parameters<typeof matter.stringify>[2]);
+export function withTablePageFields(raw: string, order: number | undefined, icon: string | undefined, carryFrom?: string): string {
+  // Only these two keys are edited (writeFrontmatterKeys): every other key — the schema, and since 15.10.2026 the
+  // page's own properties — keeps its bytes (a re-serialization used to turn `due: 2024-05-01` into a timestamp).
+  const out = writeFrontmatterKeys(
+    raw,
+    new Map<string, FrontmatterKeyEdit>([
+      ['order', order === undefined ? { remove: true } : { set: order }],
+      ['icon', icon === undefined ? { remove: true } : { set: icon }],
+    ]),
+  );
+  if (carryFrom === undefined) return out;
+  // The page's own properties sit next to the reserved keys the codec rebuilt from: carried over from the file as
+  // it was, byte for byte (reservedPropertyKeys.ts).
+  let marker: unknown;
+  try {
+    marker = matter(out, {}).data.folio;
+  } catch {
+    marker = undefined;
+  }
+  const kind = marker === 'form' ? 'form' : 'table';
+  const reserved = reservedKeysOf(kind)!;
+  return carryFrontmatterKeys(out, carryFrom, (key) => !reserved.has(key));
 }
 
 const FOLIO_ID_RE = /^<!--\s*folio-id:\s*([A-Za-z0-9]+)\s*-->\s*$/;
@@ -1220,10 +1236,13 @@ async function indexTableFile(space: string, relPath: string, abs: string, mtime
   // below rather than abort the whole space scan)
   let explicitOrder: number | undefined;
   let explicitIcon: string | undefined;
+  // The page's own properties (15.10.2026): the block without the keys that ARE the table — for the page index.
+  let own: Record<string, unknown> | undefined;
   try {
-    const data = matter(raw).data;
+    const data = matter(raw, {}).data;
     explicitOrder = numericOrder(data?.order);
     explicitIcon = validStringField(data?.icon);
+    own = data && typeof data === 'object' ? ownProperties('table', structuredClone(data) as Record<string, unknown>) : undefined;
   } catch {
     explicitOrder = undefined;
     explicitIcon = undefined;
@@ -1256,6 +1275,7 @@ async function indexTableFile(space: string, relPath: string, abs: string, mtime
       icon: explicitIcon,
       status: 'published',
       updatedAt: mtime.toISOString(),
+      frontmatter: own,
     };
   }
 
@@ -1273,6 +1293,7 @@ async function indexTableFile(space: string, relPath: string, abs: string, mtime
     icon: explicitIcon,
     status: 'published',
     updatedAt: mtime.toISOString(),
+    frontmatter: own,
     body: tableDocToPlainText(parsed),
   };
 }
@@ -1311,10 +1332,13 @@ async function indexFormFile(space: string, relPath: string, abs: string, mtime:
   // straight off the raw frontmatter so they survive a full index rebuild.
   let explicitOrder: number | undefined;
   let explicitIcon: string | undefined;
+  // The page's own properties (15.10.2026): the block without the keys that ARE the form — for the page index.
+  let own: Record<string, unknown> | undefined;
   try {
-    const data = matter(raw).data;
+    const data = matter(raw, {}).data;
     explicitOrder = numericOrder(data?.order);
     explicitIcon = validStringField(data?.icon);
+    own = data && typeof data === 'object' ? ownProperties('form', structuredClone(data) as Record<string, unknown>) : undefined;
   } catch {
     explicitOrder = undefined;
     explicitIcon = undefined;
@@ -1345,6 +1369,7 @@ async function indexFormFile(space: string, relPath: string, abs: string, mtime:
       icon: explicitIcon,
       status: 'published',
       updatedAt: mtime.toISOString(),
+      frontmatter: own,
     };
   }
 
@@ -1362,6 +1387,7 @@ async function indexFormFile(space: string, relPath: string, abs: string, mtime:
     icon: explicitIcon,
     status: 'published',
     updatedAt: mtime.toISOString(),
+    frontmatter: own,
     body: formDocToPlainText(parsed),
   };
 }
@@ -1400,6 +1426,19 @@ export function isConnectionFailure(err: unknown): boolean {
   return code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'EPIPE';
 }
 
+/** Two values as jsonb would hold them (dates as ISO text, object keys in any order). */
+function sameJson(a: unknown, b: unknown): boolean {
+  const canonical = (v: unknown): string =>
+    JSON.stringify(JSON.parse(JSON.stringify(v ?? null)), (_k, x: unknown) =>
+      x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x as Record<string, unknown>).sort().map((k) => [k, (x as Record<string, unknown>)[k]])) : x,
+    );
+  try {
+    return canonical(a) === canonical(b);
+  } catch {
+    return false;
+  }
+}
+
 export async function scanSpace(space: string, onProgress?: (progress: ScanProgress) => void, restoredAccess?: RestoredAccess): Promise<ScanStats> {
   const startedAt = Date.now();
   const appliedRules = new Set<PageAccessRule>();
@@ -1427,6 +1466,9 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   let lastFailure: unknown = null;
   let processedFiles = 0;
   let totalFiles = 0;
+  // Property sidecars of boards / PDFs / Office pages (propsSidecar.ts): read once per scan — they are few and
+  // small — so a sidecar changed by git is indexed even when its page file did not change.
+  const sidecars = await propsSidecar.listSidecars(root).catch(() => new Map<string, string>());
   // Wave 3: every non-page file the walk meets, for the files index (spaceFiles.ts) — mirrored after the walk.
   const scannedFiles: spaceFiles.ScannedFile[] = [];
   const noteFile = async (abs: string, relPath: string): Promise<void> => {
@@ -1613,6 +1655,11 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
       if (!entry) continue;
       readPaths.push(entry.relPath);
       if (entry.kind === 'doc') pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: entry.body ?? '', frontmatter: entry.frontmatter });
+      // A table's / form's own properties, a board's / file's sidecar: tags and `prop:` of the page (no body to parse).
+      else if (entry.kind === 'table' || entry.kind === 'form') pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: '', frontmatter: entry.frontmatter ?? {} });
+      else if (propsSidecar.usesSidecar(entry.kind)) {
+        pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: '', frontmatter: propsSidecar.parseSidecar(sidecars.get(entry.relPath) ?? null).data });
+      }
       reportProcessed();
     }
   }
@@ -1650,6 +1697,25 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
     if (isConnectionFailure(err)) throw err;
     // eslint-disable-next-line no-console
     console.error(`[scan] ${space}: could not update the files index:`, err);
+  }
+
+  // A sidecar that changed (or went away) while its page file did not: the page's properties are indexed again.
+  try {
+    const queued = new Set(pendingMeta.map((p) => p.id));
+    const rows = await query<{ id: string; path: string; frontmatter: Record<string, unknown> | null }>(
+      `SELECT id, path, frontmatter FROM pages_index WHERE space_slug = $1 AND kind = ANY($2::text[])`,
+      [space, ['board', 'pdf', 'office']],
+    );
+    for (const row of rows) {
+      if (queued.has(row.id)) continue;
+      const data = propsSidecar.parseSidecar(sidecars.get(row.path) ?? null).data;
+      if (sameJson(data, row.frontmatter ?? {})) continue;
+      pendingMeta.push({ id: row.id, relPath: row.path, body: '', frontmatter: data });
+    }
+  } catch (err) {
+    if (isConnectionFailure(err)) throw err;
+    // eslint-disable-next-line no-console
+    console.error(`[scan] ${space}: could not compare the property sidecars:`, err);
   }
 
   // Index v2, phase 1: the documents read in this scan (their links raw, unresolved).
@@ -2485,6 +2551,7 @@ export async function changeFilePageExtension(id: string, newExt: string): Promi
     const backlinks = await links.getBacklinks(id);
     claimBinaryId(destAbs, id);
     await fs.rename(entry.absPath, destAbs);
+    await followSidecars(entry.space, [[entry.relPath, newRelPath, false]]);
     await scanSpace(entry.space);
     return { meta: toPageMeta(await requireEntry(id)), moved: [{ id, oldRelPath: entry.relPath, newRelPath, backlinks }] };
   });
@@ -3042,6 +3109,33 @@ export async function rewriteDocFrontmatter(
 }
 
 /**
+ * rewriteDocFrontmatter's twin for a data table / form (15.10.2026, the
+ * properties panel): `rewrite` gets the file as it is on disk NOW (under the
+ * same per-page file lock writeTableDoc / writeFormDoc take, so a table save
+ * and a properties save never interleave) and returns the new text, or null
+ * to leave it. Only the page's own keys may change — the caller
+ * (properties.ts) edits them with writeFrontmatterKeys, every reserved byte
+ * kept. The page's index row is stamped; its properties are re-indexed by the caller.
+ */
+export async function rewriteTableFormFrontmatter(
+  id: string,
+  rewrite: (raw: string, entry: PageIndexEntry) => string | null | Promise<string | null>,
+): Promise<{ entry: PageIndexEntry; written: boolean }> {
+  return withDocFileLock(id, async () => {
+    const entry = await requireEntry(id);
+    if (entry.kind !== 'table' && entry.kind !== 'form') throw badRequest('page is not a data table or a form');
+    const raw = await fs.readFile(entry.absPath, 'utf8');
+    const next = await rewrite(raw, entry);
+    if (next === null || next === raw) return { entry, written: false };
+    await writeFileAtomic(entry.absPath, next);
+    const updatedAt = new Date().toISOString();
+    await query('UPDATE pages_index SET updated_at = $2 WHERE id = $1', [id, updatedAt]);
+    entry.updatedAt = updatedAt;
+    return { entry, written: true };
+  });
+}
+
+/**
  * writeDocBody, telling whether the file was written. A body that is already
  * what the file says (line endings and the final newline aside) with no Folio
  * key to change writes nothing at all — and leaves the index row as it is.
@@ -3177,8 +3271,10 @@ export async function setBoardIcon(entry: PageIndexEntry, icon: string | undefin
 export async function setTableOrder(entry: PageIndexEntry, order: number): Promise<void> {
   if (entry.kind !== 'table') throw badRequest('page is not a data table');
   if (order === entry.explicitOrder) return;
-  const raw = await fs.readFile(entry.absPath, 'utf8');
-  await fs.writeFile(entry.absPath, withTablePageFields(raw, order, entry.icon), 'utf8');
+  await withDocFileLock(entry.id, async () => {
+    const raw = await fs.readFile(entry.absPath, 'utf8');
+    await fs.writeFile(entry.absPath, withTablePageFields(raw, order, entry.icon), 'utf8');
+  });
   await query('UPDATE pages_index SET sort_order = $2 WHERE id = $1', [entry.id, order]);
   entry.order = order;
   entry.explicitOrder = order;
@@ -3188,8 +3284,10 @@ export async function setTableOrder(entry: PageIndexEntry, order: number): Promi
 export async function setTableIcon(entry: PageIndexEntry, icon: string | undefined): Promise<void> {
   if (entry.kind !== 'table') throw badRequest('page is not a data table');
   if (icon === entry.icon) return;
-  const raw = await fs.readFile(entry.absPath, 'utf8');
-  await fs.writeFile(entry.absPath, withTablePageFields(raw, entry.explicitOrder, icon), 'utf8');
+  await withDocFileLock(entry.id, async () => {
+    const raw = await fs.readFile(entry.absPath, 'utf8');
+    await fs.writeFile(entry.absPath, withTablePageFields(raw, entry.explicitOrder, icon), 'utf8');
+  });
   await query('UPDATE pages_index SET icon = $2 WHERE id = $1', [entry.id, icon ?? null]);
   entry.icon = icon;
 }
@@ -3198,8 +3296,10 @@ export async function setTableIcon(entry: PageIndexEntry, icon: string | undefin
 export async function setFormOrder(entry: PageIndexEntry, order: number): Promise<void> {
   if (entry.kind !== 'form') throw badRequest('page is not a form');
   if (order === entry.explicitOrder) return;
-  const raw = await fs.readFile(entry.absPath, 'utf8');
-  await fs.writeFile(entry.absPath, withTablePageFields(raw, order, entry.icon), 'utf8');
+  await withDocFileLock(entry.id, async () => {
+    const raw = await fs.readFile(entry.absPath, 'utf8');
+    await fs.writeFile(entry.absPath, withTablePageFields(raw, order, entry.icon), 'utf8');
+  });
   await query('UPDATE pages_index SET sort_order = $2 WHERE id = $1', [entry.id, order]);
   entry.order = order;
   entry.explicitOrder = order;
@@ -3209,8 +3309,10 @@ export async function setFormOrder(entry: PageIndexEntry, order: number): Promis
 export async function setFormIcon(entry: PageIndexEntry, icon: string | undefined): Promise<void> {
   if (entry.kind !== 'form') throw badRequest('page is not a form');
   if (icon === entry.icon) return;
-  const raw = await fs.readFile(entry.absPath, 'utf8');
-  await fs.writeFile(entry.absPath, withTablePageFields(raw, entry.explicitOrder, icon), 'utf8');
+  await withDocFileLock(entry.id, async () => {
+    const raw = await fs.readFile(entry.absPath, 'utf8');
+    await fs.writeFile(entry.absPath, withTablePageFields(raw, entry.explicitOrder, icon), 'utf8');
+  });
   await query('UPDATE pages_index SET icon = $2 WHERE id = $1', [entry.id, icon ?? null]);
   entry.icon = icon;
 }
@@ -3300,6 +3402,11 @@ export async function readBoardSvg(id: string): Promise<string> {
  * indexTableFile is the one place a parse error is tolerated (best-effort
  * stub indexing, spec §1), not here.
  */
+/** The whole `.table.md` text for `doc`: the codec's block, the page's `order`/`icon`, and its own properties carried from `prev` (the file as it is). */
+export function composeTableFile(doc: TableDoc, entry: Pick<PageIndexEntry, 'explicitOrder' | 'icon'>, prev: string | undefined): string {
+  return withTablePageFields(serializeTableFile(doc), entry.explicitOrder, entry.icon, prev);
+}
+
 export async function readFreshTableDoc(id: string): Promise<TableDoc> {
   const entry = await requireEntry(id);
   if (entry.kind !== 'table') throw badRequest('page is not a data table');
@@ -3325,8 +3432,11 @@ export async function readFreshTableDoc(id: string): Promise<TableDoc> {
 export async function writeTableDoc(id: string, doc: TableDoc): Promise<PageMeta> {
   const entry = await requireEntry(id);
   if (entry.kind !== 'table') throw badRequest('page is not a data table');
-  const serialized = serializeTableFile(doc);
-  await fs.writeFile(entry.absPath, withTablePageFields(serialized, entry.explicitOrder, entry.icon), 'utf8');
+  // Under the page's file lock: a properties save (rewriteTableFormFrontmatter) between the read and the write would be lost.
+  await withDocFileLock(id, async () => {
+    const prev = await fs.readFile(entry.absPath, 'utf8').catch(() => undefined);
+    await fs.writeFile(entry.absPath, composeTableFile(doc, entry, prev), 'utf8');
+  });
 
   const title = extractH1(doc.head) ?? titleFallback(entry.relPath, 'table');
   const updatedAt = new Date().toISOString();
@@ -3444,10 +3554,14 @@ export async function readFreshFormDoc(id: string): Promise<FormDoc> {
 export async function writeFormDoc(id: string, doc: Omit<FormDoc, 'meta' | 'table'>): Promise<PageMeta> {
   const entry = await requireEntry(id);
   if (entry.kind !== 'form') throw badRequest('page is not a form');
-  const current = await readFreshFormDoc(id);
-  const next: FormDoc = { ...doc, meta: current.meta, table: current.table };
-  const serialized = serializeFormFile(next);
-  await fs.writeFile(entry.absPath, withTablePageFields(serialized, entry.explicitOrder, entry.icon), 'utf8');
+  const next = await withDocFileLock(id, async () => {
+    const prev = await fs.readFile(entry.absPath, 'utf8');
+    const current = parseFormFile(prev);
+    if (isFormParseError(current)) throw badRequest(`form file is invalid: ${current.message}`);
+    const merged: FormDoc = { ...doc, meta: current.meta, table: current.table };
+    await fs.writeFile(entry.absPath, withTablePageFields(serializeFormFile(merged), entry.explicitOrder, entry.icon, prev), 'utf8');
+    return merged;
+  });
 
   const title = next.title || titleFallback(entry.relPath, 'form');
   const updatedAt = new Date().toISOString();
@@ -3481,10 +3595,13 @@ export async function writeFormDoc(id: string, doc: Omit<FormDoc, 'meta' | 'tabl
 export async function healFormTablePath(id: string, freshTableRelPath: string): Promise<void> {
   const entry = await requireEntry(id);
   if (entry.kind !== 'form') return;
-  const current = await readFreshFormDoc(id);
-  if (current.table === freshTableRelPath) return;
-  const next: FormDoc = { ...current, table: freshTableRelPath };
-  await fs.writeFile(entry.absPath, withTablePageFields(serializeFormFile(next), entry.explicitOrder, entry.icon), 'utf8');
+  await withDocFileLock(id, async () => {
+    const prev = await fs.readFile(entry.absPath, 'utf8');
+    const current = parseFormFile(prev);
+    if (isFormParseError(current) || current.table === freshTableRelPath) return;
+    const next: FormDoc = { ...current, table: freshTableRelPath };
+    await fs.writeFile(entry.absPath, withTablePageFields(serializeFormFile(next), entry.explicitOrder, entry.icon, prev), 'utf8');
+  });
 }
 
 /** setBoardTitle/renameTableFile's FORM twin — a form's title is a frontmatter field, not an H1, so renaming it is a plain frontmatter rewrite. */
@@ -3619,9 +3736,30 @@ export async function movePageTracked(id: string, toParentPathRaw: string): Prom
         throw err;
       }
     }
+    await followSidecars(space, [
+      [toRel(srcAbs), toRel(destAbs), entry.isIndex],
+      ...(childDirSrcAbs && childDirDestAbs ? [[toRel(childDirSrcAbs), toRel(childDirDestAbs), true] as [string, string, boolean]] : []),
+    ]);
     await scanSpace(space);
     return { meta: toPageMeta(await requireEntry(id)), moved, movedDirs: movedDir ? [movedDir] : [], assetLinkSources };
   });
+}
+
+/**
+ * The property sidecars (propsSidecar.ts) follow pages that moved on disk:
+ * `pairs` are [from, to, isDir] content-root-relative paths of what was
+ * renamed (a page file, an index page's folder, a leaf page's children
+ * folder). Runs inside the operation's space lock, before its rescan, so the
+ * sidecars ride the same commit as the move. Never fails the move.
+ */
+async function followSidecars(space: string, pairs: Array<[string, string, boolean]>): Promise<void> {
+  const root = spaceDir(space);
+  for (const [from, to, dir] of pairs) {
+    await propsSidecar.moveSidecars(root, from, to, dir).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error(`[props] ${space}: could not move the property sidecars of ${from}:`, err);
+    });
+  }
 }
 
 /** `notes/board.excalidraw.svg` -> 'board', `notes/weekly.table.md` -> 'table', `notes/report.pdf` -> 'pdf', `notes/plan.docx` -> 'office', `notes/plan.md` -> 'doc'; a non-page file (asset, dotfile) -> undefined. Same suffix-priority rule as the scanSpace walk (`.table.md` before plain `.md`). */
@@ -3684,7 +3822,7 @@ async function rewritePageFileId(space: string, abs: string, kind: PageKind, new
     if (isTableParseError(parsedTable)) throw badRequest(`cannot copy an invalid data table: ${parsedTable.message}`);
     await fs.writeFile(
       abs,
-      withTablePageFields(serializeTableFile({ ...parsedTable, meta: { ...parsedTable.meta, id: newId } }), order, icon),
+      withTablePageFields(serializeTableFile({ ...parsedTable, meta: { ...parsedTable.meta, id: newId } }), order, icon, raw),
       'utf8',
     );
   } else if (kind === 'form') {
@@ -3702,7 +3840,7 @@ async function rewritePageFileId(space: string, abs: string, kind: PageKind, new
     if (isFormParseError(parsedForm)) throw badRequest(`cannot copy an invalid form: ${parsedForm.message}`);
     await fs.writeFile(
       abs,
-      withTablePageFields(serializeFormFile({ ...parsedForm, meta: { ...parsedForm.meta, id: newId } }), order, icon),
+      withTablePageFields(serializeFormFile({ ...parsedForm, meta: { ...parsedForm.meta, id: newId } }), order, icon, raw),
       'utf8',
     );
   } else if (kind === 'pdf' || kind === 'office') {
@@ -3833,6 +3971,18 @@ interface CopiedSubtree {
 }
 
 /** Copies a whole page subdirectory (minus what `keep` refuses), then sweeps every page file underneath it (recursively) to a fresh id — assets and other non-page files ride along untouched. Used both for a directory-index page's whole subtree and for a leaf page's `X/` children directory. */
+/** The property sidecars of the pages a subtree copy took (`copied`), copied next to the copies. */
+async function copySubtreeSidecars(fromSpace: string, srcDirAbs: string, toSpace: string, destDirAbs: string, copied: CopiedSubtree['copied']): Promise<void> {
+  const fromRoot = spaceDir(fromSpace);
+  const toRoot = spaceDir(toSpace);
+  const rel = (root: string, abs: string) => path.relative(root, abs).split(path.sep).join('/');
+  for (const item of copied) {
+    if (!pageFileKind(path.basename(item.sourceAbs)) || !propsSidecar.usesSidecar(pageFileKind(path.basename(item.sourceAbs))!)) continue;
+    const inside = path.relative(srcDirAbs, item.sourceAbs);
+    await propsSidecar.copySidecar(fromRoot, rel(fromRoot, item.sourceAbs), toRoot, rel(toRoot, path.join(destDirAbs, inside)));
+  }
+}
+
 async function copySubtreeAssigningFreshIds(
   toSpace: string,
   srcDirAbs: string,
@@ -3926,6 +4076,7 @@ export async function copyPage(
         source.absPath,
         liveContent,
       );
+      await copySubtreeSidecars(source.space, srcDirAbs, toSpace, destDirAbs, copied);
       await scanSpace(toSpace);
       if (scope) await restrictCopies(sourceEntries, copied, scope.actorId);
       return toPageMeta(await requireEntry(copiedId));
@@ -3969,7 +4120,7 @@ export async function copyPage(
       if (isTableParseError(parsed)) throw badRequest(`cannot copy an invalid data table: ${parsed.message}`);
       await fs.writeFile(
         destAbs,
-        withTablePageFields(serializeTableFile({ ...parsed, meta: { ...parsed.meta, id: copiedId } }), undefined, source.icon),
+        withTablePageFields(serializeTableFile({ ...parsed, meta: { ...parsed.meta, id: copiedId } }), undefined, source.icon, raw),
         'utf8',
       );
     } else if (source.kind === 'form') {
@@ -3980,7 +4131,7 @@ export async function copyPage(
       if (isFormParseError(parsed)) throw badRequest(`cannot copy an invalid form: ${parsed.message}`);
       await fs.writeFile(
         destAbs,
-        withTablePageFields(serializeFormFile({ ...parsed, meta: { ...parsed.meta, id: copiedId } }), undefined, source.icon),
+        withTablePageFields(serializeFormFile({ ...parsed, meta: { ...parsed.meta, id: copiedId } }), undefined, source.icon, raw),
         'utf8',
       );
     } else if (source.kind === 'pdf' || source.kind === 'office') {
@@ -3992,6 +4143,9 @@ export async function copyPage(
       await fs.writeFile(destAbs, withBoardHeader(raw, copiedId, undefined, source.title, source.icon), 'utf8');
     }
 
+    // A board's / file's properties (its sidecar) travel with the copy.
+    if (propsSidecar.usesSidecar(source.kind)) await propsSidecar.copySidecar(spaceDir(source.space), source.relPath, spaceDir(toSpace), relPath);
+
     // Leaf page + includeChildren: bring the sibling `X/` children directory
     // along too, if the source has one — same fresh-id sweep, order kept.
     if (includeChildren && !source.isIndex) {
@@ -4002,6 +4156,7 @@ export async function copyPage(
         const destStem = relPathStem(relPath, source.kind);
         const destChildDirAbs = path.join(path.dirname(destAbs), destStem);
         const swept = await copySubtreeAssigningFreshIds(toSpace, childSrcDirAbs, destChildDirAbs, copyFilter(source.space, childSrcDirAbs, sourceEntries, scope));
+        await copySubtreeSidecars(source.space, childSrcDirAbs, toSpace, destChildDirAbs, swept.copied);
         copied.push(...swept.copied);
       }
     }
@@ -4195,6 +4350,14 @@ export async function renamePageSlug(id: string, rawSlug: string): Promise<SlugR
         throw err;
       }
     }
+    {
+      const spaceAbs = spaceDir(space);
+      const rel = (abs: string) => path.relative(spaceAbs, abs).split(path.sep).join('/');
+      await followSidecars(space, [
+        [rel(srcAbs), rel(destAbs), entry.isIndex],
+        ...(childDirSrcAbs && childDirDestAbs ? [[rel(childDirSrcAbs), rel(childDirDestAbs), true] as [string, string, boolean]] : []),
+      ]);
+    }
     await scanSpace(space);
 
     const moved: SlugRenameMove[] = [{ id, oldRelPath, newRelPath, backlinks: backlinksById.get(id) ?? [] }];
@@ -4241,6 +4404,8 @@ export interface TrashPagePayload {
   access?: TrashAccessEntry[];
   /** Light-footprint spaces: the pages the item took along whose id lives only in pages_index (see "Index-only page ids") — claimed back at their restored paths. */
   ids?: TrashIdEntry[];
+  /** The property sidecars (propsSidecar.ts) of the boards / files the item took along: page path at deletion time + the file's text — written back at the restored paths. */
+  props?: Array<{ path: string; content: string }>;
 }
 
 /** One page of a trash item whose id is not stored in its file, with its space-relative path at deletion time. */
@@ -4526,6 +4691,17 @@ export async function deletePage(id: string, deletedBy: string | null = null): P
         await fs.rename(destAbs, srcAbs);
         throw err;
       }
+    }
+
+    // The property sidecars of what went to the trash: removed from `.folio/` (the same commit as the deletion)
+    // and kept in the trash item, so a restore brings them back.
+    if (!isSpaceDelete) {
+      const root = spaceDir(space);
+      const removed = [
+        ...(await propsSidecar.removeSidecars(root, relFromSpace, entry.isIndex).catch(() => [])),
+        ...(childDirRelPath ? await propsSidecar.removeSidecars(root, childDirRelPath, true).catch(() => []) : []),
+      ];
+      if (removed.length > 0) record.payload = { ...((record.payload as TrashPagePayload | null) ?? { v: 1 }), props: removed };
     }
 
     // rename -> insert (see the doc comment above for why this order); a

@@ -589,3 +589,68 @@ function renderData(data: Record<string, unknown>): string[] {
   const close = lines.indexOf('---', 1);
   return lines.slice(1, close);
 }
+
+/**
+ * Carries the top-level keys `keep` picks from the front matter of `prev`
+ * (the file as it was) into `next` (the same file as a codec just rebuilt it),
+ * when `next` does not have them — byte for byte, each entry's own lines
+ * appended before `next`'s closing `---`. Used for `.table.md` / `.form.md`
+ * files: the codecs (shared/tables, shared/forms) rebuild the block from
+ * Folio's reserved keys only, so without this every table or form save would
+ * drop the page's own properties. A key `next` already has wins (the codec's
+ * value). Checked by re-parsing; when the line copy does not round-trip, the
+ * values are written with js-yaml instead (the data is never lost). `prev`
+ * without a readable block, or nothing to carry: `next` itself.
+ */
+export function carryFrontmatterKeys(next: string, prev: string | undefined, keep: (key: string) => boolean): string {
+  if (!prev) return next;
+  const prevBlock = locateBlock(prev);
+  if (!prevBlock || prevBlock === 'unterminated') return next;
+  let prevData: Record<string, unknown>;
+  let nextParsed: { data: Record<string, unknown>; content: string };
+  try {
+    prevData = parseFile(prev).data;
+    nextParsed = parseFile(next);
+  } catch {
+    return next;
+  }
+  const missing = Object.keys(prevData).filter((key) => keep(key) && !Object.prototype.hasOwnProperty.call(nextParsed.data, key));
+  if (missing.length === 0) return next;
+  const expected: Record<string, unknown> = { ...nextParsed.data };
+  for (const key of missing) expected[key] = prevData[key];
+
+  const nextBlock = locateBlock(next);
+  if (nextBlock !== 'unterminated') {
+    const ranges = entryRanges(prevBlock.lines, new Set(missing));
+    const carried: string[] = [];
+    let complete = true;
+    for (const key of missing) {
+      const found = ranges.get(key);
+      if (!found || found.length !== 1) {
+        complete = false;
+        break;
+      }
+      carried.push(...prevBlock.lines.slice(found[0][0], found[0][1]));
+    }
+    if (complete) {
+      let candidate: string;
+      if (nextBlock) {
+        const lines = [...nextBlock.lines];
+        let insertAt = lines.length;
+        while (insertAt > 0 && lines[insertAt - 1].trim() === '') insertAt--;
+        lines.splice(insertAt, 0, ...carried);
+        candidate = `${next.slice(0, nextBlock.openEnd)}${lines.map((line) => `${line}${nextBlock.eol}`).join('')}${next.slice(nextBlock.closeStart)}`;
+      } else {
+        const eol = eolOf(next);
+        candidate = `---${eol}${carried.map((line) => `${line}${eol}`).join('')}---${eol}${next}`;
+      }
+      try {
+        const check = parseFile(candidate);
+        if (check.content === nextParsed.content && canonical(check.data) === canonical(expected)) return candidate;
+      } catch {
+        /* js-yaml below */
+      }
+    }
+  }
+  return writeFrontmatterKeys(next, new Map(missing.map((key) => [key, { set: prevData[key] }])));
+}

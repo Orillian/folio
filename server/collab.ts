@@ -1407,7 +1407,9 @@ async function persistTableDoc(docName: string, ydoc: Y.Doc, entry: TableEntry):
   // the file (e.g. only orphaned-key writes) shouldn't bump the mtime or arm
   // the auto-commit timer. The snapshot still gets stored — the CRDT moved
   // even when its serialization didn't.
-  const changed = serializeTableFile(doc) !== raw;
+  // Compared as the whole file would be written (order/icon and the page's own properties included, storage.composeTableFile).
+  const fresh = (await storage.getEntry(docName)) ?? entry;
+  const changed = raw === undefined || storage.composeTableFile(doc, fresh, raw) !== raw;
   // File first, snapshot second — same ordering rationale as persistDoc's.
   if (changed) await storage.writeTableDoc(docName, doc);
   await storeSnapshot(docName, ydoc);

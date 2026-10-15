@@ -79,6 +79,12 @@ what is not there.
    are not shown. Properties are written only in Folio's own format: a Folio key
    with a foreign value is shown as such and never overwritten, and `labels:` is
    kept: new tags are written as `tags:`, an existing `labels:` is only edited in place.
+   The properties of a board, a PDF or an Office file live in a sidecar under
+   `.folio/`; it follows the page when the page is renamed, moved, deleted or
+   restored in Folio, but not when the file is renamed or moved outside Folio (in
+   git or on disk) — the sidecar then stays at the old path until it is moved by
+   hand. Space files that are not pages (images and other attachments) have no
+   properties.
 
 ## Git
 

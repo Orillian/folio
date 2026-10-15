@@ -115,6 +115,17 @@ export interface PageEditorProps {
    * meta strip and the mode toggle on one compact line.
    */
   chromeStart?: ReactNode;
+  /**
+   * First item of the chrome row in EVERY mode (chromeStart is hidden in
+   * reading), lined up with the left edge of the text column. The page's
+   * "Properties (N)" toggle lives here.
+   */
+  chromeLead?: ReactNode | ((mode: EditorMode) => ReactNode);
+  /**
+   * Rendered between the chrome row and the content, aligned like the text column (the open properties).
+   * A function gets the current mode: the properties are read-only in reading mode.
+   */
+  belowChrome?: ReactNode | ((mode: EditorMode) => ReactNode);
 }
 
 /** A moment, so that the outline is not rebuilt on every letter but does not lag noticeably either. */
@@ -146,6 +157,8 @@ export function PageEditor({
   readOnly,
   defaultMode = 'reading',
   chromeStart,
+  chromeLead,
+  belowChrome,
   lightFootprint = false,
 }: PageEditorProps) {
   const { t } = useTranslation(NS);
@@ -258,9 +271,12 @@ export function PageEditor({
     };
   }, [mode]);
 
+  const lead = typeof chromeLead === 'function' ? chromeLead(mode) : chromeLead;
+
   return (
     <div className="folio-editor" data-mode={mode} ref={rootRef}>
       <div className="folio-editor__chrome">
+        {lead != null && <div className="folio-editor__chrome-lead">{lead}</div>}
         {/* Round 22: the chrome-start slot is the page icon and the "add a
             cover" button — authoring controls. Reading mode drops them
             entirely rather than showing them disabled: there is nothing to
@@ -283,6 +299,8 @@ export function PageEditor({
           </>
         )}
       </div>
+
+      {typeof belowChrome === 'function' ? belowChrome(mode) : belowChrome}
 
       {mode === 'reading' ? (
         <div className="folio-editor__reading">

@@ -18,7 +18,17 @@
  * (owner's decision 4: `status: deprecated`, a non-numeric `order`, an empty
  * `icon`, an `id` that is not this page's); `readOnly` is `id`; `etag` is the
  * sha1 of the block's bytes (null without a block). `canEdit` is false for a
- * reader, a read-only token, a non-document page and a block YAML refuses.
+ * reader, a read-only token, a folder and a block YAML refuses.
+ *
+ * Not only documents (15.10.2026, owner's decision): a data table / form keeps
+ * its properties in its own front matter NEXT TO the keys that define it
+ * (reservedPropertyKeys.ts — never shown, never edited, never removed; a
+ * reserved key sent is a 400), and a board / PDF / Office page in a sidecar
+ * `.folio/<path>.props.yaml` (propsSidecar.ts; one commit per save through
+ * spaceAppearance.writeFolioFile, created by the first property, deleted with
+ * the last). Both are edited with the same rules as below, minus Folio's own
+ * keys (`id`, `order`, … are plain keys there), and feed the same index
+ * (pages_index.frontmatter, page_tags). See propertiesStoreOf.
  *
  * Write rules (PUT replaces the editable keys with `properties`):
  *  - `id` can never change: a different value (or one the file does not have) is a 400;
@@ -53,8 +63,8 @@
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
-import type { PagePropertiesResponse, PropertyType, UpdatePagePropertiesBody } from '../shared/contracts.js';
-import { queryOne } from './db/pool.js';
+import type { PageKind, PagePropertiesResponse, PropertyType, UpdatePagePropertiesBody } from '../shared/contracts.js';
+import { query, queryOne } from './db/pool.js';
 import { badRequest, HttpError } from './errors.js';
 import {
   folioCouldHaveWritten,
@@ -66,7 +76,12 @@ import {
   type FolioKey,
   type FrontmatterKeyEdit,
 } from './frontmatter.js';
+import type { GitIdentity } from './git.js';
+import * as pageIndex from './indexV2/store.js';
 import { inferPropertyType, readDeclaredTypes } from './propertyTypes.js';
+import { editSidecarText, parseSidecar, readSidecarText, sidecarRelPath, SIDECAR_SUFFIX, usesSidecar } from './propsSidecar.js';
+import { ownProperties, reservedKeysOf } from './reservedPropertyKeys.js';
+import { writeFolioFile } from './spaceAppearance.js';
 import * as storage from './storage.js';
 import type { PageIndexEntry } from './storage.js';
 
@@ -224,17 +239,88 @@ function effectiveTypes(declared: Record<string, PropertyType>, properties: Reco
   return types;
 }
 
-async function responseFor(entry: PageIndexEntry, raw: string | undefined, roleCanEdit: boolean): Promise<PagePropertiesResponse> {
-  const readOnly = [...READ_ONLY_PROPERTIES];
-  if (entry.kind !== 'doc') return { properties: {}, types: {}, foreign: [], readOnly, canEdit: false, etag: null };
+/**
+ * Where a page's properties live (15.10.2026):
+ *  - 'frontmatter' — a document's own front matter (all of it, Folio's keys included);
+ *  - 'embedded'    — a data table's / form's front matter, NEXT TO the keys that ARE the
+ *                    table or form (RESERVED_KEYS): those are never shown, never edited and
+ *                    never removed — a save edits only the page's own keys, byte-preserving;
+ *  - 'sidecar'     — a board / PDF / Office page: `.folio/<path>.props.yaml` (propsSidecar.ts);
+ *  - 'none'        — a folder.
+ */
+export type PropertiesStore = 'frontmatter' | 'embedded' | 'sidecar' | 'none';
+
+export { FORM_RESERVED_KEYS, ownProperties, reservedKeysOf, TABLE_RESERVED_KEYS } from './reservedPropertyKeys.js';
+
+export function propertiesStoreOf(kind: PageKind): PropertiesStore {
+  if (kind === 'doc') return 'frontmatter';
+  if (kind === 'table' || kind === 'form') return 'embedded';
+  if (usesSidecar(kind)) return 'sidecar';
+  return 'none';
+}
+
+/** The etag of a table's / form's own properties: their canonical JSON (a table edit that changes the schema does not touch it). */
+function ownEtag(properties: Record<string, unknown>): string {
+  return createHash('sha1').update(canonical(properties), 'utf8').digest('hex');
+}
+
+function sidecarEtag(text: string | null): string | null {
+  return text === null ? null : createHash('sha1').update(text, 'utf8').digest('hex');
+}
+
+const NO_PROPERTIES = (readOnly: string[]): PagePropertiesResponse => ({ properties: {}, types: {}, foreign: [], readOnly, canEdit: false, etag: null });
+
+/** What the index last saw, read-only (the file cannot be read right now). */
+async function indexedResponse(entry: PageIndexEntry, declared: Record<string, PropertyType>, readOnly: string[]): Promise<PagePropertiesResponse> {
+  const row = await queryOne<{ frontmatter: Record<string, unknown> | null }>('SELECT frontmatter FROM pages_index WHERE id = $1', [entry.id]);
+  const properties = row?.frontmatter && typeof row.frontmatter === 'object' ? row.frontmatter : {};
+  const foreign = entry.kind === 'doc' ? foreignFolioKeys(properties, entry.id) : [];
+  return { properties, types: effectiveTypes(declared, properties), foreign, readOnly, canEdit: false, etag: null };
+}
+
+/** The file a page's properties are read from right now: the page file (doc, table, form) or its sidecar. */
+interface PropertiesSource {
+  /** The page file's text (doc/table/form); undefined when it cannot be read. */
+  raw?: string;
+  /** The sidecar's text (board/pdf/office); null when there is none. */
+  sidecar?: string | null;
+}
+
+async function readSource(entry: PageIndexEntry): Promise<PropertiesSource> {
+  const store = propertiesStoreOf(entry.kind);
+  if (store === 'frontmatter' || store === 'embedded') return { raw: await fs.readFile(entry.absPath, 'utf8').catch(() => undefined) };
+  if (store === 'sidecar') return { sidecar: await readSidecarText(storage.getSpaceDir(entry.space), entry.relPath) };
+  return {};
+}
+
+async function responseFor(entry: PageIndexEntry, source: PropertiesSource, roleCanEdit: boolean): Promise<PagePropertiesResponse> {
+  const store = propertiesStoreOf(entry.kind);
+  if (store === 'none') return NO_PROPERTIES([...READ_ONLY_PROPERTIES]);
   const declared = (await readDeclaredTypes(entry.space)).types;
-  if (raw === undefined) {
-    // The file cannot be read right now: what the index last saw, read-only.
-    const row = await queryOne<{ frontmatter: Record<string, unknown> | null }>('SELECT frontmatter FROM pages_index WHERE id = $1', [entry.id]);
-    const properties = row?.frontmatter && typeof row.frontmatter === 'object' ? row.frontmatter : {};
-    return { properties, types: effectiveTypes(declared, properties), foreign: foreignFolioKeys(properties, entry.id), readOnly, canEdit: false, etag: null };
+
+  if (store === 'sidecar') {
+    const text = source.sidecar ?? null;
+    const parsed = parseSidecar(text);
+    const properties = toClientValue(parsed.data) as Record<string, unknown>;
+    return {
+      properties,
+      types: effectiveTypes(declared, properties),
+      foreign: [],
+      readOnly: [],
+      canEdit: roleCanEdit && parsed.parseable,
+      etag: sidecarEtag(text),
+      sidecar: sidecarRelPath(entry.relPath),
+    };
   }
-  const block = readFrontmatterBlock(raw);
+
+  const readOnly = store === 'frontmatter' ? [...READ_ONLY_PROPERTIES] : [];
+  if (source.raw === undefined) return indexedResponse(entry, declared, readOnly);
+  const block = readFrontmatterBlock(source.raw);
+  if (store === 'embedded') {
+    const own = ownProperties(entry.kind, block.data);
+    const properties = toClientValue(own) as Record<string, unknown>;
+    return { properties, types: effectiveTypes(declared, properties), foreign: [], readOnly, canEdit: roleCanEdit && block.parseable, etag: ownEtag(properties) };
+  }
   const properties = toClientValue(block.data) as Record<string, unknown>;
   return {
     properties,
@@ -248,8 +334,19 @@ async function responseFor(entry: PageIndexEntry, raw: string | undefined, roleC
 
 /** GET /api/pages/:id/properties for a page the caller may read; `roleCanEdit` = editor+ with a token that may write. */
 export async function readPageProperties(entry: PageIndexEntry, roleCanEdit: boolean): Promise<PagePropertiesResponse> {
-  const raw = entry.kind === 'doc' ? await fs.readFile(entry.absPath, 'utf8').catch(() => undefined) : undefined;
-  return responseFor(entry, raw, roleCanEdit);
+  return responseFor(entry, await readSource(entry), roleCanEdit);
+}
+
+/**
+ * A page's own properties as the index stores them (`pages_index.frontmatter`, page_tags): a document's whole
+ * front matter, a table's / form's block without the reserved keys, a sidecar's mapping. Read from disk.
+ */
+export async function indexablePropertiesOf(entry: PageIndexEntry): Promise<Record<string, unknown>> {
+  const source = await readSource(entry);
+  const store = propertiesStoreOf(entry.kind);
+  if (store === 'sidecar') return parseSidecar(source.sidecar ?? null).data;
+  if (source.raw === undefined) return {};
+  return ownProperties(entry.kind, readFrontmatterBlock(source.raw).data);
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +357,14 @@ export async function readPageProperties(entry: PageIndexEntry, roleCanEdit: boo
  * The key edits that turn the block `current` (as parsed) into `sent` under
  * the write rules of the module comment. Only keys that actually change.
  */
-export function planPropertyEdits(current: Record<string, unknown>, sent: Record<string, unknown>, declared: Record<string, PropertyType>): Map<string, FrontmatterKeyEdit> {
+export function planPropertyEdits(
+  current: Record<string, unknown>,
+  sent: Record<string, unknown>,
+  declared: Record<string, PropertyType>,
+  options: { folioKeys?: boolean } = {},
+): Map<string, FrontmatterKeyEdit> {
+  // A table's / form's / sidecar's properties have no Folio keys of their own: `id`, `order`, … are plain keys there.
+  const folioKeys = options.folioKeys !== false;
   const client = toClientValue(current) as Record<string, unknown>;
   const present = (key: string) => hasOwn(current, key);
   const sentHas = (key: string) => hasOwn(sent, key) && sent[key] !== undefined;
@@ -279,10 +383,10 @@ export function planPropertyEdits(current: Record<string, unknown>, sent: Record
   }
 
   // id: immutable.
-  if (sentHas('id') && !same(client.id, sent.id)) throw badRequest('id cannot be changed');
+  if (folioKeys && sentHas('id') && !same(client.id, sent.id)) throw badRequest('id cannot be changed');
 
   // Folio's own keys.
-  for (const key of FOLIO_VALUE_KEYS) {
+  for (const key of folioKeys ? FOLIO_VALUE_KEYS : []) {
     if (sentHas(key)) {
       const value = sent[key];
       if (value === null) remove(key);
@@ -319,7 +423,7 @@ export function planPropertyEdits(current: Record<string, unknown>, sent: Record
   // `labels` not sent: kept as the file has it (never removed by omission).
 
   // Everything else: the file's keys first (kept or removed), then the new ones in the order they were sent.
-  const special = (key: string) => key === 'id' || key === 'tags' || key === 'labels' || FOLIO_VALUE_KEY_SET.has(key);
+  const special = (key: string) => key === 'tags' || key === 'labels' || (folioKeys && (key === 'id' || FOLIO_VALUE_KEY_SET.has(key)));
   const keys = [...Object.keys(current), ...Object.keys(sent).filter((k) => !present(k))];
   for (const key of keys) {
     if (special(key)) continue;
@@ -333,7 +437,14 @@ export function planPropertyEdits(current: Record<string, unknown>, sent: Record
     const value = coerce(raw, type);
     setUnlessSame(key, value, dateLines(key, value, type));
   }
-  return edits;
+  // New keys are appended in the order the client sent them (tags included); in-place edits and removals do not
+  // depend on the order.
+  const sentOrder = Object.keys(sent);
+  const rank = (key: string) => {
+    const i = sentOrder.indexOf(key === 'labels' && !sentOrder.includes('labels') ? 'tags' : key);
+    return i === -1 ? sentOrder.length : i;
+  };
+  return new Map([...edits].sort(([a], [b]) => rank(a) - rank(b)));
 }
 
 export interface PropertiesWriteResult {
@@ -343,14 +454,32 @@ export interface PropertiesWriteResult {
   keys: string[];
 }
 
-/** PUT /api/pages/:id/properties for a page the caller may edit (the route checks the role and the token scope). */
-export async function updatePageProperties(pageId: string, body: UpdatePagePropertiesBody, roleCanEdit: boolean): Promise<PropertiesWriteResult> {
+/** A key of the table's / form's own definition sent as a property: refused, never written. */
+function assertNoReservedKey(kind: PageKind, sent: Record<string, unknown>): void {
+  const reserved = reservedKeysOf(kind);
+  if (!reserved) return;
+  const key = Object.keys(sent).find((k) => reserved.has(k));
+  if (key !== undefined) throw badRequest(`${JSON.stringify(key)} is reserved by Folio on a ${kind === 'table' ? 'data table' : 'form'}`);
+}
+
+/**
+ * PUT /api/pages/:id/properties for a page the caller may edit (the route checks the role and the token scope).
+ * `actor` is who a sidecar's commit is attributed to (a document's / table's / form's file rides the debounced
+ * auto-commit like any page save).
+ */
+export async function updatePageProperties(pageId: string, body: UpdatePagePropertiesBody, roleCanEdit: boolean, actor?: GitIdentity): Promise<PropertiesWriteResult> {
+  const entry = await storage.requireEntry(pageId);
+  const store = propertiesStoreOf(entry.kind);
+  if (store === 'none') throw badRequest('this page has no properties');
+  if (store === 'embedded') return updateEmbeddedProperties(entry, body, roleCanEdit);
+  if (store === 'sidecar') return updateSidecarProperties(entry, body, roleCanEdit, actor ?? { name: 'Folio', email: 'folio@localhost' });
+
   let keys: string[] = [];
-  const { entry, written } = await storage.rewriteDocFrontmatter(pageId, async (raw, current) => {
+  const { entry: written_entry, written } = await storage.rewriteDocFrontmatter(pageId, async (raw, current) => {
     const block = readFrontmatterBlock(raw);
     if (!block.parseable) throw badRequest('the front matter of this page cannot be parsed; fix it in the file first');
     if (body.etag !== undefined && body.etag !== frontmatterEtag(block.text)) {
-      throw new PropertiesConflictError(await responseFor(current, raw, roleCanEdit));
+      throw new PropertiesConflictError(await responseFor(current, { raw }, roleCanEdit));
     }
     const declared = (await readDeclaredTypes(current.space)).types;
     const edits = planPropertyEdits(block.data, body.properties, declared);
@@ -363,5 +492,63 @@ export async function updatePageProperties(pageId: string, body: UpdatePagePrope
       throw err;
     }
   });
+  return { response: await readPageProperties(written_entry, roleCanEdit), written, keys: written ? keys : [] };
+}
+
+/** A table / form: the page's own keys of its block, the reserved ones untouched byte for byte. */
+async function updateEmbeddedProperties(entry: PageIndexEntry, body: UpdatePagePropertiesBody, roleCanEdit: boolean): Promise<PropertiesWriteResult> {
+  assertNoReservedKey(entry.kind, body.properties);
+  let keys: string[] = [];
+  let own: Record<string, unknown> = {};
+  const { entry: current, written } = await storage.rewriteTableFormFrontmatter(entry.id, async (raw, fresh) => {
+    const block = readFrontmatterBlock(raw);
+    if (!block.parseable) throw badRequest('the front matter of this page cannot be parsed; fix it in the file first');
+    const data = ownProperties(fresh.kind, block.data);
+    if (body.etag !== undefined && body.etag !== ownEtag(toClientValue(data) as Record<string, unknown>)) {
+      throw new PropertiesConflictError(await responseFor(fresh, { raw }, roleCanEdit));
+    }
+    const declared = (await readDeclaredTypes(fresh.space)).types;
+    const edits = planPropertyEdits(data, body.properties, declared, { folioKeys: false });
+    keys = [...edits.keys()];
+    if (edits.size === 0) return null;
+    try {
+      const next = writeFrontmatterKeys(raw, edits);
+      own = ownProperties(fresh.kind, readFrontmatterBlock(next).data);
+      return next;
+    } catch (err) {
+      if (err instanceof UnparseableFrontmatterError) throw badRequest('the front matter of this page cannot be parsed; fix it in the file first');
+      throw err;
+    }
+  });
+  if (written) await pageIndex.reindexSavedPage({ id: current.id, space: current.space, relPath: current.relPath }, '', own);
+  return { response: await readPageProperties(current, roleCanEdit), written, keys: written ? keys : [] };
+}
+
+/** A board / PDF / Office page: its `.folio/<path>.props.yaml`, one commit of that file. */
+async function updateSidecarProperties(entry: PageIndexEntry, body: UpdatePagePropertiesBody, roleCanEdit: boolean, actor: GitIdentity): Promise<PropertiesWriteResult> {
+  let keys: string[] = [];
+  let data: Record<string, unknown> = {};
+  const written = await writeFolioFile(entry.space, actor, `${entry.relPath}${SIDECAR_SUFFIX}`, async (current) => {
+    // The page may have moved while the lock was awaited: re-read where it is now.
+    const fresh = await storage.requireEntry(entry.id);
+    if (fresh.relPath !== entry.relPath) throw new PropertiesConflictError(await readPageProperties(fresh, roleCanEdit));
+    const text = current?.content ?? null;
+    const parsed = parseSidecar(text);
+    if (!parsed.parseable) throw badRequest(`${sidecarRelPath(entry.relPath)} cannot be parsed as a YAML mapping; fix it in the file first`);
+    if (body.etag !== undefined && body.etag !== sidecarEtag(text)) {
+      throw new PropertiesConflictError(await responseFor(fresh, { sidecar: text }, roleCanEdit));
+    }
+    const declared = (await readDeclaredTypes(entry.space)).types;
+    const edits = planPropertyEdits(parsed.data, body.properties, declared, { folioKeys: false });
+    keys = [...edits.keys()];
+    if (edits.size === 0) return null;
+    const next = editSidecarText(text, edits);
+    data = parseSidecar(next).data;
+    return next;
+  });
+  if (written) {
+    await query('UPDATE pages_index SET updated_at = $2 WHERE id = $1', [entry.id, new Date().toISOString()]);
+    await pageIndex.reindexSavedPage({ id: entry.id, space: entry.space, relPath: entry.relPath }, '', data);
+  }
   return { response: await readPageProperties(entry, roleCanEdit), written, keys: written ? keys : [] };
 }

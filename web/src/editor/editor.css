@@ -208,6 +208,76 @@ html[data-width='wide'] .folio-editor {
   line-height: 1;
 }
 
+/* The lead slot (the properties toggle): first in the row in every mode, its
+   left edge on the text column's. `ch` in the measure is resolved against THIS
+   element's font, so the slot takes the font of the column it aligns with
+   (reading prose 16px, the CodeMirror text 15px); the button inside sets its
+   own size. The chrome row pads 0.75rem; a percentage margin in a flex row
+   resolves against the row's content box W (container - 1.5rem).
+   Reading: the prose box is centred in W - 1.5rem (the reading area pads 1.5rem)
+   and .folio-markdown pads 1.5rem more, so the text starts 2.25rem + slack in.
+   Live: the CodeMirror column is centred in the full width (W + 1.5rem) and its
+   lines pad 1.5rem. The slot shrinks (the label truncates) before it could
+   reach the mode toggle. */
+.folio-editor__chrome-lead {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  margin-right: auto;
+  font: 16px system-ui, -apple-system, 'Segoe UI', sans-serif;
+  margin-left: calc(2.25rem + max(0px, calc((100% - 1.5rem - var(--folio-ed-measure)) / 2)));
+}
+
+.folio-editor[data-mode='source'] .folio-editor__chrome-lead,
+.folio-editor[data-mode='live'] .folio-editor__chrome-lead {
+  font-size: 15px;
+  font-family: var(--folio-ed-sans);
+  margin-left: calc(0.75rem + max(0px, calc((100% + 1.5rem - var(--folio-ed-measure)) / 2)));
+}
+
+.folio-editor__chrome-lead:empty {
+  display: none;
+}
+
+html[data-width='wide'] .folio-editor__chrome-lead {
+  margin-left: 4.25rem;
+}
+
+html[data-width='wide'] .folio-editor[data-mode='source'] .folio-editor__chrome-lead,
+html[data-width='wide'] .folio-editor[data-mode='live'] .folio-editor__chrome-lead {
+  margin-left: 2.75rem;
+}
+
+/* The open properties, in the same column as the lead above them (see its
+   comment): reading's prose box + 1.5rem, the CodeMirror column + 1.5rem. */
+.folio-props-body {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--folio-ed-measure);
+  margin-inline: auto;
+  padding-inline: 1.5rem;
+  font: 16px system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.folio-editor[data-mode='source'] .folio-props-body,
+.folio-editor[data-mode='live'] .folio-props-body {
+  font-size: 15px;
+  font-family: var(--folio-ed-sans);
+  padding-inline: 1.5rem;
+}
+
+html[data-width='wide'] .folio-props-body {
+  max-width: none;
+  margin-inline: 5rem 1.5rem;
+  padding-inline: 0;
+}
+
+html[data-width='wide'] .folio-editor[data-mode='source'] .folio-props-body,
+html[data-width='wide'] .folio-editor[data-mode='live'] .folio-props-body {
+  margin-inline: 3.5rem 1.5rem;
+}
+
 /* Page meta (icon / add-cover) hosted in the chrome row on cover-less pages
    (PageEditor's chromeStart slot): pushes badge+toggle right; it may shrink,
    they may not. */
@@ -2963,6 +3033,36 @@ ol.cm-md-cell-list > .cm-md-cell-line { list-style: decimal; }
      moved into the tooltip. */
   .folio-editor__status {
     padding: 0.3rem 0.2rem;
+  }
+
+  /* Phone: the measure never bites (72ch is wider than the screen). Reading
+     pads 1rem + .folio-markdown 1.5rem against the chrome's 0.5rem; Live's lines
+     pad 1.5rem (re-set below for the CodeMirror modes if that differs). */
+  .folio-editor__chrome-lead,
+  html[data-width='wide'] .folio-editor__chrome-lead {
+    margin-left: 2rem;
+  }
+
+  html .folio-editor[data-mode='source'] .folio-editor__chrome-lead,
+  html[data-width='wide'] .folio-editor[data-mode='source'] .folio-editor__chrome-lead,
+  html .folio-editor[data-mode='live'] .folio-editor__chrome-lead,
+  html[data-width='wide'] .folio-editor[data-mode='live'] .folio-editor__chrome-lead {
+    margin-left: 0.5rem;
+  }
+
+  .folio-props-body,
+  html[data-width='wide'] .folio-props-body {
+    max-width: none;
+    margin-inline: 0;
+    padding-inline: 2.5rem 1rem;
+  }
+
+  html .folio-editor[data-mode='source'] .folio-props-body,
+  html[data-width='wide'] .folio-editor[data-mode='source'] .folio-props-body,
+  html .folio-editor[data-mode='live'] .folio-props-body,
+  html[data-width='wide'] .folio-editor[data-mode='live'] .folio-props-body {
+    margin-inline: 0;
+    padding-inline: 1rem;
   }
 
   .folio-editor__panel-toggle {

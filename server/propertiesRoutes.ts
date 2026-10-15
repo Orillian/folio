@@ -6,6 +6,8 @@
  *   GET /api/pages/:id/properties          viewer+ on the page            -> PagePropertiesResponse
  *   PUT /api/pages/:id/properties          editor+ on the page, cookie or write-scope PAT
  *                                          body UpdatePagePropertiesBody  -> PagePropertiesResponse (409 + current on an etag mismatch)
+ *                                          documents, data tables, forms (front matter), boards, PDFs, Office
+ *                                          pages (sidecar `.folio/<path>.props.yaml`); a folder: 400
  *   GET /api/spaces/:space/property-types  viewer+ on the space           -> SpacePropertyTypesResponse
  *   PUT /api/spaces/:space/property-types  admin of the space, cookie session only, not the shared demo login
  *                                          body UpdatePropertyTypesBody   -> SpacePropertyTypesResponse
@@ -23,7 +25,7 @@ import * as session from './auth/session.js';
 import { assertNotDemoAccount } from './demo.js';
 import { badRequest } from './errors.js';
 import * as gitSync from './gitSync.js';
-import { PropertiesConflictError, readPageProperties, updatePageProperties } from './properties.js';
+import { PropertiesConflictError, propertiesStoreOf, readPageProperties, updatePageProperties } from './properties.js';
 import { readSpacePropertyTypes, writeSpacePropertyTypes } from './propertyTypes.js';
 import type { PageIndexEntry } from './storage.js';
 import { parseBody } from './validate.js';
@@ -47,11 +49,13 @@ export function registerPropertiesRoutes(app: FastifyInstance): void {
     const body = parseBody(updatePagePropertiesBodySchema, request.body);
     const entry = await session.requirePageRole(request, id, 'editor');
     session.requireWriteScope(request);
-    if (entry.kind !== 'doc') throw badRequest('page is not a document');
+    if (propertiesStoreOf(entry.kind) === 'none') throw badRequest('this page has no properties');
     const user = request.authUser!;
     gitSync.recordEditor(entry.space, { name: user.name, email: user.email });
     try {
-      const result = await updatePageProperties(id, body, true);
+      // A board's / file's sidecar is committed by the write itself (attributed to the caller); a document's,
+      // table's or form's file rides the debounced auto-commit like any page save.
+      const result = await updatePageProperties(id, body, true, { name: user.name, email: user.email });
       if (result.written) {
         gitSync.noteActivity(entry.space); // the debounced auto-commit, like any page save
         recordAudit(user.id, 'page.properties', id, { keys: result.keys });

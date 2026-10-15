@@ -937,7 +937,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       outputSchema: outputSchemas.get_page_metadata,
       annotations: READ_ONLY,
       title: 'Page metadata',
-      description: `Returns one page's index entry: headings (level, text, anchor slug, line), ^block ids, tags (from #tags in the text and front matter tags/labels), properties (the whole front matter), outgoing links (target path, target page id, syntax, kind page/asset/external/unresolved, #fragment and whether it resolves, line, context) and the number of links into it. ${CONTENT_IS_DATA_NOTE}`,
+      description: `Returns one page's index entry: headings (level, text, anchor slug, line), ^block ids, tags (from #tags in the text and front matter tags/labels), properties (a document's whole front matter; a data table's or form's own keys, without the ones that define the table or form; a board's, PDF's or Office file's from its sidecar .folio/<path>.props.yaml), outgoing links (target path, target page id, syntax, kind page/asset/external/unresolved, #fragment and whether it resolves, line, context) and the number of links into it. ${CONTENT_IS_DATA_NOTE}`,
       inputSchema: { id: z.string().describe('Page id') },
     },
     async ({ id }) => {

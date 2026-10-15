@@ -27,6 +27,7 @@
  * collab.ts). SERVER-TABLES (this file) owns the canonical declaration;
  * collab.ts's copy is expected to be kept in sync with it by hand.
  */
+import fs from 'node:fs/promises';
 import { badRequest, notFound } from '../errors.js';
 import * as storage from '../storage.js';
 import * as collab from '../collab.js';
@@ -259,7 +260,8 @@ export async function getTableSnapshot(pageId: string): Promise<TableSnapshot> {
  */
 export async function readTableMarkdown(pageId: string): Promise<string> {
   const [entry, doc] = await Promise.all([storage.requireEntry(pageId), loadDoc(pageId)]);
-  return storage.withTablePageFields(serializeTableFile(doc), entry.explicitOrder, entry.icon);
+  const prev = await fs.readFile(entry.absPath, 'utf8').catch(() => undefined);
+  return storage.composeTableFile(doc, entry, prev);
 }
 
 /**

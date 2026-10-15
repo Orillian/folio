@@ -35,18 +35,65 @@ const SYNONYM_KEYS = ['labels'];
  * the old value back) sends ONE PUT carrying all the editable properties (usePageProperties).
  * A 409 — the front matter changed under the editor — stops editing and offers a reload.
  */
-export function PropertiesPanel({ pageId, space, canEdit, canManageTypes }: PropertiesPanelProps) {
+/** The open state of the panel, remembered per space; the toggle and the body share it. */
+export function usePropertiesOpen(space: string) {
+  return useLocalStorage<boolean>(`folio:properties-open:${space}`, false);
+}
+
+/** What both halves need: the loaded front matter, the count, and whether there is anything to show at all. */
+function useView(pageId: string, space: string, canEdit: boolean) {
+  const state = usePageProperties(pageId, space);
+  const data = state.data;
+  const readOnlyKeys = useMemo(() => data?.readOnly ?? ['id'], [data]);
+  if (!data) return { state, data, readOnlyKeys, count: 0, visible: false };
+  const count = countProperties(state.properties, readOnlyKeys);
+  // A viewer of a page without properties has nothing to look at, and nothing to add.
+  const visible = canEdit || count > 0 || readOnlyKeys.some((key) => key in state.properties);
+  return { state, data, readOnlyKeys, count, visible };
+}
+
+export interface PropertiesHalfProps extends PropertiesPanelProps {
+  open: boolean;
+  /**
+   * 'column' (default): centred like the editor's text column (a document). 'plain': left-aligned in whatever
+   * the caller wraps it in (PagePropertiesBar — tables, forms, boards, files).
+   */
+  layout?: 'column' | 'plain';
+}
+
+export function propertiesBodyId(pageId: string): string {
+  return `properties-${pageId}`;
+}
+
+/** The "Properties (3)" toggle: small enough to ride in the editor's chrome row. */
+export function PropertiesToggle({ pageId, space, canEdit, open, onToggle }: Omit<PropertiesHalfProps, 'canManageTypes'> & { onToggle: () => void }) {
+  const { t } = useTranslation('app');
+  const { count, visible } = useView(pageId, space, canEdit);
+  if (!visible) return null;
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-controls={propertiesBodyId(pageId)}
+      onClick={onToggle}
+      className="ph-mask flex min-w-0 max-w-full items-center gap-1 rounded py-1 text-xs font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
+    >
+      <ChevronRight size={13} className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
+      <span className="truncate">{t('properties.title', { n: count })}</span>
+    </button>
+  );
+}
+
+/** The editors, shown under the chrome row while the toggle is open. */
+export function PropertiesBody({ pageId, space, canEdit, canManageTypes, open, layout = 'column' }: PropertiesHalfProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
   const showToast = useToast();
   const queryClient = useQueryClient();
-  const [open, setOpen] = useLocalStorage<boolean>(`folio:properties-open:${space}`, false);
-  const state = usePageProperties(pageId, space);
+  const { state, data, visible } = useView(pageId, space, canEdit);
   const [draft, setDraft] = useState<NewProperty | null>(null);
   const [adding, setAdding] = useState(false);
 
-  const data = state.data;
-  const readOnlyKeys = useMemo(() => data?.readOnly ?? ['id'], [data]);
   const editable = canEdit && data?.canEdit !== false && !state.conflict;
 
   const saveTypes = useMutation({
@@ -62,17 +109,13 @@ export function PropertiesPanel({ pageId, space, canEdit, canManageTypes }: Prop
     onError: (err) => showToast(errorText(err, 'properties.typeSaveFailed')),
   });
 
-  if (!data) return null;
+  if (!data || !visible || !open) return null;
 
+  const readOnlyKeys = data.readOnly;
   const keys = Object.keys(state.properties);
-  const count = countProperties(state.properties, readOnlyKeys);
-  // A viewer of a page without properties has nothing to look at, and nothing to add.
-  if (!canEdit && count === 0 && !readOnlyKeys.some((key) => key in state.properties)) return null;
-
   const visibleKeys = keys.filter((key) => !readOnlyKeys.includes(key));
   const lockedKeys = keys.filter((key) => readOnlyKeys.includes(key));
   const rowKeys = draft && !(draft.key in state.properties) ? [...visibleKeys, draft.key] : visibleKeys;
-  const bodyId = `properties-${pageId}`;
 
   async function handleCommit(key: string, value: unknown) {
     const next = { ...state.properties, [key]: value };
@@ -94,21 +137,9 @@ export function PropertiesPanel({ pageId, space, canEdit, canManageTypes }: Prop
   }
 
   return (
-    <section aria-label={t('properties.label')} className="ph-mask shrink-0 border-b border-neutral-200 dark:border-neutral-800">
-      <div className="mx-auto w-full max-w-[72ch] px-6">
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls={bodyId}
-          onClick={() => setOpen((value) => !value)}
-          className="flex items-center gap-1 rounded py-1.5 text-xs font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
-        >
-          <ChevronRight size={13} className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
-          {t('properties.title', { n: count })}
-        </button>
-
-        {open && (
-          <div id={bodyId} className="max-h-[45vh] overflow-y-auto pb-2">
+    <section aria-label={t('properties.label')} className="ph-mask shrink-0">
+      <div className={layout === 'plain' ? 'max-w-3xl' : 'folio-props-body'}>
+        <div id={propertiesBodyId(pageId)} className="max-h-[45vh] overflow-y-auto pb-2">
             {state.conflict && (
               <div role="alert" className="mb-2 flex flex-wrap items-center gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
                 <TriangleAlert size={14} className="shrink-0" aria-hidden="true" />
@@ -175,9 +206,41 @@ export function PropertiesPanel({ pageId, space, canEdit, canManageTypes }: Prop
                   {t('properties.add')}
                 </button>
               ))}
-          </div>
-        )}
+        </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * Toggle and body for a page without the document editor's chrome row — a data table, a form, a board, a PDF or
+ * an Office file (15.10.2026): a thin row above the page's own surface, the toggle at its top left, the open body
+ * under it, left-aligned with the surface (`className` carries the caller's horizontal padding). Collapsed,
+ * it costs one short line; a viewer of a page without properties sees nothing at all.
+ *
+ * Who may edit (owner's rule: reading is reading): these pages have no reading / editing modes of their own —
+ * the table, the board and the file viewer are the same surface for every role — so the properties are editable
+ * exactly for the people who may edit the page (`canEdit`, the page role, as for the page itself), read-only
+ * for everyone else. A form's "Edit form" dialog changes the definition, not the page's metadata, so it is not
+ * a mode either.
+ */
+export function PagePropertiesBar({ className = 'px-4', ...props }: PropertiesPanelProps & { className?: string }) {
+  const [open, setOpen] = usePropertiesOpen(props.space);
+  return (
+    <div className={`shrink-0 ${className}`} data-page-properties="">
+      <PropertiesToggle pageId={props.pageId} space={props.space} canEdit={props.canEdit} open={open} onToggle={() => setOpen((v) => !v)} />
+      <PropertiesBody {...props} open={open} layout="plain" />
+    </div>
+  );
+}
+
+/** Toggle and body together (the standalone layout; PageContent splits them across the editor's chrome). */
+export function PropertiesPanel(props: PropertiesPanelProps) {
+  const [open, setOpen] = usePropertiesOpen(props.space);
+  return (
+    <>
+      <PropertiesToggle pageId={props.pageId} space={props.space} canEdit={props.canEdit} open={open} onToggle={() => setOpen((v) => !v)} />
+      <PropertiesBody {...props} open={open} />
+    </>
   );
 }

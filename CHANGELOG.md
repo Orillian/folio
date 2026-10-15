@@ -4,6 +4,26 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ## [Unreleased]
 
+### Added
+
+- **Properties on data tables, forms, boards and files.** The properties panel
+  now appears on every page kind except folders, as a thin row above the page
+  ("Properties (N)" at the top left). A data table or a form keeps its properties
+  in its own front matter, next to the keys that define it (schema, views,
+  fields): those stay hidden and byte-for-byte untouched, and a table or form
+  save keeps the properties. A board, a PDF or an Office file keeps them in a
+  sidecar YAML file, `.folio/<path>.props.yaml`, created by the first property,
+  deleted with the last, committed on its own with every save, and moved, trashed
+  and restored together with its page; a sidecar changed in git is picked up on
+  the next scan. Tags and properties of all of them work in search (`tag:`,
+  `prop:`), in the tag tree and rename, and in MCP `get_page_metadata`.
+
+### Changed
+
+- **Reading mode is read-only for properties.** In Reading mode the properties
+  are shown as text and chips for everyone; adding, editing and removing them
+  happens in Live and Source.
+
 ## [0.3.0] - 2026-10-15
 
 Your Obsidian vault or `docs/` folder becomes a team wiki in the browser, and

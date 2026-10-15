@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import i18next from 'i18next';
 import type { PagePropertiesResponse } from '@shared/contracts';
 import { ToastProvider } from '../ui/Toast';
-import { PropertiesPanel } from './PropertiesPanel';
+import { PagePropertiesBar, PropertiesPanel } from './PropertiesPanel';
 import '../i18n/register';
 
 const BASE: PagePropertiesResponse = {
@@ -202,5 +202,65 @@ describe('PropertiesPanel', () => {
     await waitFor(() => expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(getsBefore));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect((screen.getByRole('textbox', { name: 'title' }) as HTMLInputElement).value).toBe('Roadmap');
+  });
+
+  it('reading mode: an editor of the page gets values only — no editors, no add, no remove, no type picker', async () => {
+    stubNetwork(BASE); // the server says the caller may edit
+    renderPanel({ canEdit: false }); // PageContent passes canEdit=false in reading mode
+    await openPanel();
+
+    expect(screen.getByText('Roadmap')).toBeTruthy();
+    expect(screen.getByText('plan')).toBeTruthy();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add property' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Remove/ })).toBeNull();
+  });
+});
+
+describe('PagePropertiesBar (tables, forms, boards, files)', () => {
+  const TABLE: PagePropertiesResponse = { properties: { owner: 'ann', tags: ['q3'] }, types: { owner: 'text', tags: 'tags' }, foreign: [], readOnly: [], canEdit: true, etag: 'e1' };
+
+  function renderBar(canEdit: boolean) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    return render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <PagePropertiesBar pageId="p1" space="demo" canEdit={canEdit} canManageTypes={false} />
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('puts the toggle on top and the editors under it; a save sends the page\'s own keys only', async () => {
+    const calls = stubNetwork(TABLE, (body) => json({ ...TABLE, properties: body.properties, etag: 'e2' }));
+    const { container } = renderBar(true);
+    const toggle = await screen.findByRole('button', { name: 'Properties (2)' });
+    expect(container.querySelector('[data-page-properties]')?.firstElementChild).toBe(toggle);
+    await userEvent.click(toggle);
+    const owner = screen.getByRole('textbox', { name: 'owner' });
+    await userEvent.clear(owner);
+    await userEvent.type(owner, 'bob{Enter}');
+    await waitFor(() => expect(calls.some((c) => c.method === 'PUT')).toBe(true));
+    expect(calls.find((c) => c.method === 'PUT')!.body).toEqual({ properties: { owner: 'bob', tags: ['q3'] }, etag: 'e1' });
+  });
+
+  it('is read-only without edit rights, and shows nothing at all on a page without properties', async () => {
+    stubNetwork({ ...TABLE, canEdit: false });
+    renderBar(false);
+    await userEvent.click(await screen.findByRole('button', { name: 'Properties (2)' }));
+    expect(screen.getByText('ann')).toBeTruthy();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add property' })).toBeNull();
+    cleanup();
+    vi.unstubAllGlobals();
+
+    stubNetwork({ ...TABLE, properties: {}, types: {}, canEdit: false });
+    const { container } = renderBar(false);
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole('button', { name: /Properties/ })).toBeNull();
+    expect(container.querySelector('[data-page-properties]')?.textContent).toBe('');
   });
 });
