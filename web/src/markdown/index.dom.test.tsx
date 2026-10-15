@@ -143,6 +143,59 @@ describe('<Markdown> link resolution hints i18n', () => {
   });
 });
 
+describe('<Markdown> extensionless links: a page when one resolves, otherwise the raw file', () => {
+  beforeEach(async () => {
+    await i18next.changeLanguage('en');
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function stubResolve(found: boolean) {
+    const fn = vi.fn((url: string) =>
+      String(url).includes('/api/resolve')
+        ? Promise.resolve(found ? { ok: true, status: 200, json: () => Promise.resolve({ id: 'P1', space: 'eng', path: 'getting-started.md' }) } : { ok: false, status: 404 })
+        : Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ users: [] }) }),
+    );
+    vi.stubGlobal('fetch', fn);
+    return fn;
+  }
+
+  it('opens the page when /api/resolve finds one (`getting-started` -> getting-started.md)', async () => {
+    const fetchFn = stubResolve(true);
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const { container, queryByText } = renderMarkdown('[Next](getting-started)');
+    const link = container.querySelector<HTMLAnchorElement>('a[data-folio-link]')!;
+    expect(fireEvent.click(link)).toBe(false); // handled in-app
+    await waitFor(() => expect(fetchFn.mock.calls.some(([url]) => String(url).includes('path=getting-started'))).toBe(true));
+    await act(async () => {});
+    expect(open).not.toHaveBeenCalled();
+    expect(queryByText(/Page not found/)).toBeNull();
+  });
+
+  it('falls back to the raw-file link for `LICENSE` when no page matches, with no "not found" hint', async () => {
+    stubResolve(false);
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const { container, queryByText } = renderMarkdown('[License](LICENSE)');
+    const link = container.querySelector<HTMLAnchorElement>('a[data-folio-link]')!;
+    expect(link.getAttribute('href')).toBe('/files/eng/LICENSE');
+    fireEvent.click(link);
+    await waitFor(() => expect(open).toHaveBeenCalledWith(link.href, '_blank', 'noopener,noreferrer'));
+    expect(link.href.endsWith('/files/eng/LICENSE')).toBe(true);
+    expect(queryByText(/Page not found/)).toBeNull();
+  });
+
+  it('a share guest gets the raw-file link untouched (it cannot resolve pages)', () => {
+    stubFetch();
+    const { container, queryByText } = renderMarkdown('[License](LICENSE)', { shareToken: 'tok123' });
+    const link = container.querySelector<HTMLAnchorElement>('a[data-folio-link]')!;
+    expect(link.getAttribute('href')).toBe('/files/eng/LICENSE?share=tok123');
+    expect(fireEvent.click(link)).toBe(true); // default not prevented: the browser follows the file link
+    expect(queryByText("This page isn't available via this link")).toBeNull();
+  });
+});
+
 describe('<Markdown> table fit/scroll toggle', () => {
   const TABLE_MD = '| A | B |\n| --- | --- |\n| 1 | 2 |';
   let restoreWidths: () => void;

@@ -3,8 +3,25 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { CircleHelp, ClipboardList, Clock, FileText, LayoutDashboard, RefreshCw, Search, SunMoon, Table2 } from 'lucide-react';
-import type { PageKind, SearchHit } from '@shared/contracts';
+import {
+  Bookmark,
+  BookmarkPlus,
+  CircleHelp,
+  ClipboardList,
+  Clock,
+  FileSpreadsheet,
+  FileText,
+  FileType2,
+  Folder,
+  LayoutDashboard,
+  RefreshCw,
+  Search,
+  SunMoon,
+  Table2,
+  X,
+} from 'lucide-react';
+import type { PageKind, SavedSearch, SearchHit } from '@shared/contracts';
+import { isEmptySearchQuery, parseSearchQuery } from '@shared/searchQuery';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
 import { newPageTitleKey } from '../sidebar/slugUtils';
@@ -13,10 +30,14 @@ import { useSpaceRole } from '../auth/AuthProvider';
 import { canEditContent, canManageMembers } from '../auth/roles';
 import { cycleThemeMode, useSettings } from '../settings';
 import { useToast } from '../ui/Toast';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { OfflineUnsupportedError, createPageOfflineAware } from '../offline/createPage';
 import { useRecents } from '../recents';
 import type { RecentPage } from '../recents';
 import { HelpModal } from '../help/HelpModal';
+import { SaveSearchDialog } from './SaveSearchDialog';
+import { SEARCH_OPERATORS, insertOperator } from './searchOperators';
+import type { SearchOperator } from './searchOperators';
 import { fuzzyFilter } from './fuzzy';
 import { track } from '../../analytics';
 import '../i18n/register';
@@ -24,6 +45,8 @@ import '../i18n/register';
 export interface QuickSwitcherProps {
   /** Current space — scopes new-page/new-board/sync actions and the search API call (search, unlike recents, isn't cross-space; see api.search). */
   space: string;
+  /** What the input starts with: `tag:<tag>` when a `#tag` chip in a page or the sidebar's Tags section opens the switcher. Empty for Cmd+K. */
+  initialQuery?: string;
   onClose: () => void;
 }
 
@@ -35,9 +58,32 @@ interface SwitcherAction {
 }
 
 type Entry =
+  | { kind: 'saved'; key: string; search: SavedSearch; run: () => void }
   | { kind: 'recent'; key: string; label: string; icon?: string; go: () => void }
-  | { kind: 'hit'; key: string; label: string; snippet: string; go: () => void }
+  | { kind: 'hit'; key: string; hit: SearchHit; go: () => void }
+  | { kind: 'save-search'; key: string; run: () => void }
   | { kind: 'action'; key: string; label: string; icon: ReactNode; run: () => void };
+
+/** The icon of a search hit by page kind; a server that predates `kind` on hits gets the plain page icon. */
+function KindIcon({ kind }: { kind: PageKind | undefined }) {
+  const props = { size: 14, className: 'mt-0.5 shrink-0 opacity-60', 'aria-hidden': true } as const;
+  switch (kind) {
+    case 'table':
+      return <Table2 {...props} />;
+    case 'board':
+      return <LayoutDashboard {...props} />;
+    case 'form':
+      return <ClipboardList {...props} />;
+    case 'pdf':
+      return <FileType2 {...props} />;
+    case 'office':
+      return <FileSpreadsheet {...props} />;
+    case 'folder':
+      return <Folder {...props} />;
+    default:
+      return <FileText {...props} />;
+  }
+}
 
 /**
  * Cmd+K quick switcher: one modal combining recent pages (cross-space,
@@ -51,7 +97,7 @@ type Entry =
  * Shell's root only has `overflow-hidden` (no transform/filter/contain), so
  * a `position: fixed` overlay isn't clipped by it regardless of DOM depth.
  */
-export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
+export function QuickSwitcher({ space, initialQuery = '', onClose }: QuickSwitcherProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
   const navigate = useNavigate();
@@ -60,7 +106,11 @@ export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
   const role = useSpaceRole(space);
   const { theme, setTheme } = useSettings();
 
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery);
+  // Where the search runs: this space, or — after running a saved search — the space it was pinned to ('' = every space).
+  const [searchSpace, setSearchSpace] = useState(space);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<SavedSearch | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   // Round 6 addendum: stacks on top of the switcher itself (same z-50 as
   // this dialog's own backdrop, later in DOM order so it paints over it)
@@ -69,6 +119,8 @@ export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
   const [helpOpen, setHelpOpen] = useState(false);
   const debounced = useDebouncedValue(query, 200);
   const trimmed = debounced.trim();
+  // The results belong to what is in the box NOW: once it is emptied, the debounce (200 ms) must not keep the last hits on screen.
+  const hasQuery = trimmed !== '' && query.trim() !== '';
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -90,13 +142,26 @@ export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
   }, [recentValidation.data, setRecents, validRecentKeys]);
 
   const { data: searchData, isFetching: searching } = useQuery({
-    queryKey: ['search', space, trimmed],
-    queryFn: () => api.search(trimmed, space),
+    queryKey: ['search', searchSpace, trimmed],
+    queryFn: () => api.search(trimmed, searchSpace),
     enabled: trimmed.length > 0,
   });
 
+  // Saved searches (Obsidian wave 3): a short per-user list, fetched once. A server without the route just shows none.
+  const { data: savedData } = useQuery({
+    queryKey: ['saved-searches'],
+    queryFn: api.listSavedSearches,
+    staleTime: 30_000,
+    retry: false,
+  });
+
   useEffect(() => {
-    inputRef.current?.focus();
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus();
+    // Opened with a query already in it (a tag from the sidebar): the caret goes after it, ready to refine.
+    input.setSelectionRange(input.value.length, input.value.length);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Optional analytics: one `search` event per use of the switcher, when it closes, with only whether the last
@@ -154,6 +219,35 @@ export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
     },
     onError: (err) => showToast(errorText(err, 'sidebar.syncFailed')),
   });
+
+  const deleteSaved = useMutation({
+    mutationFn: (id: string) => api.deleteSavedSearch(id),
+    onSuccess: () => {
+      setDeleting(null);
+      void queryClient.invalidateQueries({ queryKey: ['saved-searches'] });
+    },
+    onError: (err) => {
+      setDeleting(null);
+      showToast(errorText(err, 'search.saved.deleteFailed'));
+    },
+  });
+
+  /** A saved search runs where it was saved: its space, or every space. */
+  function runSaved(search: SavedSearch) {
+    setSearchSpace(search.space ?? '');
+    setQuery(search.query);
+    inputRef.current?.focus();
+  }
+
+  /** Clicking an operator in the help line types it into the input, keeping the caret where the value goes. */
+  function addOperator(operator: SearchOperator) {
+    const { query: next, caret } = insertOperator(query, operator);
+    setQuery(next);
+    setTimeout(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(caret, caret);
+    }, 0);
+  }
 
   // Actions always include theme cycling (a personal preference, no
   // permission concept applies); new page/board need editor+, sync mirrors
@@ -226,15 +320,27 @@ export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
   }, [query, recents, recentValidation.data, validRecentKeys]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hitEntries = useMemo<Entry[]>(() => {
-    if (!trimmed) return [];
+    if (!hasQuery) return [];
     return (searchData?.hits ?? []).map((hit: SearchHit) => ({
       kind: 'hit' as const,
       key: `hit:${hit.id}`,
-      label: hit.title,
-      snippet: hit.snippet,
+      hit,
       go: () => go(`/s/${hit.space}/p/${hit.id}`),
     }));
-  }, [trimmed, searchData]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasQuery, searchData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // "Save this search…" closes the results group: reachable with the arrow keys like any row.
+  const saveEntries = useMemo<Entry[]>(
+    // (Not for a query that parses to nothing — only symbols, or operators without a value.)
+    () => (hasQuery && !isEmptySearchQuery(parseSearchQuery(trimmed)) ? [{ kind: 'save-search' as const, key: 'save-search', run: () => setSaving(true) }] : []),
+    [hasQuery, trimmed],
+  );
+
+  // Saved searches lead the list while nothing is typed.
+  const savedEntries = useMemo<Entry[]>(() => {
+    if (query.trim()) return [];
+    return (savedData?.searches ?? []).map((search) => ({ kind: 'saved' as const, key: `saved:${search.id}`, search, run: () => runSaved(search) }));
+  }, [query, savedData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const actionEntries = useMemo<Entry[]>(() => {
     const filtered = fuzzyFilter(query, actions, (a) => a.label);
@@ -248,8 +354,8 @@ export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
   }, [query, actions]);
 
   const entries = useMemo(
-    () => [...recentEntries, ...hitEntries, ...actionEntries],
-    [recentEntries, hitEntries, actionEntries],
+    () => [...savedEntries, ...recentEntries, ...hitEntries, ...saveEntries, ...actionEntries],
+    [savedEntries, recentEntries, hitEntries, saveEntries, actionEntries],
   );
 
   useEffect(() => {
@@ -263,7 +369,7 @@ export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
 
   function activate(entry: Entry | undefined) {
     if (!entry) return;
-    if (entry.kind === 'action') entry.run();
+    if (entry.kind === 'action' || entry.kind === 'saved' || entry.kind === 'save-search') entry.run();
     else entry.go();
   }
 
@@ -315,9 +421,68 @@ export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
             aria-controls="folio-switcher-list"
             aria-autocomplete="list"
           />
+          {searchSpace !== space && (
+            <button
+              type="button"
+              title={t('search.saved.resetScope')}
+              aria-label={t('search.saved.resetScope')}
+              onClick={() => setSearchSpace(space)}
+              className="flex shrink-0 items-center gap-1 rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
+            >
+              {searchSpace === '' ? t('search.saved.allSpaces') : searchSpace}
+              <X size={11} aria-hidden="true" />
+            </button>
+          )}
         </div>
 
+        {/* Search v2: the operators the query understands. Shown while nothing is typed and while the query already has one. */}
+        {(!query.trim() || query.includes(':')) && (
+          <div
+            aria-label={t('search.operators.label')}
+            className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-neutral-200 px-3.5 py-1.5 text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400"
+          >
+            <span>{t('search.operators.title')}</span>
+            {SEARCH_OPERATORS.map((operator) => (
+              <button
+                key={operator.id}
+                type="button"
+                tabIndex={-1}
+                title={t(`search.operators.${operator.id}`)}
+                // Keep the caret in the input: a click on the help must not steal focus from the field it is editing.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => addOperator(operator)}
+                className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
+              >
+                {operator.label}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div ref={listRef} id="folio-switcher-list" role="listbox" className="ph-mask min-h-0 flex-1 overflow-y-auto p-1.5">
+          {savedEntries.length > 0 && (
+            <Section label={t('search.saved.title')}>
+              {savedEntries.map((entry) => {
+                renderIndex++;
+                if (entry.kind !== 'saved') return null;
+                const { search } = entry;
+                return (
+                  <SavedRow
+                    key={entry.key}
+                    index={renderIndex}
+                    active={renderIndex === activeIndex}
+                    name={search.name}
+                    query={search.query}
+                    scope={search.space === null ? t('search.saved.allSpaces') : search.space !== space ? search.space : undefined}
+                    deleteLabel={t('search.saved.delete', { name: search.name })}
+                    onActivate={() => activate(entry)}
+                    onDelete={() => setDeleting(search)}
+                  />
+                );
+              })}
+            </Section>
+          )}
+
           {recentEntries.length > 0 && (
             <Section label={t('switcher.recent')}>
               {recentEntries.map((entry) => {
@@ -329,29 +494,52 @@ export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
                     ) : (
                       <Clock size={14} className="opacity-60" aria-hidden="true" />
                     )}
-                    <span className="truncate">{entry.label}</span>
+                    <span className="truncate">{entry.kind === 'recent' ? entry.label : ''}</span>
                   </Row>
                 );
               })}
             </Section>
           )}
 
-          {trimmed && (
+          {hasQuery && (
             <Section label={searching ? t('switcher.searching') : t('switcher.searchResults')}>
               {hitEntries.length === 0 && !searching && (
                 <div className="px-2.5 py-2 text-sm text-neutral-400">{t('switcher.noResults', { query: trimmed })}</div>
               )}
               {hitEntries.map((entry) => {
                 renderIndex++;
+                if (entry.kind !== 'hit') return null;
+                const { hit } = entry;
+                const tags = hit.tags ?? [];
                 return (
                   <Row key={entry.key} index={renderIndex} active={renderIndex === activeIndex} onActivate={() => activate(entry)}>
-                    <FileText size={14} className="mt-0.5 shrink-0 opacity-60" aria-hidden="true" />
+                    <KindIcon kind={hit.kind} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate">{entry.label}</span>
-                      {entry.kind === 'hit' && (
-                        <span className="block truncate text-xs text-neutral-500 dark:text-neutral-400">{entry.snippet}</span>
-                      )}
+                      <span className="flex items-center gap-2">
+                        <span className="min-w-0 truncate">{hit.title}</span>
+                        {hit.space !== space && <span className="shrink-0 text-xs text-neutral-400">{hit.space}</span>}
+                        {tags.length > 0 && (
+                          <span className="ml-auto hidden shrink-0 items-center gap-1 sm:flex">
+                            {tags.slice(0, 3).map((tag) => (
+                              <span key={tag} className="rounded-full bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                                #{tag}
+                              </span>
+                            ))}
+                            {tags.length > 3 && <span className="text-[11px] text-neutral-400">+{tags.length - 3}</span>}
+                          </span>
+                        )}
+                      </span>
+                      <span className="block truncate text-xs text-neutral-500 dark:text-neutral-400">{hit.snippet}</span>
                     </span>
+                  </Row>
+                );
+              })}
+              {saveEntries.map((entry) => {
+                renderIndex++;
+                return (
+                  <Row key={entry.key} index={renderIndex} active={renderIndex === activeIndex} onActivate={() => activate(entry)}>
+                    <BookmarkPlus size={14} className="shrink-0 opacity-60" aria-hidden="true" />
+                    <span className="truncate">{t('search.saved.save')}</span>
                   </Row>
                 );
               })}
@@ -365,20 +553,95 @@ export function QuickSwitcher({ space, onClose }: QuickSwitcherProps) {
                 return (
                   <Row key={entry.key} index={renderIndex} active={renderIndex === activeIndex} onActivate={() => activate(entry)}>
                     {entry.kind === 'action' && entry.icon}
-                    <span className="truncate">{entry.label}</span>
+                    <span className="truncate">{entry.kind === 'action' ? entry.label : ''}</span>
                   </Row>
                 );
               })}
             </Section>
           )}
 
-          {entries.length === 0 && !trimmed && (
+          {entries.length === 0 && !hasQuery && (
             <div className="px-2.5 py-2 text-sm text-neutral-400">{t('switcher.emptyHint')}</div>
           )}
         </div>
       </div>
 
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {saving && (
+        <SaveSearchDialog
+          query={query.trim()}
+          space={searchSpace}
+          onClose={() => setSaving(false)}
+          onSaved={() => {
+            setSaving(false);
+            inputRef.current?.focus();
+          }}
+        />
+      )}
+      {deleting && (
+        <ConfirmDialog
+          title={t('search.saved.deleteTitle')}
+          destructive
+          busy={deleteSaved.isPending}
+          confirmLabel={t('ui.delete')}
+          onConfirm={() => deleteSaved.mutate(deleting.id)}
+          onCancel={() => setDeleting(null)}
+        >
+          <p>{t('search.saved.deleteBody', { name: deleting.name })}</p>
+        </ConfirmDialog>
+      )}
+    </div>
+  );
+}
+
+function SavedRow({
+  index,
+  active,
+  name,
+  query,
+  scope,
+  deleteLabel,
+  onActivate,
+  onDelete,
+}: {
+  index: number;
+  active: boolean;
+  name: string;
+  query: string;
+  /** Where it searches when that is not this space: "All spaces" or another space's slug. */
+  scope: string | undefined;
+  deleteLabel: string;
+  onActivate: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className={`group flex items-center rounded-md ${active ? 'bg-neutral-100 dark:bg-neutral-800' : ''}`}>
+      <button
+        type="button"
+        role="option"
+        aria-selected={active}
+        data-index={index}
+        onClick={onActivate}
+        className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left text-sm text-neutral-800 dark:text-neutral-200"
+      >
+        <Bookmark size={14} className="mt-0.5 shrink-0 opacity-60" aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="min-w-0 truncate">{name}</span>
+            {scope && <span className="shrink-0 text-xs text-neutral-400">{scope}</span>}
+          </span>
+          <span className="block truncate font-mono text-xs text-neutral-500 dark:text-neutral-400">{query}</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        aria-label={deleteLabel}
+        title={deleteLabel}
+        onClick={onDelete}
+        className="mr-1.5 shrink-0 rounded p-1 text-neutral-400 opacity-0 hover:bg-neutral-200 hover:text-neutral-700 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:bg-neutral-700 dark:hover:text-neutral-200 max-md:opacity-100"
+      >
+        <X size={13} aria-hidden="true" />
+      </button>
     </div>
   );
 }

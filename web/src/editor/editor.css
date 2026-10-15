@@ -644,8 +644,9 @@ html[data-width='wide'] .folio-editor {
   border-bottom-right-radius: 8px;
 }
 
-/* The label that stands in for the literal `[!NOTE]`; capitalised rather than
-   translated, exactly like reading mode's `content: attr(data-alert)`. */
+/* The label that stands in for the literal `[!info]-`: the callout's icon, its
+   name (the interface language's own word for the types that have one, the
+   type as typed for the rest) and, for a foldable callout, a chevron. */
 .folio-editor .cm-md-callout__label {
   display: inline-flex;
   align-items: center;
@@ -660,6 +661,31 @@ html[data-width='wide'] .folio-editor {
 .folio-editor .cm-md-callout__label svg {
   width: 1.15em;
   height: 1.15em;
+}
+
+/* `> [!tip] Title`: the title stays ordinary editable text after the label (the
+   label then carries only the icon), dressed as the callout's heading. */
+.folio-editor .cm-md-callout-title {
+  color: var(--folio-ed-callout);
+  font-weight: 700;
+}
+
+/* `+` / `-` after the marker. The editor never folds a callout's body; the
+   chevron only tells which way reading mode starts it: down = open (`+`),
+   right = closed (`-`). Drawn with borders so it follows the label's colour. */
+.folio-editor .cm-md-callout__fold {
+  display: inline-block;
+  box-sizing: border-box;
+  width: 0.5em;
+  height: 0.5em;
+  margin: 0 0.15em 0.12em 0.1em;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+}
+.folio-editor .cm-md-callout__fold[data-fold='-'] {
+  margin: 0 0.3em 0 0;
+  transform: rotate(-45deg);
 }
 
 .folio-editor .cm-md-callout-note {
@@ -725,6 +751,64 @@ html[data-theme='dark'] .folio-editor .cm-md-callout-warning {
 html[data-theme='dark'] .folio-editor .cm-md-callout-caution {
   --folio-ed-callout: #ff7b72;
   --folio-ed-callout-bg: rgb(248 81 73 / 12%);
+}
+
+/* ------------------------------------------------- Obsidian constructs -- */
+
+/*
+ * What ofm-live.ts decorates: comments, wikilinks, embeds, tags, formulas and
+ * block ids. Styling only — every character stays in the text, in live and in
+ * source mode (the brackets, `%%`, `#` and `$` are never folded away); the
+ * dimmed `.cm-md-marker` parts around a wikilink are the same ones every other
+ * construct has. Colours come from the editor palette, so dark mode follows.
+ */
+
+/* `%%comment%%`: reading mode shows none of it, so it recedes here. Opacity
+   rather than a colour, because an inner link or emphasis would repaint a colour. */
+.folio-editor .cm-md-comment {
+  color: var(--folio-ed-muted);
+  font-style: italic;
+  opacity: 0.7;
+}
+
+/* `[[Note]]`, `[[Note|alias]]`: the part reading mode shows as the link. */
+.folio-editor .cm-md-wikilink {
+  color: var(--folio-ed-accent);
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, var(--folio-ed-accent) 60%, transparent);
+  text-underline-offset: 2px;
+}
+
+/* `![[Note]]`, `![[img.png]]`: what gets pulled into the page, a shade stronger than a link. */
+.folio-editor .cm-md-embed {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--folio-ed-accent) 10%, transparent);
+  text-decoration-style: solid;
+}
+
+/* `#tag`, `#area/topic`: a chip like reading mode's, without box padding that would shift the text. */
+.folio-editor .cm-md-tag {
+  border-radius: 4px;
+  padding: 0 0.2em;
+  background: color-mix(in srgb, var(--folio-ed-accent) 12%, transparent);
+  color: var(--folio-ed-accent);
+}
+
+/* `$x^2$` and `$$ ... $$`: TeX source, shown as source. */
+.folio-editor .cm-md-math {
+  border-radius: 3px;
+  background: var(--folio-ed-surface);
+  font-family: var(--folio-ed-mono);
+  font-size: 0.92em;
+}
+.folio-editor .cm-md-math-display {
+  border-radius: 0;
+}
+
+/* `^block-id` at the end of a paragraph: an anchor, not prose. */
+.folio-editor .cm-md-blockid {
+  color: var(--folio-ed-faint);
+  font-size: 0.85em;
 }
 
 /* ----------------------------------------------------------- live widgets -- */

@@ -32,7 +32,10 @@ audit of the current user of the session, without a separate token.
 | `list_tree` | The full page tree of one space: id, title, kind, path, order |
 | `read_page` | One page by `id`: metadata + the full markdown body (doc) or the scene (board) |
 | `search_pages` | Full-text search, optionally within one space |
-| `get_backlinks` | The pages that link to the given one |
+| `get_backlinks` | The links into the given page: the source page plus the line with the link (`context`) |
+| `get_page_metadata` | One page's outline (headings with anchors), `^block` ids, tags, properties (front matter) and outgoing links with their kind (page / asset / external / unresolved) |
+| `list_unresolved_links` | Links in a space that point at no existing page (`limit`/`offset`, sorted by target) |
+| `list_orphans` | Pages of a space nothing links to |
 | `page_history` | The git commit history of a page: sha/author/date/message |
 | `page_at_sha` | The content of a page at the given commit (a sha from `page_history`) |
 | `folio_table_list` | The data tables of one space or of all available ones |

@@ -1,6 +1,7 @@
 import { visit } from 'unist-util-visit';
 import type { Root, Element } from 'hast';
-import { dirOf, isExternalUrl, isMarkdownPath, resolveRelativePath, splitFragment } from './resolvePath';
+import type { WikilinkContext } from './wikilinks';
+import { dirOf, isExternalUrl, isMarkdownPath, isPageLinkPath, resolveRelativePath, splitFragment } from './resolvePath';
 
 export interface RelativeLinksOptions {
   space: string;
@@ -17,6 +18,11 @@ export interface RelativeLinksOptions {
    * request already carries a cookie.
    */
   shareToken?: string;
+  /**
+   * The page's index metadata (wikilinks.ts). When ready, an image or file link that the index resolved by NAME
+   * (Obsidian: `![](x.png)` finding `Attachments/x.png`) is served from the resolved path, not the path as written.
+   */
+  wikilinks?: WikilinkContext;
 }
 
 /** /files/<space>/<resolved>, plus ?share=<token> when rendering for a guest (round 8). */
@@ -49,7 +55,8 @@ function filesUrl(space: string, resolved: string, shareToken: string | undefine
  *   card (link-preview.tsx renders a previewed page's body through this same
  *   <Markdown> pipeline) — one fix here reaches both surfaces.
  */
-export function rehypeRelativeLinks({ space, pagePath, shareToken }: RelativeLinksOptions) {
+export function rehypeRelativeLinks({ space, pagePath, shareToken, wikilinks }: RelativeLinksOptions) {
+  const attachment = wikilinks?.status === 'ready' ? wikilinks.resolveAttachment : undefined;
   return (tree: Root) => {
     visit(tree, 'element', (node: Element) => {
       if (node.tagName === 'img') {
@@ -66,7 +73,14 @@ export function rehypeRelativeLinks({ space, pagePath, shareToken }: RelativeLin
           !src.startsWith('/')
         ) {
           const { path } = splitFragment(src);
-          const resolved = resolveRelativePath(pagePath, path);
+          // A bare name may live elsewhere (`![[x.png]]` in `attachments/`): until the index answers, no request is
+          // better than a wasted 404; the render after the answer sets the real src.
+          if (wikilinks?.status === 'pending' && !path.includes('/')) {
+            delete node.properties.src;
+            node.properties.dataFolioPendingSrc = '';
+            return;
+          }
+          const resolved = attachment?.(path) ?? resolveRelativePath(pagePath, path);
           node.properties.src = filesUrl(space, resolved, shareToken);
         }
         return;
@@ -92,9 +106,17 @@ export function rehypeRelativeLinks({ space, pagePath, shareToken }: RelativeLin
           node.properties.dataFolioLink = resolved;
           return;
         }
+        if (isPageLinkPath(path)) {
+          // No extension at all: a page (`../getting-started`, resolved with
+          // `.md` by /api/resolve) or a plain file (`../LICENSE`, `Makefile`).
+          // <Markdown>'s click handler asks for the page first and, when there
+          // is none, opens the file link below exactly as before.
+          node.properties.dataFolioLink = resolved;
+          node.properties.dataFolioFile = '';
+        }
         // A real file (pdf/zip/etc.), not another Folio page — opens outside
         // the SPA, same as an external link (round 25).
-        node.properties.href = filesUrl(space, resolved, shareToken) + hash;
+        node.properties.href = filesUrl(space, attachment?.(path) ?? resolved, shareToken) + hash;
         node.properties.target = '_blank';
         node.properties.rel = ['noopener', 'noreferrer'];
       }

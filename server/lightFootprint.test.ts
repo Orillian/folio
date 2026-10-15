@@ -5,7 +5,10 @@
  * deterministic path id), and its `.folio` metadata is a dotfile inside the
  * content root, not a foreign file at the product's root. Legacy rootPath
  * spaces (ids already in files, `<slug>.folio` at the repo root) keep working
- * unchanged, and rootPath '' spaces still get ids as before.
+ * unchanged. A rootPath '' repository that brings its own files is light by
+ * default too (a vault without `.obsidian/` in git, a notes repo, a wiki);
+ * an empty repository, one that already is a Folio space and an explicit
+ * `lightFootprint: false` keep the native mode (ids in files).
  *
  * Real PG + real git: the "remote" is a local bare repo (see gitNative.test.ts).
  */
@@ -26,6 +29,7 @@ import { getTrashRoot } from './trash/paths.js';
 import { translitSlug } from './translit.js';
 import { readSpaceExportSettings, writeSpaceExportSettings } from './export/spaceSettings.js';
 import type { User } from '../shared/contracts.js';
+import { buildPageDoc } from './pageDoc.js';
 
 git.__allowLocalRepoPathsForTests();
 const execFileAsync = promisify(execFile);
@@ -62,9 +66,9 @@ async function seededBareRepo(files: Record<string, string>): Promise<string> {
   return bare;
 }
 
-async function connect(name: string, files: Record<string, string>, rootPath: string) {
+async function connect(name: string, files: Record<string, string>, rootPath: string, lightFootprint?: boolean) {
   const bare = await seededBareRepo(files);
-  const info = await storage.createSpaceFromRepo({ name, repoUrl: bare, branch: 'main', rootPath, createdBy: null });
+  const info = await storage.createSpaceFromRepo({ name, repoUrl: bare, branch: 'main', rootPath, lightFootprint, createdBy: null });
   createdSlugs.add(info.slug);
   return { slug: info.slug, repo: storage.getRepoDir(info.slug), content: storage.getSpaceDir(info.slug) };
 }
@@ -120,6 +124,8 @@ describe('light footprint for rootPath spaces (real PG + git)', () => {
     const ids = await idsByPath(slug);
     expect([...ids.keys()].sort()).toEqual(['guide/index.md', 'guide/step-one.md', 'guide/step-two.md', 'intro.md', 'plain.md']);
     expect(ids.get('plain.md')).toMatch(/^doc-[0-9a-f]{24}$/);
+    // The editor learns from the page payload that it must not insert or guard an H1 here.
+    expect((await buildPageDoc((await storage.getEntry(ids.get('plain.md')!))!)).lightFootprint).toBe(true);
 
     await storage.scanSpace(slug);
     expect(await idsByPath(slug)).toEqual(ids);
@@ -133,10 +139,11 @@ describe('light footprint for rootPath spaces (real PG + git)', () => {
     await storage.renameSpace(slug, 'Renamed Docs');
     expect(JSON.parse(await fs.readFile(path.join(content, `.${slug}.folio`), 'utf8')).name).toBe('Renamed Docs');
     expect(await exists(path.join(repo, `${slug}.folio`))).toBe(false);
-    // export settings follow the same file
+    // export settings (14.10.2026) live in .folio/ inside the content root, never at the product's repo root
     await writeSpaceExportSettings(slug, { headerHtml: '<b>H</b>' });
     expect((await readSpaceExportSettings(slug)).headerHtml).toBe('<b>H</b>');
-    expect(JSON.parse(await fs.readFile(path.join(content, `.${slug}.folio`), 'utf8')).export.headerHtml).toBe('<b>H</b>');
+    expect(await fs.readFile(path.join(content, '.folio', 'pdf-header.html'), 'utf8')).toBe('<b>H</b>');
+    expect(await exists(path.join(repo, '.folio'))).toBe(false);
   }, 60_000);
 
   it('editing, icon, order and creating pages never add an id; foreign keys stay', async () => {
@@ -249,12 +256,63 @@ describe('light footprint for rootPath spaces (real PG + git)', () => {
     expect(await fs.readFile(path.join(content, copy.path), 'utf8')).toBe('# Plain\n\nEdited.\n');
   }, 60_000);
 
-  it("a rootPath '' space still stamps ids into files (keeping foreign keys)", async () => {
-    const { slug, repo } = await connect(`${RUN} Whole`, { 'intro.md': DOCUSAURUS, 'plain.md': '# Plain\n' }, '');
+  it("a rootPath '' repository with its own files is light by default: the scan writes nothing, ids are index-only and stable", async () => {
+    // obsidian-help connected at its root, `.obsidian` gitignored: notes with wikilinks, no Folio metadata.
+    const files = {
+      '.gitignore': '.obsidian\n',
+      'Home.md': '# Home\n\nSee [[Plain]] and [[Sub/Deep|deep]].\n',
+      'Plain.md': '# Plain\n',
+      'intro.md': DOCUSAURUS,
+      'Sub/Deep.md': '---\ntags: [x]\n---\nDeep text without a heading.\n',
+    };
+    const { slug, repo } = await connect(`${RUN} Notes`, files, '');
+    expect(storage.isLightFootprintSpace(slug)).toBe(true);
+    expect((await storage.getSpaceInfo(slug))?.lightFootprint).toBe(true);
+    expect(await gitStatus(repo)).toBe('');
+    for (const [rel, text] of Object.entries(files)) expect(await fs.readFile(path.join(repo, rel), 'utf8'), rel).toBe(text);
+    expect(await exists(path.join(repo, `.${slug}.folio`))).toBe(true);
+    expect(await exists(path.join(repo, `${slug}.folio`))).toBe(false);
+
+    const ids = await idsByPath(slug);
+    for (const id of ids.values()) expect(id).toMatch(/^doc-[0-9a-f]{24}$/);
+    await storage.scanSpace(slug);
+    expect(await idsByPath(slug)).toEqual(ids);
+    expect(await gitStatus(repo)).toBe('');
+
+    // an edit writes the body only
+    await storage.writeDocBody(ids.get('Plain.md')!, '# Plain\n\nEdited.\n');
+    expect(await fs.readFile(path.join(repo, 'Plain.md'), 'utf8')).toBe('# Plain\n\nEdited.\n');
+    expect((await buildPageDoc((await storage.getEntry(ids.get('Plain.md')!))!)).lightFootprint).toBe(true);
+  }, 60_000);
+
+  it("rootPath '' stays native (ids stamped into files, keeping foreign keys) when asked to, and for a repository that already is a Folio space", async () => {
+    const { slug, repo } = await connect(`${RUN} Whole`, { 'intro.md': DOCUSAURUS, 'plain.md': '# Plain\n' }, '', false);
     const ids = await idsByPath(slug);
     expect(await fs.readFile(path.join(repo, 'plain.md'), 'utf8')).toBe(`---\nid: ${ids.get('plain.md')}\n---\n# Plain\n`);
+    expect((await buildPageDoc((await storage.getEntry(ids.get('plain.md')!))!)).lightFootprint).toBeUndefined();
     expect(await fs.readFile(path.join(repo, 'intro.md'), 'utf8')).toBe(DOCUSAURUS.replace('# a comment\n', `# a comment\nid: ${ids.get('intro.md')}\n`));
     expect(await exists(path.join(repo, `${slug}.folio`))).toBe(true);
+
+    // a repository a Folio instance created (its `<slug>.folio` at the root, ids in the files): native by default
+    const folio = await connect(
+      `${RUN} Former`,
+      { 'old-space.folio': '{"v":1,"name":"Old"}\n', 'index.md': '---\nid: 01FORMERFOLIOID000000000AA\n---\n# Former\n', 'new.md': '# New\n' },
+      '',
+    );
+    expect(storage.isLightFootprintSpace(folio.slug)).toBe(false);
+    const folioIds = await idsByPath(folio.slug);
+    expect(folioIds.get('index.md')).toBe('01FORMERFOLIOID000000000AA');
+    expect(await fs.readFile(path.join(folio.repo, 'new.md'), 'utf8')).toBe(`---\nid: ${folioIds.get('new.md')}\n---\n# New\n`);
+  }, 60_000);
+
+  it("an empty repository stays native: Folio creates every page in it", async () => {
+    const bare = path.join(os.tmpdir(), `folio-${RUN}-empty-${Math.random().toString(36).slice(2, 8)}.git`);
+    tmpDirs.push(bare);
+    await execFileAsync('git', ['init', '--bare', '-b', 'main', bare]);
+    const info = await storage.createSpaceFromRepo({ name: `${RUN} Empty`, repoUrl: bare, branch: 'main', rootPath: '', createdBy: null });
+    createdSlugs.add(info.slug);
+    expect(info.lightFootprint).toBeUndefined();
+    expect(storage.isLightFootprintSpace(info.slug)).toBe(false);
   }, 60_000);
 
   it('moving a page in a light space rewrites its links and the incoming ones in one commit, keeping foreign front matter and adding no id', async () => {

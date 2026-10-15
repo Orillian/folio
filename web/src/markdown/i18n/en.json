@@ -15,7 +15,17 @@
     "tip": "Tip",
     "important": "Important",
     "warning": "Warning",
-    "caution": "Caution"
+    "caution": "Caution",
+    "info": "Info",
+    "todo": "To-do",
+    "abstract": "Abstract",
+    "success": "Success",
+    "question": "Question",
+    "failure": "Failure",
+    "danger": "Danger",
+    "bug": "Bug",
+    "example": "Example",
+    "quote": "Quote"
   },
   "table": {
     "switchToScroll": "Show original column widths (scroll)",
@@ -39,5 +49,22 @@
     "zoomIn": "Zoom in",
     "resetZoom": "Reset zoom",
     "close": "Close"
+  },
+  "embed": {
+    "loading": "Loading “{{title}}”…",
+    "cycle": "“{{title}}” is already shown above, so it is not embedded again",
+    "depth": "Embedded notes are shown up to {{max}} levels deep",
+    "missing": "“{{title}}” was not found",
+    "fragment": "The embedded section of “{{title}}” was not found",
+    "forbidden": "You do not have access to “{{title}}”",
+    "unsupported": "“{{title}}” cannot be embedded here",
+    "failed": "Could not load “{{title}}”",
+    "open": "Open “{{title}}”"
+  },
+  "wikilink": {
+    "notFound": "Page “{{name}}” does not exist",
+    "create": "Create page “{{name}}”",
+    "creating": "Creating…",
+    "createFailed": "Could not create the page"
   }
 }

@@ -7,6 +7,7 @@ import {
   ClipboardList,
   ExternalLink,
   FileText,
+  FolderTree,
   GitBranch,
   Globe,
   KeyRound,
@@ -15,7 +16,7 @@ import {
   LayoutTemplate,
   Loader2,
   Plus,
-  Printer,
+  Palette,
   RefreshCw,
   RotateCcw,
   Settings,
@@ -27,6 +28,7 @@ import {
   Users,
 } from 'lucide-react';
 import type { PageKind, PageMeta } from '@shared/contracts';
+import { emptySearchQuery, formatSearchQuery } from '@shared/searchQuery';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
 import { useActiveFolderPath, useActivePageId, useLocalStorage } from '../hooks';
@@ -44,12 +46,13 @@ import { SpaceSwitcher } from './SpaceSwitcher';
 import { PageTree } from './PageTree';
 import { StarredSection } from './StarredSection';
 import { AgentSection } from './AgentSection';
+import { TagsSection } from './TagsSection';
 import { MembersDialog } from './MembersDialog';
 import { ConnectGitDialog } from './ConnectGitDialog';
 import { ImageStorageDialog } from './ImageStorageDialog';
+import { ScanSettingsDialog } from './ScanSettingsDialog';
 import { ResetToRemoteDialog } from '../git/ResetToRemoteDialog';
 import { normalizeRepoUrlForDisplay } from './gitRepos';
-import { ExportSettingsDialog } from '../export/ExportSettingsDialog';
 import { SpaceAssistantKeyDialog } from './SpaceAssistantKeyDialog';
 import { PublishSpaceDialog } from './PublishSpaceDialog';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
@@ -108,10 +111,15 @@ export interface SidebarProps {
    */
   mobileOpen: boolean;
   onMobileClose: () => void;
+  /**
+   * Opens the Cmd+K quick switcher, optionally with a query already typed (the Tags section opens it with `tag:<tag>`).
+   * Owned by Shell, which holds the switcher; optional so a host without one simply gets no tag shortcut.
+   */
+  onOpenSwitcher?: (query?: string) => void;
 }
 
 /** Resizable (round 8 follow-up), collapsible (by the parent Shell) left sidebar: space switcher + page tree. */
-export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose }: SidebarProps) {
+export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, onOpenSwitcher }: SidebarProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
   // Not useParams() here — see useActivePageId's docblock for why that
@@ -123,12 +131,11 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose }: 
   const queryClient = useQueryClient();
   const role = useSpaceRole(space);
   const [managingMembers, setManagingMembers] = useState(false);
-  // R23 tail: the space-level PDF header/footer dialog (space menu, admin-gated).
-  const [editingExportSettings, setEditingExportSettings] = useState(false);
   const [editingAssistantKey, setEditingAssistantKey] = useState(false);
   const [publishing, setPublishing] = useState(false);
   // Space setting: where pasted/uploaded images go (Folio storage vs. assets/ in the repository).
   const [editingImageStorage, setEditingImageStorage] = useState(false);
+  const [editingScanSettings, setEditingScanSettings] = useState(false);
   // "Connect git" on a local space (owner ask, this round) — same admin gate
   // as the rest of this menu, see ConnectGitDialog's own doc comment.
   const [connectingGit, setConnectingGit] = useState(false);
@@ -381,21 +388,18 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose }: 
                       {t('git.resetToRemote.menuLabel')}
                     </MenuItem>
                   )}
-                  {/* R23 tail (headers and footers): space-level PDF header/footer.
-                      Lives HERE and not in the per-page export menu because
-                      it is a setting of the whole space (one value for every
-                      page's PDF) and admin-gated like its menu neighbors —
-                      the export menu is per-page, viewer-level and already
-                      crowded. Server enforces the same gate (requireSpaceRole
-                      'admin' on /api/spaces/:space/export-settings). */}
+                  {/* 14.10.2026: "Site & PDF settings" — one page (/s/:space/settings) for the space's SEO,
+                      the public site's CSS and the PDF header/footer (it replaced the PDF-only dialog).
+                      Space-level and admin-gated like its menu neighbors; the server enforces the same
+                      gate on /api/spaces/:space/appearance. */}
                   <MenuItem
-                    icon={<Printer size={14} />}
+                    icon={<Palette size={14} />}
                     onSelect={() => {
                       close();
-                      setEditingExportSettings(true);
+                      navigate(`/s/${encodeURIComponent(space)}/settings`);
                     }}
                   >
-                    {t('sidebar.spaceMenu.exportSettings')}
+                    {t('sidebar.spaceMenu.siteSettings')}
                   </MenuItem>
                   {/* The space's own Folio AI (Cursor) key: members without a personal
                       key chat with the assistant on it. Space-admin gate like its
@@ -431,6 +435,16 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose }: 
                     }}
                   >
                     {t('sidebar.spaceMenu.imageStorage')}
+                  </MenuItem>
+                  {/* Which top-level files and folders the scan skips, and the light-footprint flag (Obsidian vaults). Space admins, like its neighbors; the API checks the role too. */}
+                  <MenuItem
+                    icon={<FolderTree size={14} />}
+                    onSelect={() => {
+                      close();
+                      setEditingScanSettings(true);
+                    }}
+                  >
+                    {t('sidebar.spaceMenu.scanSettings')}
                   </MenuItem>
                   {/* Trash round: this space's trash — same /trash page the user
                       menu's admin section opens, pre-filtered to this space.
@@ -560,6 +574,15 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose }: 
               tree above (PageTree excludes it) — and never rendered at all for
               anyone below space admin, matching what the server already hides. */}
           {canManageMembers(role) && <AgentSection space={space} activeId={id} activeFolderPath={folderPath} />}
+          {/* Obsidian wave 3: the space's tags as a tree; a click searches the tag in the quick switcher. */}
+          <TagsSection
+            space={space}
+            canEdit={canEditContent(role)}
+            onOpenTag={(tag) => {
+              onMobileClose();
+              onOpenSwitcher?.(formatSearchQuery({ ...emptySearchQuery(), tags: [tag] }));
+            }}
+          />
         </nav>
 
         {canEditContent(role) && <RecentChangesButton space={space} />}
@@ -577,12 +600,12 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose }: 
 
         {managingMembers && <MembersDialog space={space} onClose={() => setManagingMembers(false)} />}
 
-        {editingExportSettings && <ExportSettingsDialog space={space} onClose={() => setEditingExportSettings(false)} />}
 
         {editingAssistantKey && <SpaceAssistantKeyDialog space={space} onClose={() => setEditingAssistantKey(false)} />}
 
         {publishing && <PublishSpaceDialog space={space} onClose={() => setPublishing(false)} />}
         {editingImageStorage && <ImageStorageDialog space={space} onClose={() => setEditingImageStorage(false)} />}
+        {editingScanSettings && <ScanSettingsDialog space={space} onClose={() => setEditingScanSettings(false)} />}
 
         {connectingGit && <ConnectGitDialog space={space} onClose={() => setConnectingGit(false)} />}
 

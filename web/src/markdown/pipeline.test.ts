@@ -115,6 +115,25 @@ describe('renderMarkdownToHtml: relative links & images', () => {
     expect(html).toContain('href="/files/engineering/architecture/export.zip"');
   });
 
+  it('marks a percent-encoded .md link as an in-app page link (resolved by /api/resolve)', () => {
+    const html = renderMarkdownToHtml('[guide](<guide/Getting Started.md>)', opts);
+    expect(html).toContain('data-folio-link="architecture/guide/Getting%20Started.md"');
+    expect(html).not.toContain('/files/');
+  });
+
+  it('an extensionless link is tried as a page first and keeps its raw-file link as the fallback', () => {
+    let html = renderMarkdownToHtml('[next](../getting-started#install)', opts);
+    expect(html).toContain('data-folio-link="getting-started"');
+    expect(html).toContain('data-folio-file=""');
+    expect(html).toContain('href="/files/engineering/getting-started#install"');
+    // `LICENSE`, `Makefile`: the same shape — the click handler opens the file when no page matches.
+    html = renderMarkdownToHtml('[License](../LICENSE)', opts);
+    expect(html).toContain('href="/files/engineering/LICENSE"');
+    expect(html).toContain('data-folio-link="LICENSE"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toMatch(/rel="noopener noreferrer"/);
+  });
+
   it('preserves a hash fragment after rewriting a non-markdown relative link', () => {
     const html = renderMarkdownToHtml('[doc](./notes.pdf#page=3)', opts);
     expect(html).toContain('href="/files/engineering/architecture/notes.pdf#page=3"');

@@ -1,7 +1,9 @@
 /**
  * Public-demo mode: the config is served only while FOLIO_DEMO_MODE is on, and
  * a demo account cannot mint API tokens or change passwords (so one visitor
- * can't lock the next one out of a shared login).
+ * can't lock the next one out of a shared login). Publishing is the exception:
+ * a demo account that administers a space may publish it (no subdomain or
+ * custom domain), and the public Ask stays off.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
@@ -22,6 +24,8 @@ import { HttpError } from './errors.js';
 import { registerRoutes } from './routes.js';
 import { registerAssistantRoutes } from './assistant/routes.js';
 import { registerAssistantAdminRoutes } from './assistant/adminRoutes.js';
+import { registerPublicAssistantRoutes } from './assistant/publicRoutes.js';
+import { registerPublicSiteAdminRoutes, registerPublicSiteRoutes } from './publicSiteRoutes.js';
 import { registerAccessRoutes } from './access/routes.js';
 import { registerTrashRoutes } from './trash/routes.js';
 import { __setTrashRootForTests } from './trash/paths.js';
@@ -227,7 +231,10 @@ describe('demo mode over HTTP', () => {
       registerAssistantAdminRoutes(protectedScope);
       registerAccessRoutes(protectedScope);
       registerTrashRoutes(protectedScope);
+      registerPublicSiteAdminRoutes(protectedScope);
     });
+    registerPublicSiteRoutes(app_);
+    registerPublicAssistantRoutes(app_);
     registerMcpRoutes(app_);
     await registerOAuthRoutes(app_, { serveSpa: (_request, reply) => reply.callNotFound() });
     await app_.ready();
@@ -283,6 +290,7 @@ describe('demo mode over HTTP', () => {
     { name: 'browse a remote tree', method: 'GET', url: '/api/git/tree' },
     { name: 'create a space', method: 'POST', url: '/api/spaces' },
     { name: 'connect a space to git', method: 'POST', url: '/api/spaces/any/connect-git' },
+    { name: 'change what a space indexes', method: 'PATCH', url: '/api/spaces/any/scan-settings' },
     { name: 'import from Confluence', method: 'POST', url: '/api/import/confluence' },
     { name: 'save a git credential', method: 'POST', url: '/api/me/git-credentials' },
     { name: 'save a Confluence credential', method: 'POST', url: '/api/me/confluence-credentials' },
@@ -420,7 +428,6 @@ describe('demo mode over HTTP', () => {
     const CASES: Case[] = [
       { name: 'delete a space', method: 'DELETE', url: (f) => `/api/admin/spaces/${f.slug}`, instanceAdmin: true },
       { name: 'rename a space', method: 'PATCH', url: (f) => `/api/admin/spaces/${f.slug}`, payload: () => ({ name: 'Renamed' }), instanceAdmin: true },
-      { name: 'change space visibility', method: 'PATCH', url: (f) => `/api/spaces/${f.slug}`, payload: () => ({ visibility: 'instance' }) },
       { name: 'bulk access change', method: 'POST', url: () => '/api/access/bulk', payload: (f) => ({ changes: [{ userId: f.otherId, space: f.slug, role: null }] }) },
       { name: 'set a member role', method: 'PUT', url: (f) => `/api/spaces/${f.slug}/members/${f.otherId}`, payload: () => ({ role: 'editor' }) },
       { name: 'set its own role', method: 'PUT', url: (f) => `/api/spaces/${f.slug}/members/${f.otherId}`, payload: () => ({ role: 'viewer' }) },
@@ -524,6 +531,101 @@ describe('demo mode over HTTP', () => {
         expect(res.statusCode).toBe(403);
         expect(res.json().error).toMatch(DEMO_MSG);
       }
+    });
+
+    describe('publishing is allowed in the demo (owner decision 14.10), except hostnames and the public Ask', () => {
+      const HOSTNAMES_MSG = /Subdomains and custom domains are disabled in the public demo/;
+      type Visibility = 'public' | 'instance' | 'private';
+      type Settings = { subdomain: string | null; domain: string | null; allowDownload: boolean; allowAssistant: boolean };
+      const setVisibility = (cookie: string, slug: string, visibility: Visibility) =>
+        app.inject({ method: 'PATCH', url: `/api/spaces/${slug}`, headers: { cookie }, payload: { visibility } });
+      const putSettings = (cookie: string, slug: string, over: Partial<Settings> = {}) =>
+        app.inject({
+          method: 'PUT',
+          url: `/api/spaces/${slug}/public-settings`,
+          headers: { cookie },
+          payload: { subdomain: null, domain: null, allowDownload: true, allowAssistant: false, ...over },
+        });
+      const getSettings = (cookie: string, slug: string) => app.inject({ method: 'GET', url: `/api/spaces/${slug}/public-settings`, headers: { cookie } });
+      const anonymousSite = (slug: string) => app.inject({ method: 'GET', url: `/api/public/spaces/${slug}` });
+
+      it('a demo account that administers a space can publish it, change the site settings and take it down again', async () => {
+        const f = await freshSpace();
+        expect((await anonymousSite(f.slug)).statusCode).toBe(404); // private to start with
+
+        const published = await setVisibility(demoSpaceAdminCookie, f.slug, 'public');
+        expect(published.statusCode).toBe(200);
+        expect(published.json()).toEqual({ slug: f.slug, visibility: 'public' });
+
+        const saved = await putSettings(demoSpaceAdminCookie, f.slug, { allowDownload: true });
+        expect(saved.statusCode).toBe(200);
+        expect(saved.json().visibility).toBe('public');
+        expect(saved.json().settings).toMatchObject({ subdomain: null, domain: null, allowDownload: true, allowAssistant: false });
+        expect(saved.json().urls.path).toContain(`/public/${f.slug}`);
+        expect((await getSettings(demoSpaceAdminCookie, f.slug)).statusCode).toBe(200);
+
+        const site = await anonymousSite(f.slug);
+        expect(site.statusCode).toBe(200);
+        expect(site.json()).toMatchObject({ space: f.slug, allowDownload: true, allowAssistant: false, mode: 'path' });
+
+        expect((await putSettings(demoSpaceAdminCookie, f.slug, { allowDownload: false })).statusCode).toBe(200);
+        expect((await anonymousSite(f.slug)).json().allowDownload).toBe(false);
+
+        const down = await setVisibility(demoSpaceAdminCookie, f.slug, 'instance');
+        expect(down.statusCode).toBe(200);
+        expect((await anonymousSite(f.slug)).statusCode).toBe(404);
+      });
+
+      it('the roles still decide: a demo account that is only an editor of the space cannot publish it', async () => {
+        const f = await freshSpace();
+        await authStore.setMembership(f.slug, demoSpaceAdminId, 'editor');
+        for (const res of [await setVisibility(demoSpaceAdminCookie, f.slug, 'public'), await putSettings(demoSpaceAdminCookie, f.slug)]) {
+          expect(res.statusCode).toBe(403);
+          expect(res.json().error).toMatch(/requires instance admin, or admin role in this space/);
+          expect(res.json().error).not.toMatch(DEMO_MSG);
+        }
+        expect((await anonymousSite(f.slug)).statusCode).toBe(404);
+      });
+
+      it('a subdomain or a custom domain is refused with 400 for everyone in demo mode (demo account and ordinary admin alike); nothing is saved', async () => {
+        const f = await freshSpace();
+        expect((await setVisibility(demoSpaceAdminCookie, f.slug, 'public')).statusCode).toBe(200);
+        for (const cookie of [demoSpaceAdminCookie, realSpaceAdminCookie]) {
+          for (const over of [{ subdomain: 'docs' }, { domain: 'docs.example.com' }, { subdomain: 'docs', domain: 'docs.example.com' }]) {
+            const res = await putSettings(cookie, f.slug, over);
+            expect(res.statusCode).toBe(400);
+            expect(res.json().error).toMatch(HOSTNAMES_MSG);
+          }
+        }
+        const state = (await getSettings(demoSpaceAdminCookie, f.slug)).json();
+        expect(state.settings).toMatchObject({ subdomain: null, domain: null });
+        // The same body without hostnames is fine.
+        expect((await putSettings(demoSpaceAdminCookie, f.slug, { allowDownload: false })).statusCode).toBe(200);
+      });
+
+      it('outside demo mode the hostname refusal is gone (a custom domain saves) and publishing is unchanged', async () => {
+        setDemoEnv({});
+        const f = await freshSpace();
+        expect((await setVisibility(demoSpaceAdminCookie, f.slug, 'public')).statusCode).toBe(200);
+        const domain = `docs-${randomBytes(4).toString('hex')}.example.com`;
+        const res = await putSettings(demoSpaceAdminCookie, f.slug, { domain });
+        expect(res.statusCode).toBe(200);
+        expect(res.json().settings.domain).toBe(domain);
+        // A subdomain may still fail for the ordinary reason (no PUBLIC_SITES_DOMAIN), never for the demo one.
+        expect((await putSettings(demoSpaceAdminCookie, f.slug, { domain, subdomain: 'docs' })).body).not.toMatch(HOSTNAMES_MSG);
+      });
+
+      it('the public Ask stays off in the demo, even on a published space', async () => {
+        const f = await freshSpace();
+        expect((await setVisibility(demoSpaceAdminCookie, f.slug, 'public')).statusCode).toBe(200);
+        // allowAssistant is forced off in the demo (the runs are refused for everyone there), so the site never shows an Ask button that answers 403.
+        const askOn = await putSettings(demoSpaceAdminCookie, f.slug, { allowAssistant: true });
+        expect(askOn.statusCode).toBe(200);
+        expect(askOn.json().settings.allowAssistant).toBe(false);
+        const ask = await app.inject({ method: 'POST', url: `/api/public/spaces/${f.slug}/assistant/runs`, payload: { question: 'What is this?' } });
+        expect(ask.statusCode).toBe(403);
+        expect(ask.json().error).toBe('The AI assistant is disabled in the public demo');
+      });
     });
   });
 

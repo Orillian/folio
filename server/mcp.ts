@@ -46,8 +46,9 @@ import { resolveTextLanguage } from './serverText.js';
 import type { PageIndexEntry } from './storage.js';
 import * as collab from './collab.js';
 import * as gitSync from './gitSync.js';
-import * as links from './links.js';
-import { searchPages, searchPublicSpace } from './search.js';
+import * as indexRead from './indexV2/read.js';
+import { userViewer, type PageViewer } from './accessSql.js';
+import { SEARCH_GRAMMAR_NOTE, searchPages, searchPublicSpace } from './search.js';
 import { getPublicSpace, isPublicPage, publicReadablePageIds } from './publicSites.js';
 import * as session from './auth/session.js';
 import { recordAudit } from './audit.js';
@@ -123,7 +124,7 @@ export const MCP_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
 export const FOLIO_MCP_INSTRUCTIONS = [
   'Folio is a team wiki: spaces hold pages (documents, whiteboards, data tables), stored as files in Git. Use these tools to find and read pages, and to create or edit them as the connected user.',
   '',
-  'Find, then read: call list_spaces, then search_pages (full text) or list_tree (page tree) to locate a page, then read_page by id. search and fetch do the same for clients that accept only those two tool names (ChatGPT deep research). resolve_folio_url turns a pasted Folio link into a page id. get_backlinks, page_history and page_at_sha show links and past versions.',
+  'Find, then read: call list_spaces, then search_pages (full text) or list_tree (page tree) to locate a page, then read_page by id. search and fetch do the same for clients that accept only those two tool names (ChatGPT deep research). resolve_folio_url turns a pasted Folio link into a page id. get_backlinks, page_history and page_at_sha show links and past versions. get_page_metadata gives a page\'s outline, tags, properties and links; list_unresolved_links and list_orphans find broken links and pages nothing links to.',
   '',
   'Write minimally: every write is committed to Git under the connected user, and update_page merges with live editing. Prefer changing only what was asked, create_page for new pages (set parentPath), and read the page again after writing to confirm. Before writing to a data table, call folio_table_schema and use its exact column ids and select/status options; then folio_table_insert / folio_table_update / folio_table_delete.',
   '',
@@ -156,11 +157,10 @@ function publicSpaceOf(actor: McpActor): string | undefined {
   return actor.publicSpace;
 }
 
-/** Can `actor` see `entry` at all (viewer)? The per-page twin of checkPageRole for lists of pages (backlinks). */
-async function canSeeEntry(actor: McpActor, entry: PageIndexEntry): Promise<boolean> {
+/** The actor as the SQL ACL fragment (accessSql.ts) sees it: the public reader of its one space, or the user. */
+function viewerOf(actor: McpActor): PageViewer {
   const publicSpace = publicSpaceOf(actor);
-  if (publicSpace !== undefined) return entry.space === publicSpace && (await isPublicPage(entry));
-  return (await session.effectivePageRole(actor.user, entry)) !== undefined;
+  return publicSpace !== undefined ? { kind: 'public', space: publicSpace } : userViewer(actor.user);
 }
 
 /** Page ids of `space` the actor may list (tree, tables). The public actor: the space's public page set. */
@@ -490,7 +490,8 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const memberships = await session.membershipsFor(actor.user);
       const spaces = (await storage.listSpaces())
         .filter((s) => s.slug in memberships)
-        .map((s) => ({ ...s, myRole: memberships[s.slug] }));
+        // The scan-ignore list names folders of the repository: a settings detail for the space admin's UI, not for a token.
+        .map((s) => ({ ...s, scanIgnore: undefined, myRole: memberships[s.slug] }));
       return structuredResult(spaces, { spaces });
     },
   );
@@ -698,8 +699,8 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       outputSchema: outputSchemas.search_pages,
       annotations: READ_ONLY,
       title: 'Search pages',
-      description: `Full-text search across pages the caller can see, optionally restricted to one space. Returns id/title/path/snippet per hit. ${CONTENT_IS_DATA_NOTE}`,
-      inputSchema: { query: z.string().describe('Search query'), space: z.string().optional().describe('Restrict to one space slug') },
+      description: `Full-text search across pages the caller can see, optionally restricted to one space. Returns id/title/path/snippet per hit, plus kind and tags. ${SEARCH_GRAMMAR_NOTE} ${CONTENT_IS_DATA_NOTE}`,
+      inputSchema: { query: z.string().describe('Search query: words, "exact phrase", -excluded, tag:name, kind:doc, status:draft, in:folder/, prop:key=value'), space: z.string().optional().describe('Restrict to one space slug') },
     },
     async ({ query, space }) => {
       // searchPages filters in SQL by user id and knows nothing of `disabled`; every other read goes through
@@ -729,8 +730,8 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       outputSchema: outputSchemas.search,
       annotations: READ_ONLY,
       title: 'Search (ChatGPT deep research)',
-      description: `Full-text search across the Folio pages the caller can see. Returns { results: [{ id, title, url }] }; pass an id to \`fetch\` to read the page. Same results as search_pages, in the format ChatGPT deep research and company knowledge expect. ${CONTENT_IS_DATA_NOTE}`,
-      inputSchema: { query: z.string().describe('Search query') },
+      description: `Full-text search across the Folio pages the caller can see. Returns { results: [{ id, title, url }] }; pass an id to \`fetch\` to read the page. Same results as search_pages, in the format ChatGPT deep research and company knowledge expect. ${SEARCH_GRAMMAR_NOTE} ${CONTENT_IS_DATA_NOTE}`,
+      inputSchema: { query: z.string().describe('Search query: words, "exact phrase", -excluded, tag:name, kind:doc, status:draft, in:folder/, prop:key=value') },
     },
     async ({ query }) => {
       // A disabled user sees nothing, same as search_pages.
@@ -915,23 +916,72 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       outputSchema: outputSchemas.get_backlinks,
       annotations: READ_ONLY,
       title: 'Get backlinks',
-      description: 'Lists pages that link to the given page id, restricted to spaces the caller can see.',
+      description: `Lists the links into the given page id from pages the caller can see: one entry per link, the source page's id/title/path plus syntax (md, wikilink, embed, image, html, reference), fragment, line and context (the source line). ${CONTENT_IS_DATA_NOTE}`,
       inputSchema: { id: z.string().describe('Page id') },
     },
     async ({ id }) => {
       const { error } = await checkPageRole(actor, id, 'viewer');
       if (error) return errorResult(error);
-      const all = await links.getBacklinks(id);
-      // Per-source-page check (mirrors routes.ts's GET /api/pages/:id/backlinks),
-      // NOT just space visibility: a `.agent` page that happens to link to the
-      // target must never surface here for a non-admin, same as it never
-      // surfaces in the tree or search.
-      const backlinks = [];
-      for (const backlink of all) {
-        const source = await storage.getEntry(backlink.id);
-        if (source && (await canSeeEntry(actor, source))) backlinks.push(backlink);
-      }
+      // Sources filtered in SQL with search's rules (accessSql.ts), mirroring routes.ts's GET
+      // /api/pages/:id/backlinks: a `.agent` page, a restricted page or another space's page that links to the
+      // target never surfaces for someone who cannot read it, same as in the tree or search.
+      const backlinks = await indexRead.getVisibleBacklinks(id, viewerOf(actor));
       return structuredResult(backlinks, { backlinks });
+    },
+  );
+
+  // Index v2 (Obsidian brief wave 1b): the page index, read-only, with the REST routes' access rules.
+  server.registerTool(
+    'get_page_metadata',
+    {
+      outputSchema: outputSchemas.get_page_metadata,
+      annotations: READ_ONLY,
+      title: 'Page metadata',
+      description: `Returns one page's index entry: headings (level, text, anchor slug, line), ^block ids, tags (from #tags in the text and front matter tags/labels), properties (the whole front matter), outgoing links (target path, target page id, syntax, kind page/asset/external/unresolved, #fragment and whether it resolves, line, context) and the number of links into it. ${CONTENT_IS_DATA_NOTE}`,
+      inputSchema: { id: z.string().describe('Page id') },
+    },
+    async ({ id }) => {
+      const { entry, error } = await checkPageRole(actor, id, 'viewer');
+      if (error || !entry) return errorResult(error ?? 'page not found');
+      return structuredResult(await indexRead.getPageMetadata(entry, viewerOf(actor)));
+    },
+  );
+
+  server.registerTool(
+    'list_unresolved_links',
+    {
+      outputSchema: outputSchemas.list_unresolved_links,
+      annotations: READ_ONLY,
+      title: 'List unresolved links',
+      description: `Lists the links in one space that point at no existing page (a missing file, a wikilink to a note nobody wrote), from pages the caller can see: source page, target path, syntax, fragment, line, context; sorted by target path, with the total count. ${CONTENT_IS_DATA_NOTE}`,
+      inputSchema: {
+        space: z.string().describe('Space slug'),
+        limit: z.number().int().optional().describe('Maximum number of links to return (1-500, default 100)'),
+        offset: z.number().int().optional().describe('Number of links to skip, for paging (default 0)'),
+      },
+    },
+    async ({ space, limit, offset }) => {
+      const err = await checkSpaceRole(actor, space, 'viewer');
+      if (err) return errorResult(err);
+      return structuredResult(
+        await indexRead.listUnresolvedLinks(space, viewerOf(actor), { limit: indexRead.clampUnresolvedLimit(limit), offset: indexRead.clampOffset(offset) }),
+      );
+    },
+  );
+
+  server.registerTool(
+    'list_orphans',
+    {
+      outputSchema: outputSchemas.list_orphans,
+      annotations: READ_ONLY,
+      title: 'List orphan pages',
+      description: 'Lists the pages of one space that no page the caller can see links to (the space home page, templates and .agent are never listed): id, path, title, last change.',
+      inputSchema: { space: z.string().describe('Space slug') },
+    },
+    async ({ space }) => {
+      const err = await checkSpaceRole(actor, space, 'viewer');
+      if (err) return errorResult(err);
+      return structuredResult({ pages: await indexRead.listOrphans(space, viewerOf(actor)) });
     },
   );
 

@@ -47,6 +47,7 @@ import type {
   DuplicatePageBody,
   CreatedApiToken,
   CreatePageBody,
+  CreateSavedSearchBody,
   CreateSpaceGitBody,
   DecideAccessRequestBody,
   GitCredentialInfo,
@@ -64,23 +65,35 @@ import type {
   PageHistoryEntry,
   PageChangeInfo,
   PageMeta,
+  PagePropertiesResponse,
   PublicAssistantConversation,
   PublicAssistantRunBody,
   PublicAssistantRunStarted,
   PublicPagePayload,
   PublicSiteInfo,
+  PutAppearanceBody,
   ReplaceFilePageResponse,
   RenamePageBody,
+  RenameTagBody,
+  RenameTagResult,
   RepoBranches,
   ResetToRemoteResponse,
+  SavedSearch,
+  SavedSearchesResponse,
   SearchHit,
   SendAssistantMessageBody,
   ShareLinkInfo,
   SharedPagePayload,
   SpaceInfo,
+  SpacePropertyTypesResponse,
+  SpaceTagsResponse,
+  SpaceWithVaultNote,
+  UpdateScanSettingsBody,
   SpaceGitInfo,
   SpacePublicSettings,
   SpacePublicSettingsResponse,
+  SpaceAppearanceResponse,
+  SiteAssetInfo,
   SpaceMemberInfo,
   SpaceRole,
   SpaceVisibility,
@@ -93,12 +106,15 @@ import type {
   TableColumn,
   TableRow,
   TableView,
+  TagPagesResponse,
   TrashListResponse,
   TrashRestoreResponse,
   TreeNode,
   UiLanguage,
   UpdatePageBody,
   UpdatePageAccessBody,
+  UpdatePagePropertiesBody,
+  UpdatePropertyTypesBody,
   UndoPageChangeResponse,
   User,
   UserAccessResponse,
@@ -315,6 +331,9 @@ async function publicRequest<T>(input: string, init: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** GET /api/pages/:id/properties (`etag` — sha1 of the front matter block, null for a file without one — goes back as the PUT's lock). */
+export type PagePropertiesPayload = PagePropertiesResponse;
+
 /**
  * Tree response, loosely typed: the DEV-PLAN leaves it up to the server
  * whether the space-root index page is exposed as `tree[0]` or as a
@@ -381,7 +400,7 @@ export const api = {
 
   /** Round 3: empty space (name only) or git-backed (repoUrl/branch/rootPath/token) — same endpoint, richer body. */
   createSpace: (body: CreateSpaceGitBody) =>
-    request<SpaceInfo>('/api/spaces', { method: 'POST', body: JSON.stringify(body) }),
+    request<SpaceWithVaultNote>('/api/spaces', { method: 'POST', body: JSON.stringify(body) }),
 
   getSpaceImportProgress: (id: string) =>
     request<import('@shared/contracts').SpaceImportProgress>(`/api/spaces/import-progress/${encodeURIComponent(id)}`),
@@ -573,8 +592,60 @@ export const api = {
 
   deletePage: (id: string) => request<{ ok: true }>(`/api/pages/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  search: (q: string, space: string) =>
-    request<{ hits: SearchHit[] }>(`/api/search?q=${encodeURIComponent(q)}&space=${encodeURIComponent(space)}`),
+  /**
+   * GET /api/search — `q` may carry the v2 operators (tag:, kind:, status:, in:, prop:, "phrase", -word; see SearchQueryAst in contracts.ts).
+   * An empty `space` searches every space the caller can see; `limit`/`offset` page the hits.
+   */
+  search: (q: string, space: string, options: { limit?: number; offset?: number } = {}) =>
+    request<{ hits: SearchHit[] }>(
+      `/api/search?q=${encodeURIComponent(q)}&space=${encodeURIComponent(space)}${queryString(options).replace('?', '&')}`,
+    ),
+
+  // ---------- Obsidian wave 3: properties (front matter), tags, saved searches ----------
+
+  /** GET /api/pages/:id/properties — viewer+. */
+  getPageProperties: (id: string) => request<PagePropertiesPayload>(`/api/pages/${encodeURIComponent(id)}/properties`),
+
+  /**
+   * PUT /api/pages/:id/properties — editor+; replaces the editable keys with `properties` (a missing key is removed, `id` never changes).
+   * 409 = the front matter changed since `etag` was read. The answer is the page's new state (same shape as the GET) when the server sends it.
+   */
+  updatePageProperties: (id: string, body: UpdatePagePropertiesBody) =>
+    request<PagePropertiesPayload | undefined>(`/api/pages/${encodeURIComponent(id)}/properties`, { method: 'PUT', body: JSON.stringify(body) }),
+
+  /** GET /api/spaces/:space/property-types — viewer+; the space's typed keys, where they came from, and every key seen in its front matter. */
+  getSpacePropertyTypes: (space: string) =>
+    request<SpacePropertyTypesResponse>(`/api/spaces/${encodeURIComponent(space)}/property-types`),
+
+  /** PUT /api/spaces/:space/property-types — space admin; writes `.folio/properties.json` (one commit). */
+  updateSpacePropertyTypes: (space: string, body: UpdatePropertyTypesBody) =>
+    request<SpacePropertyTypesResponse>(`/api/spaces/${encodeURIComponent(space)}/property-types`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  /** GET /api/spaces/:space/tags — viewer+; every tag the caller can see with its page count. */
+  getSpaceTags: (space: string) => request<SpaceTagsResponse>(`/api/spaces/${encodeURIComponent(space)}/tags`),
+
+  /** GET /api/spaces/:space/tags/:tag/pages — the pages carrying a tag (children included); `/` of the tag stays a path separator. */
+  getTagPages: (space: string, tag: string, options: { limit?: number; offset?: number } = {}) =>
+    request<TagPagesResponse>(
+      `/api/spaces/${encodeURIComponent(space)}/tags/${tag.split('/').map(encodeURIComponent).join('/')}/pages${queryString(options)}`,
+    ),
+
+  /** POST /api/spaces/:space/tags/rename — editor+; one commit rewrites `#from` (and `#from/…`) in every page the caller may edit. */
+  renameTag: (space: string, body: RenameTagBody) =>
+    request<RenameTagResult>(`/api/spaces/${encodeURIComponent(space)}/tags/rename`, { method: 'POST', body: JSON.stringify(body) }),
+
+  /** GET /api/me/saved-searches. */
+  listSavedSearches: () => request<SavedSearchesResponse>('/api/me/saved-searches'),
+
+  /** POST /api/me/saved-searches — at most 50 per user. */
+  createSavedSearch: (body: CreateSavedSearchBody) =>
+    request<SavedSearch>('/api/me/saved-searches', { method: 'POST', body: JSON.stringify(body) }),
+
+  /** DELETE /api/me/saved-searches/:id → 204. */
+  deleteSavedSearch: (id: string) => request<void>(`/api/me/saved-searches/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   resolve: (space: string, path: string) =>
     request<PageMeta>(`/api/resolve?space=${encodeURIComponent(space)}&path=${encodeURIComponent(path)}`),
@@ -776,6 +847,17 @@ export const api = {
       body: JSON.stringify({ assetMode }),
     }),
 
+  /**
+   * PATCH /api/spaces/:space/scan-settings (space admin) — the space's extra
+   * scan-ignore list and its light-footprint flag. A changed list rescans the
+   * space before the answer. Callers re-fetch ['spaces'] (and the tree).
+   */
+  updateScanSettings: (space: string, body: UpdateScanSettingsBody) =>
+    request<{ slug: string; pageCount: number; scanIgnore: string[]; lightFootprint: boolean }>(`/api/spaces/${encodeURIComponent(space)}/scan-settings`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
   // ---------- templates (round 5, create-from-template) ----------
 
   /**
@@ -939,6 +1021,34 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+
+  // ---------- space appearance: `.folio/` in the repository (site.json, site.css, export.css, PDF header/footer, assets/) ----------
+
+  /** GET /api/spaces/:space/appearance — space admin; the five files with their etags, the assets and the repo link base. */
+  getSpaceAppearance: (space: string) => request<SpaceAppearanceResponse>(`/api/spaces/${encodeURIComponent(space)}/appearance`),
+
+  /**
+   * PUT /api/spaces/:space/appearance — one commit for all changes; each carries the etag the client last saw. A mismatch is a 409
+   * `appearance file changed in the repository` whose body holds the current state (read it off `ApiError.body`).
+   */
+  putSpaceAppearance: (space: string, body: PutAppearanceBody) =>
+    request<SpaceAppearanceResponse>(`/api/spaces/${encodeURIComponent(space)}/appearance`, { method: 'PUT', body: JSON.stringify(body) }),
+
+  /** POST /api/spaces/:space/appearance/assets?name=&replace= — the file as the raw body with its own Content-Type; 409 when the name exists and `replace` is not set. */
+  uploadSpaceAsset: (space: string, file: Blob & { name?: string }, options: { name?: string; replace?: boolean } = {}) => {
+    const name = options.name ?? file.name ?? '';
+    const params = new URLSearchParams({ name });
+    if (options.replace) params.set('replace', '1');
+    return request<SiteAssetInfo>(`/api/spaces/${encodeURIComponent(space)}/appearance/assets?${params.toString()}`, {
+      method: 'POST',
+      headers: { 'content-type': file.type || 'application/octet-stream' },
+      body: file,
+    });
+  },
+
+  /** DELETE /api/spaces/:space/appearance/assets/:name → 204. */
+  deleteSpaceAsset: (space: string, name: string) =>
+    request<void>(`/api/spaces/${encodeURIComponent(space)}/appearance/assets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
   /** GET /api/public/spaces/:slug — anonymous; 404 unless the space is public. `mode: 'path'`. */
   getPublicSite: (slug: string) => publicGet<PublicSiteInfo>(`/api/public/spaces/${encodeURIComponent(slug)}`),

@@ -1,10 +1,11 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { Outlet, useLocation, useParams } from 'react-router';
 import { Sidebar } from './sidebar/Sidebar';
 import { Header } from './header/Header';
 import { ConflictBanner } from './git/ConflictBanner';
 import { DemoBanner } from './DemoBanner';
 import { QuickSwitcher } from './switcher/QuickSwitcher';
+import { SEARCH_REQUEST_EVENT, type SearchRequestDetail } from '../markdown/searchEvent';
 import { useLocalStorage } from './hooks';
 import { SetPagePresenceContext, type PagePresencePerson } from './presence';
 import { rememberLastSpace } from './lastSpace';
@@ -73,6 +74,12 @@ export function Shell() {
   const [headerInfo, setHeaderInfo] = useState<HeaderInfo | null>(null);
   const [pagePresence, setPagePresence] = useState<PagePresencePerson[] | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  // The switcher's starting query: empty for Cmd+K and the header button; `tag:<tag>` when a `#tag` chip in a page asks for a search (markdown/searchEvent.ts) or the sidebar's Tags section opens it.
+  const [switcherQuery, setSwitcherQuery] = useState('');
+  const openSwitcher = useCallback((query = '') => {
+    setSwitcherQuery(query);
+    setSwitcherOpen(true);
+  }, []);
 
   // "Where was I": /admin/access and /trash both link back to `/`, and
   // RootRedirect used to send everyone to the FIRST space regardless of where
@@ -82,6 +89,15 @@ export function Shell() {
     rememberLastSpace(space);
   }, [space]);
 
+  useEffect(() => {
+    function onSearchRequest(event: Event) {
+      setSwitcherQuery((event as CustomEvent<SearchRequestDetail>).detail?.query ?? '');
+      setSwitcherOpen(true);
+    }
+    window.addEventListener(SEARCH_REQUEST_EVENT, onSearchRequest);
+    return () => window.removeEventListener(SEARCH_REQUEST_EVENT, onSearchRequest);
+  }, []);
+
   // Global Cmd+K (Mac) / Ctrl+K (other) — opens the quick switcher from
   // anywhere in the shell, including while focus is inside a text input
   // (matches Notion/Linear-style palettes; also pre-empts the browser's own
@@ -90,7 +106,7 @@ export function Shell() {
     function handleKeyDown(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        setSwitcherOpen(true);
+        openSwitcher();
         return;
       }
       // Cmd+B / Ctrl+B: toggle the sidebar (owner, 15.09; Alt+T below is the
@@ -124,7 +140,7 @@ export function Shell() {
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keydown', handleAltT, true);
     };
-  }, [setCollapsed]);
+  }, [setCollapsed, openSwitcher]);
 
   // Closes the <md drawer on every navigation, regardless of which of the
   // many click handlers scattered across Sidebar/PageTree/TreeRow/
@@ -141,6 +157,7 @@ export function Shell() {
         desktopCollapsed={collapsed}
         mobileOpen={mobileSidebarOpen}
         onMobileClose={() => setMobileSidebarOpen(false)}
+        onOpenSwitcher={openSwitcher}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <DemoBanner />
@@ -158,7 +175,7 @@ export function Shell() {
             setCollapsed((c) => !c);
             setMobileSidebarOpen((o) => !o);
           }}
-          onOpenSwitcher={() => setSwitcherOpen(true)}
+          onOpenSwitcher={() => openSwitcher()}
         />
         <ConflictBanner space={space} />
         {/* min-h-0 alongside flex-1: without it, a flex item's automatic
@@ -177,7 +194,7 @@ export function Shell() {
           </SetHeaderInfoContext.Provider>
         </main>
       </div>
-      {switcherOpen && <QuickSwitcher space={space} onClose={() => setSwitcherOpen(false)} />}
+      {switcherOpen && <QuickSwitcher space={space} initialQuery={switcherQuery} onClose={() => setSwitcherOpen(false)} />}
       <OfflineRuntime />
     </div>
   );

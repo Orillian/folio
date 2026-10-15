@@ -1,114 +1,26 @@
 /**
- * Backlinks (beyond the DEV-PLAN text — coordinator addendum for round 4).
- * Extracts markdown links from a doc's body and mirrors them into the
- * `links` table: delete+reinsert per source page, called from storage.ts's
- * scanSpace (boot/rescan) and patchEntryContent (every write-back/mutation).
+ * Links between pages: the rename/move REWRITERS and the internal backlink
+ * reads that drive them. Indexing lives in server/indexV2 (index v2, Obsidian
+ * brief wave 1b): one mdast parse per page writes typed rows into
+ * `page_links` (md, wikilink, embed, image, html, reference — with fragment,
+ * line and context), and a second, set-based phase per space resolves them
+ * (indexV2/store.ts resolveLinks). The legacy `links` relation is a VIEW over
+ * `page_links` (migration 042) kept for old readers; nothing writes it.
  *
- * Link classification, resolved against the source page's own directory
- * (same relative-path semantics as storage.ts's resolve()):
- *  - absolute URI scheme (http:, https:, mailto:, ...) -> 'external'
- *  - root-relative ("/...") -> 'external' (not resolvable against a space tree)
- *  - relative, resolves to a known page (.md path, or "<dir>/index.md" for a
- *    directory-style link) -> 'page', target_page_id set
- *  - relative .md path that does NOT resolve to a known page -> 'broken'
- *  - any other relative path (image, asset, etc.) -> 'asset'
- *
- * Not a full CommonMark parser — a pragmatic `[text](href "title")` /
- * `![alt](src)` regex, matching the level of markdown handling already used
- * elsewhere in this codebase (see storage.ts's extractH1).
+ * The rewriters keep their `[text](href)` regex and wikilinks.ts's parser, but
+ * take "what is code" from the same mdast parse as the index
+ * (markdownAst.maskCode): a link inside a fenced, indented or inline code span
+ * is neither indexed nor rewritten. Classification of a link target (page /
+ * asset / external / unresolved) is indexV2/resolve.ts, shared by both phases.
  */
 import type { PageMeta } from '../shared/contracts.js';
-import { query, queryOne, withTransaction } from './db/pool.js';
+import { query } from './db/pool.js';
+import { resolveRelative, tolerantLinkPaths } from './indexV2/resolve.js';
+import { buildPagePathIndex, maskCode, rewriteWikilinks, type PagePathIndex } from './wikilinks.js';
 
-const LINK_RE = /\[[^\]]*\]\(([^)]+)\)/g;
+export { tolerantLinkPaths };
+
 const ORDER_SENTINEL = Number.MAX_SAFE_INTEGER;
-
-function posixParent(p: string): string {
-  const i = p.lastIndexOf('/');
-  return i === -1 ? '' : p.slice(0, i);
-}
-
-/**
- * Same ".." collapsing as storage.ts's normalizeResolvePath, but never
- * throws — a malformed/escaping link is classified 'broken' instead of
- * aborting the whole reindex.
- */
-function resolveRelative(baseDir: string, href: string): string | null {
-  const segments = baseDir ? baseDir.split('/') : [];
-  for (const seg of href.split('/')) {
-    if (seg === '' || seg === '.') continue;
-    if (seg === '..') {
-      if (segments.length === 0) return null;
-      segments.pop();
-    } else {
-      segments.push(seg);
-    }
-  }
-  return segments.join('/');
-}
-
-function extractHrefs(body: string): string[] {
-  const hrefs: string[] = [];
-  const re = new RegExp(LINK_RE);
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(body)) !== null) {
-    const raw = m[1].trim();
-    const first = raw.split(/\s+/)[0]; // drop an optional CommonMark `"title"` suffix
-    if (first) hrefs.push(first);
-  }
-  return hrefs;
-}
-
-interface ParsedLink {
-  targetPath: string;
-  kind: 'page' | 'asset' | 'external' | 'broken';
-  targetPageId: string | null;
-}
-
-async function classify(space: string, sourceDir: string, hrefRaw: string): Promise<ParsedLink | null> {
-  let href = hrefRaw;
-  const hashIdx = href.indexOf('#');
-  if (hashIdx !== -1) href = href.slice(0, hashIdx);
-  const qIdx = href.indexOf('?');
-  if (qIdx !== -1) href = href.slice(0, qIdx);
-  if (!href) return null; // pure #fragment link within the same page: not backlink-worthy
-
-  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return { targetPath: hrefRaw, kind: 'external', targetPageId: null };
-  if (href.startsWith('/')) return { targetPath: hrefRaw, kind: 'external', targetPageId: null };
-
-  const resolved = resolveRelative(sourceDir, href);
-  if (resolved === null) return { targetPath: hrefRaw, kind: 'broken', targetPageId: null };
-
-  const isMdPath = /\.md$/i.test(resolved);
-  const candidates = isMdPath ? [resolved] : [resolved, resolved ? `${resolved}/index.md` : 'index.md'];
-  for (const candidate of candidates) {
-    const row = await queryOne<{ id: string }>('SELECT id FROM pages_index WHERE space_slug = $1 AND path = $2', [space, candidate]);
-    if (row) return { targetPath: resolved, kind: 'page', targetPageId: row.id };
-  }
-  return { targetPath: resolved, kind: isMdPath ? 'broken' : 'asset', targetPageId: null };
-}
-
-export async function reindexPageLinks(sourcePageId: string, space: string, sourceRelPath: string, body: string): Promise<void> {
-  const sourceDir = posixParent(sourceRelPath);
-  const hrefs = extractHrefs(body);
-  const parsed: ParsedLink[] = [];
-  for (const href of hrefs) {
-    const link = await classify(space, sourceDir, href);
-    if (link) parsed.push(link);
-  }
-
-  await withTransaction(async (client) => {
-    await client.query('DELETE FROM links WHERE source_page_id = $1', [sourcePageId]);
-    for (const link of parsed) {
-      await client.query('INSERT INTO links (source_page_id, target_page_id, target_path, kind) VALUES ($1, $2, $3, $4)', [
-        sourcePageId,
-        link.targetPageId,
-        link.targetPath,
-        link.kind,
-      ]);
-    }
-  });
-}
 
 interface BacklinkRow {
   id: string;
@@ -140,21 +52,75 @@ function relativeHref(fromDir: string, toPath: string): string {
   return [...Array(ups).fill('..'), ...downParts].join('/');
 }
 
-const LINK_RE_CAPTURED = /(\[[^\]]*\])\(([^)]+)\)/g;
+const LINK_RE_CAPTURED = /(\[[^\]]*\])\(([^)]+)\)/gd;
+
+/**
+ * Applies `fn` to every markdown link `[text](href)` of `body` that is not
+ * inside code, splicing the results back so every other byte of the file is
+ * kept. `fn` receives the link as written and its two captured parts (also as
+ * written, code spans in the text included) and returns the text to put in its
+ * place — the same string to leave it. The SAME `body` string comes back when
+ * nothing changed.
+ */
+function mapMarkdownLinks(body: string, fn: (full: string, bracketText: string, hrefRaw: string) => string): string {
+  const masked = maskCode(body);
+  const re = new RegExp(LINK_RE_CAPTURED);
+  let out = '';
+  let cursor = 0;
+  let changed = false;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(masked)) !== null) {
+    const full = body.slice(m.index, m.index + m[0].length);
+    const replaced = fn(full, body.slice(m.indices![1][0], m.indices![1][1]), body.slice(m.indices![2][0], m.indices![2][1]));
+    if (replaced === full) continue;
+    out += body.slice(cursor, m.index) + replaced;
+    cursor = m.index + m[0].length;
+    changed = true;
+  }
+  return changed ? out + body.slice(cursor) : body;
+}
+
+/**
+ * What the wikilink rewriters need beyond the body: the space's page paths
+ * before and after the change (a wikilink's meaning depends on which other
+ * pages exist — a bare name is resolved against the whole space). Without it
+ * wikilinks are left alone and only markdown links are rewritten.
+ */
+export interface WikiMoveContext {
+  oldIndex: PagePathIndex;
+  newIndex: PagePathIndex;
+  /** The folder the doc lived in before the change, when it moved along (a directory rename); omitted = it did not move. */
+  sourceOldDir?: string;
+}
+
+/** The indexes for a change described by `movedFiles` (old path -> new path) and `movedDirs`: the current pages are the "after", the "before" is derived by undoing the moves. */
+export async function loadWikiMoveContext(
+  space: string,
+  movedFiles: ReadonlyMap<string, string>,
+  movedDirs: ReadonlyMap<string, string> = new Map(),
+): Promise<WikiMoveContext & { oldPathOf: (newPath: string) => string }> {
+  const rows = await query<{ path: string }>('SELECT path FROM pages_index WHERE space_slug = $1', [space]);
+  const reverseFiles = new Map([...movedFiles].map(([from, to]) => [to, from] as const));
+  const reverseDirs = new Map([...movedDirs].map(([from, to]) => [to, from] as const));
+  const oldPathOf = (newPath: string) => mapMovedPath(newPath, reverseFiles, reverseDirs);
+  const paths = rows.map((r) => r.path);
+  return { newIndex: buildPagePathIndex(paths), oldIndex: buildPagePathIndex(paths.map(oldPathOf)), oldPathOf };
+}
 
 /**
  * Rewrites relative-markdown-link hrefs in `body` that resolve (from
  * `sourceDir`) to `oldTargetRelPath` so they instead resolve to
  * `newTargetRelPath` — used by collab.ts's slug-rename orchestration (round
  * 22) to keep every INCOMING link pointing at a renamed page/directory
- * working. `[[`-picked links are NOT a separate syntax to handle here:
- * per web/src/editor/wikilink.ts, `[[` is only an editor input affordance —
- * picking an entry always writes an ordinary relative markdown link, so the
- * file on disk never contains literal `[[...]]`. Mirrors classify()'s own
+ * working. Obsidian wikilinks (`[[old-name]]`, `[[folder/old-name|alias]]`,
+ * `![[old-name]]`) are rewritten too when `wiki` is given — resolved the way
+ * wikilinks.ts resolves them, and re-aimed in their own form with the
+ * `#heading` / `#^block` / `|alias` tail kept. Folio itself never writes
+ * `[[`; they come from files written elsewhere. Mirrors the index's own
  * resolution rules exactly, including its asymmetric "an implicit bare-
  * directory link only ever resolves to `<dir>/index.md`, never README.md"
- * rule — so a link this function leaves untouched is provably one classify()
- * would also never have counted as a 'page' link to this target in the
+ * rule — so a link this function leaves untouched is provably one the index
+ * (indexV2/resolve.ts) would also never have counted as a 'page' link to this target in the
  * first place (and thus never surfaced via getBacklinks() at all).
  *
  * Correct even when `sourceDir` is itself one of a directory rename's own
@@ -170,13 +136,18 @@ const LINK_RE_CAPTURED = /(\[[^\]]*\])\(([^)]+)\)/g;
  * preserved verbatim. Returns the SAME string reference when nothing
  * changed, so callers can cheaply skip a no-op write.
  */
-export function rewriteRelativeLinks(body: string, sourceDir: string, oldTargetRelPath: string, newTargetRelPath: string): string {
+export function rewriteRelativeLinks(
+  body: string,
+  sourceDir: string,
+  oldTargetRelPath: string,
+  newTargetRelPath: string,
+  wiki?: WikiMoveContext,
+): string {
   const oldIsIndexMd = /(^|\/)index\.md$/i.test(oldTargetRelPath);
   const oldDirForImplicit = oldIsIndexMd ? oldTargetRelPath.slice(0, -'/index.md'.length) : null;
   const newDirForImplicit = oldIsIndexMd ? newTargetRelPath.slice(0, -'/index.md'.length) : null;
 
-  let changed = false;
-  const rewritten = body.replace(LINK_RE_CAPTURED, (full: string, bracketText: string, hrefRaw: string) => {
+  const rewritten = mapMarkdownLinks(body, (full: string, bracketText: string, hrefRaw: string) => {
     const trimmed = hrefRaw.trim();
     const spaceIdx = trimmed.search(/\s/);
     const pathPart = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
@@ -211,11 +182,18 @@ export function rewriteRelativeLinks(body: string, sourceDir: string, oldTargetR
     }
     if (newHrefPath === null) return full;
 
-    changed = true;
     return `${bracketText}(${newHrefPath}${queryStr}${hash}${titleSuffix})`;
   });
 
-  return changed ? rewritten : body;
+  if (!wiki) return rewritten;
+  return rewriteWikilinks(rewritten, {
+    oldDir: wiki.sourceOldDir ?? sourceDir,
+    newDir: sourceDir,
+    oldIndex: wiki.oldIndex,
+    newIndex: wiki.newIndex,
+    mapTarget: (oldTarget) => (oldTarget === oldTargetRelPath ? newTargetRelPath : oldTarget),
+    onlyTarget: oldTargetRelPath,
+  });
 }
 
 /** Where a path ends up after a move: an exact file match, or anything under a moved directory (its prefix swapped). Unmoved paths come back as-is. */
@@ -243,7 +221,8 @@ function mapMovedPath(p: string, movedFiles: ReadonlyMap<string, string>, movedD
  * Handles a doc that moved, a doc that only links to something that moved
  * (`oldDir === newDir`), or both at once. Scheme:/root-relative/pure-#fragment
  * hrefs are untouched; `?query`, `#hash` and a `"title"` suffix are
- * preserved. Returns the SAME string reference when nothing changed.
+ * preserved. Wikilinks follow when `wiki` is given (see rewriteRelativeLinks).
+ * Returns the SAME string reference when nothing changed.
  */
 export function rebaseRelativeLinks(
   body: string,
@@ -251,9 +230,9 @@ export function rebaseRelativeLinks(
   newDir: string,
   movedFiles: ReadonlyMap<string, string>,
   movedDirs: ReadonlyMap<string, string> = new Map(),
+  wiki?: Pick<WikiMoveContext, 'oldIndex' | 'newIndex'>,
 ): string {
-  let changed = false;
-  const rewritten = body.replace(LINK_RE_CAPTURED, (full: string, bracketText: string, hrefRaw: string) => {
+  const rewritten = mapMarkdownLinks(body, (full: string, bracketText: string, hrefRaw: string) => {
     const trimmed = hrefRaw.trim();
     const spaceIdx = trimmed.search(/\s/);
     const pathPart = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
@@ -283,33 +262,45 @@ export function rebaseRelativeLinks(
 
     let newHref = relativeHref(newDir, target) || '.';
     if (p.endsWith('/') && !newHref.endsWith('/')) newHref += '/';
-    changed = true;
     return `${bracketText}(${newHref}${queryStr}${hash}${titleSuffix})`;
   });
-  return changed ? rewritten : body;
+  if (!wiki) return rewritten;
+  // A wikilink needs no change when its text still resolves to the target's new place (a bare `[[page]]` after a move almost always does); a path-style one follows its target or its moving source.
+  return rewriteWikilinks(rewritten, {
+    oldDir,
+    newDir,
+    oldIndex: wiki.oldIndex,
+    newIndex: wiki.newIndex,
+    mapTarget: (oldTarget) => mapMovedPath(oldTarget, movedFiles, movedDirs),
+  });
 }
 
 /**
  * Belt-and-braces candidate sources for a move/rename: every doc in `space`
  * whose indexed text mentions the file name (or, for an index page, the
- * directory name) of any of `relPaths`, plus the base names of `dirs`. The links table can lag behind the
- * files (a link recorded 'broken' when its target was not indexed yet), so the
- * backlink list alone may miss a source; the rewriters are no-ops on a doc
+ * directory name) of any of `relPaths`, plus the base names of `dirs`. The link
+ * index can lag behind the files (a source whose save is still debounced), so
+ * the backlink list alone may miss a source; the rewriters are no-ops on a doc
  * where nothing resolves to a moved path, so over-selecting is harmless.
  */
 export async function findDocsMentioning(space: string, relPaths: string[], dirs: string[] = []): Promise<string[]> {
   const names = new Set<string>(dirs.map((d) => d.split('/').pop() ?? '').filter(Boolean));
+  // A wikilink names a page without its extension (`[[Old name]]`): candidates for those must also hold a `[[`, so a short stem does not drag in the whole space.
+  const stems = new Set<string>();
   for (const rel of relPaths) {
     const parts = rel.split('/');
     const file = parts[parts.length - 1];
     if (file) names.add(file);
     if (/^(index|readme)\.md$/i.test(file) && parts.length > 1) names.add(parts[parts.length - 2]);
+    else if (/\.md$/i.test(file) && file.length > '.md'.length) stems.add(file.slice(0, -'.md'.length));
   }
-  if (names.size === 0) return [];
-  const patterns = [...names].map((n) => `%${n.replace(/[\\%_]/g, '\\$&')}%`);
+  if (names.size === 0 && stems.size === 0) return [];
+  const like = (n: string) => `%${n.replace(/[\\%_]/g, '\\$&')}%`;
   const rows = await query<{ id: string }>(
-    `SELECT id FROM pages_index WHERE space_slug = $1 AND kind = 'doc' AND plain_text ILIKE ANY($2::text[])`,
-    [space, patterns],
+    `SELECT id FROM pages_index
+      WHERE space_slug = $1 AND kind = 'doc'
+        AND (plain_text ILIKE ANY($2::text[]) OR (plain_text LIKE '%[[%' AND plain_text ILIKE ANY($3::text[])))`,
+    [space, [...names].map(like), [...stems].map(like)],
   );
   return rows.map((r) => r.id);
 }
@@ -319,7 +310,7 @@ export async function getAssetLinkSources(space: string, dir: string): Promise<s
   if (!dir) return [];
   const rows = await query<{ id: string }>(
     `SELECT DISTINCT p.id
-       FROM links l
+       FROM page_links l
        JOIN pages_index p ON p.id = l.source_page_id
       WHERE p.space_slug = $1 AND l.kind = 'asset'
         AND (l.target_path = $2 OR left(l.target_path, length($2) + 1) = $2 || '/')`,
@@ -328,13 +319,18 @@ export async function getAssetLinkSources(space: string, dir: string): Promise<s
   return rows.map((r) => r.id);
 }
 
-/** Every page that links TO `targetPageId` (kind='page' links only). No visibility filtering here — callers (routes.ts) intersect with the caller's visible spaces. */
+/**
+ * Every page that links TO `targetPageId` (resolved page links only), one entry
+ * per page. INTERNAL: no visibility filtering — the rename/move orchestration
+ * uses it to pick the documents to rewrite. Anything shown to a caller goes
+ * through indexV2/read.ts getVisibleBacklinks (the SQL ACL fragment).
+ */
 export async function getBacklinks(targetPageId: string): Promise<PageMeta[]> {
   const rows = await query<BacklinkRow>(
     `SELECT DISTINCT p.id, p.space_slug, p.path, p.kind, p.title, p.sort_order, p.status, p.updated_at
-       FROM links l
+       FROM page_links l
        JOIN pages_index p ON p.id = l.source_page_id
-      WHERE l.target_page_id = $1
+      WHERE l.target_page_id = $1 AND l.kind = 'page'
       ORDER BY p.title`,
     [targetPageId],
   );

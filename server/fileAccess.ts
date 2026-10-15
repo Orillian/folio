@@ -249,6 +249,15 @@ async function mayReadFromPageSet(
   for (const batch of sourceBatches) {
     if (await anyReferences(await batch(), relPath)) return true;
   }
+  // A file the index resolved BY NAME (`![[diagram.png]]` found in `attachments/`) is not the path as written in the
+  // page, yet the page does reference it: the index's resolved target of a page of the set counts too.
+  if (allowedIds.size > 0) {
+    const rows = await query<{ n: number }>(
+      `SELECT 1 AS n FROM page_links WHERE source_page_id = ANY($1::text[]) AND target_path = $2 AND kind IN ('asset', 'page') LIMIT 1`,
+      [[...allowedIds], relPath],
+    );
+    if (rows.length > 0) return true;
+  }
   return false;
 }
 

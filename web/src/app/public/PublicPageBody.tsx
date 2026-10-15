@@ -99,8 +99,8 @@ export function PublicPageBody({ site, page }: PublicPageBodyProps) {
   return (
     <>
       {page.cover && <img src={page.cover} alt="" className="h-40 w-full object-cover sm:h-52" />}
-      {/* No pageId on purpose: Markdown's own contract is that this hides the backlinks section and stops it persisting state per page. */}
-      <Markdown markdown={page.markdown ?? ''} space={page.space} pagePath={page.path} publicSite={markdownSite} />
+      {/* pageId resolves the page's [[wikilinks]] and embeds through the anonymous /links route; with `publicSite` set Markdown still shows no backlinks and no page tree. */}
+      <Markdown markdown={page.markdown ?? ''} space={page.space} pagePath={page.path} pageId={page.id} publicSite={markdownSite} />
     </>
   );
 }

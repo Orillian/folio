@@ -449,9 +449,9 @@ function humanizeSlug(slug: string): string {
 }
 
 /** Reads only this space's canonical metadata (storage.resolveFolioMetaPath: the legacy root file, or a light space's dotfile), never a sibling `*.folio`. */
-async function readFolioName(repoDirAbs: string, slug: string, rootPath: string): Promise<string | undefined> {
+async function readFolioName(repoDirAbs: string, slug: string, rootPath: string, lightFootprint = false): Promise<string | undefined> {
   try {
-    const file = await storage.resolveFolioMetaPath(repoDirAbs, slug, rootPath);
+    const file = await storage.resolveFolioMetaPath(repoDirAbs, slug, rootPath, lightFootprint);
     const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as { name?: unknown };
     return typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name.trim() : undefined;
   } catch {
@@ -463,7 +463,7 @@ function validVisibility(v: unknown): 'private' | 'instance' | 'public' {
   return v === 'instance' || v === 'public' ? v : 'private';
 }
 /**
- * Puts the public-site publish settings (migration 038) of a restored space
+ * Puts the public-site publish settings (migrations 038 and 040) of a restored space
  * back. A subdomain / custom domain is unique across the instance and may have
  * been claimed by another space while this one sat in the trash: then the
  * claim is simply left empty (the admin picks a new one) instead of failing
@@ -471,7 +471,14 @@ function validVisibility(v: unknown): 'private' | 'instance' | 'public' {
  */
 async function restorePublicSettings(slug: string, settings: TrashSpaceSnapshot['publicSettings'] | undefined): Promise<void> {
   if (!settings) return;
-  await query('UPDATE spaces SET public_allow_download = $2, public_allow_assistant = $3 WHERE slug = $1', [slug, settings.allowDownload === true, settings.allowAssistant === true]);
+  const primaryHost = settings.primaryHost === 'path' || settings.primaryHost === 'subdomain' || settings.primaryHost === 'domain' ? settings.primaryHost : 'auto';
+  await query('UPDATE spaces SET public_allow_download = $2, public_allow_assistant = $3, public_indexing = $4, public_primary_host = $5 WHERE slug = $1', [
+    slug,
+    settings.allowDownload === true,
+    settings.allowAssistant === true,
+    settings.indexing !== false,
+    primaryHost,
+  ]);
   // One at a time: losing one claim must not cost the other.
   if (settings.subdomain) await query('UPDATE spaces SET public_subdomain = $2 WHERE slug = $1', [slug, settings.subdomain]).catch(() => undefined);
   if (settings.domain) await query('UPDATE spaces SET public_domain = $2 WHERE slug = $1', [slug, settings.domain]).catch(() => undefined);
@@ -526,13 +533,15 @@ async function restoreSpaceItem(actor: User, row: TrashRow): Promise<TrashRestor
     if (!(await git.isGitRepo(repoDirAbs))) {
       await git.initWithCommit(repoDirAbs, `docs: restore space ${origSlug}`);
     }
-    const name = snapshot?.name ?? (await readFolioName(repoDirAbs, origSlug, rootPath)) ?? humanizeSlug(origSlug);
+    const lightFootprint = snapshot?.lightFootprint === true;
+    const scanIgnore = Array.isArray(snapshot?.scanIgnore) ? snapshot!.scanIgnore.filter((e): e is string => typeof e === 'string') : [];
+    const name = snapshot?.name ?? (await readFolioName(repoDirAbs, origSlug, rootPath, lightFootprint)) ?? humanizeSlug(origSlug);
     await query(
-      `INSERT INTO spaces (slug, name, repo_url, branch, root_path, status, visibility, asset_mode)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [slug, name, snapshot?.repoUrl ?? null, snapshot?.branch ?? 'main', rootPath, snapshot?.repoUrl ? 'clean' : 'local', validVisibility(snapshot?.visibility), validAssetMode(snapshot?.assetMode)],
+      `INSERT INTO spaces (slug, name, repo_url, branch, root_path, status, visibility, asset_mode, scan_ignore, light_footprint)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [slug, name, snapshot?.repoUrl ?? null, snapshot?.branch ?? 'main', rootPath, snapshot?.repoUrl ? 'clean' : 'local', validVisibility(snapshot?.visibility), validAssetMode(snapshot?.assetMode), scanIgnore, lightFootprint],
     );
-    await storage.setSpaceRootPathCache(slug, rootPath);
+    await storage.setSpaceRootPathCache(slug, rootPath, lightFootprint);
     await restorePublicSettings(slug, snapshot?.publicSettings);
     // Light footprint: page ids that lived only in the dropped index rows (paths are unchanged).
     claimTrashedIds(row, contentRootAbsFor(slug), (oldRel) => oldRel);

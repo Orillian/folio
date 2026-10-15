@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router';
 import { Copy } from 'lucide-react';
 import {
   publicDomainSchema,
   publicSubdomainSchema,
+  type PublicPrimaryHost,
   type SpacePublicSettings,
   type SpacePublicSettingsResponse,
   type SpaceVisibility,
@@ -23,8 +25,17 @@ export interface PublishSpaceDialogProps {
   onClose: () => void;
 }
 
-/** Query key of the dialog's settings; MembersDialog invalidates it when it changes the visibility from its own row. */
-const settingsKey = (space: string) => ['space-public-settings', space] as const;
+/** Query key of the dialog's settings; MembersDialog invalidates it when it changes the visibility from its own row, and the space settings page shares it. */
+export const publicSettingsKey = (space: string) => ['space-public-settings', space] as const;
+const settingsKey = publicSettingsKey;
+
+const PRIMARY_HOSTS: readonly PublicPrimaryHost[] = ['auto', 'path', 'subdomain', 'domain'];
+const PRIMARY_HOST_LABEL: Record<PublicPrimaryHost, string> = {
+  auto: 'publish.primaryHostAuto',
+  path: 'publish.primaryHostPath',
+  subdomain: 'publish.primaryHostSubdomain',
+  domain: 'publish.primaryHostDomain',
+};
 
 const VISIBILITY_HINTS: Record<SpaceVisibility, string> = {
   private: 'publish.visibility.privateHint',
@@ -45,7 +56,14 @@ function normalizeHost(value: string): string {
 }
 
 function sameSettings(a: SpacePublicSettings, b: SpacePublicSettings): boolean {
-  return a.subdomain === b.subdomain && a.domain === b.domain && a.allowDownload === b.allowDownload && a.allowAssistant === b.allowAssistant;
+  return (
+    a.subdomain === b.subdomain &&
+    a.domain === b.domain &&
+    a.allowDownload === b.allowDownload &&
+    a.allowAssistant === b.allowAssistant &&
+    a.indexing === b.indexing &&
+    a.primaryHost === b.primaryHost
+  );
 }
 
 /**
@@ -98,6 +116,8 @@ export function PublishSpaceDialog({ space, onClose }: PublishSpaceDialogProps) 
   const [domain, setDomain] = useState('');
   const [allowDownload, setAllowDownload] = useState(false);
   const [allowAssistant, setAllowAssistant] = useState(false);
+  const [indexing, setIndexing] = useState(true);
+  const [primaryHost, setPrimaryHost] = useState<PublicPrimaryHost>('auto');
   const [saveError, setSaveError] = useState<string | null>(null);
   useEffect(() => {
     if (!response) return;
@@ -105,6 +125,8 @@ export function PublishSpaceDialog({ space, onClose }: PublishSpaceDialogProps) 
     setDomain(response.settings.domain ?? '');
     setAllowDownload(response.settings.allowDownload);
     setAllowAssistant(response.settings.allowAssistant);
+    setIndexing(response.settings.indexing);
+    setPrimaryHost(response.settings.primaryHost);
   }, [response]);
 
   const subdomainText = subdomain.trim();
@@ -114,14 +136,20 @@ export function PublishSpaceDialog({ space, onClose }: PublishSpaceDialogProps) 
   const subdomainInvalid = parsedSubdomain !== null && !parsedSubdomain.success;
   const domainInvalid = parsedDomain !== null && !parsedDomain.success;
 
+  // A primary address that is not (or no longer) filled in falls back to 'auto' instead of being sent as a dangling choice.
+  const effectivePrimaryHost: PublicPrimaryHost =
+    (primaryHost === 'subdomain' && !subdomainText) || (primaryHost === 'domain' && !domainText) ? 'auto' : primaryHost;
+
   const draft: SpacePublicSettings = useMemo(
     () => ({
       subdomain: parsedSubdomain?.success ? parsedSubdomain.data : null,
       domain: parsedDomain?.success ? parsedDomain.data : null,
       allowDownload,
       allowAssistant,
+      indexing,
+      primaryHost: effectivePrimaryHost,
     }),
-    [parsedSubdomain, parsedDomain, allowDownload, allowAssistant],
+    [parsedSubdomain, parsedDomain, allowDownload, allowAssistant, indexing, effectivePrimaryHost],
   );
   const dirty = response ? !sameSettings(draft, response.settings) : false;
 
@@ -308,7 +336,49 @@ export function PublishSpaceDialog({ space, onClose }: PublishSpaceDialogProps) 
                   />
                   <span>{t('publish.site.allowAssistant')}</span>
                 </label>
+                <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-700 dark:text-neutral-300">
+                  <input
+                    type="checkbox"
+                    checked={indexing}
+                    disabled={!isPublic}
+                    onChange={(e) => setIndexing(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>{t('publish.indexing')}</span>
+                </label>
               </div>
+
+              <div>
+                <label htmlFor="publish-primary-host" className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                  {t('publish.primaryHost')}
+                </label>
+                <select
+                  id="publish-primary-host"
+                  value={effectivePrimaryHost}
+                  disabled={!isPublic}
+                  onChange={(e) => setPrimaryHost(e.target.value as PublicPrimaryHost)}
+                  className={fieldClass}
+                >
+                  {PRIMARY_HOSTS.map((host) => (
+                    <option
+                      key={host}
+                      value={host}
+                      disabled={(host === 'subdomain' && !subdomainText) || (host === 'domain' && !domainText)}
+                    >
+                      {t(PRIMARY_HOST_LABEL[host])}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">{t('publish.primaryHostHint')}</p>
+              </div>
+
+              <Link
+                to={`/s/${encodeURIComponent(space)}/settings?tab=site`}
+                onClick={onClose}
+                className="inline-block text-sm text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+              >
+                {t('publish.appearanceLink')}
+              </Link>
 
               {saveError && (
                 <p role="alert" className="text-xs text-red-600 dark:text-red-400">

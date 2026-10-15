@@ -4,8 +4,8 @@ import remarkGfm from 'remark-gfm';
 import { remarkUnderline } from '@shared/underline';
 import { phrasingToPlainText } from '@shared/inlineText';
 import { visit } from 'unist-util-visit';
-import type { Root, Heading as MdHeading, Text, InlineCode } from 'mdast';
-import { slugify } from './slugify';
+import type { Root, Heading as MdHeading } from 'mdast';
+import { createSlugDeduper, headingAnchorSource } from '@shared/headingSlug';
 import { stripFrontmatter } from './frontmatter';
 
 export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
@@ -28,16 +28,8 @@ export interface HeadingInfo {
  */
 export const HEADING_ID_PREFIX = 'user-content-';
 
-/** A slug generator deduped against every slug it has already produced (GitHub convention: 1st occurrence bare, 2nd `-2`, 3rd `-3`, ...). */
-export function createSlugDeduper() {
-  const seen = new Map<string, number>();
-  return (text: string): string => {
-    const base = slugify(text);
-    const count = seen.get(base) ?? 0;
-    seen.set(base, count + 1);
-    return count === 0 ? base : `${base}-${count + 1}`;
-  };
-}
+// The deduped slug generator (1st occurrence bare, 2nd `-2`, 3rd `-3` ...) is shared/headingSlug.ts' — the server's page index uses it too.
+export { createSlugDeduper };
 
 /**
  * Parses `markdown` (just enough to find heading nodes — code fence
@@ -85,26 +77,4 @@ export function parseHeadings(markdown: string): ParsedHeading[] {
   });
 
   return headings;
-}
-
-/**
- * The text a heading's slug is made from: prose and inline code exactly as the
- * parser hands them over, with NO highlight/status handling. That is
- * deliberate, and it is not the label (`HeadingInfo.text`, which resolves
- * them): `## ==Done=={.green} work` has always been anchored as
- * `#donegreen-work`, which is also what GitHub makes of the raw line (this
- * app treats GitHub-renderable fidelity as a hard requirement, see
- * slugify.ts), and a heading link or a printed outline written against that
- * anchor must keep working. Cleaning the label changed nothing here: an
- * ordinary heading — and one with only `**bold**`, `*italic*`, `~~strike~~`,
- * `++underline++` or a link, which the parser already unwraps — slugs the
- * same as before, byte for byte (headings.test.ts pins both).
- */
-function headingAnchorSource(node: MdHeading): string {
-  let text = '';
-  visit(node, (child) => {
-    if (child.type === 'text') text += (child as Text).value;
-    else if (child.type === 'inlineCode') text += (child as InlineCode).value;
-  });
-  return text;
 }

@@ -6,8 +6,8 @@ import { phrasingToPlainText } from '@shared/inlineText';
 import { visit } from 'unist-util-visit';
 import type { Root, Blockquote, ListItem, Paragraph, PhrasingContent, Text } from 'mdast';
 import { stripFrontmatter } from './frontmatter';
-import { matchAlertMarker, type AlertType } from './alerts';
-import { t } from './i18n/register';
+import { matchCalloutMarker } from '@shared/ofm/callout';
+import { calloutDisplayName, calloutKind, type CalloutKind } from './alerts';
 
 /** A checklist item stays `'task'` regardless of type; a callout narrows to its `[!TYPE]`, lowercased. */
 export type NoteKind = 'note' | 'tip' | 'important' | 'warning' | 'caution' | 'task';
@@ -45,11 +45,10 @@ function listItemText(node: ListItem): string {
 
 /**
  * A callout's type and preview text, or null when `node` isn't one — the
- * exact same test remarkAlerts itself uses (matchAlertMarker on the first
- * paragraph's first text node), just read rather than applied: this parse is
- * never fed into remarkAlerts, and re-deriving the check independently would
- * risk the two silently drifting (see alerts.ts's own doc comment on
- * matchAlertMarker).
+ * exact same test remarkOfm itself uses (matchCalloutMarker, shared/ofm/callout.ts,
+ * on the first paragraph's first text node), just read rather than applied:
+ * this parse is never fed into remarkOfm, and re-deriving the check
+ * independently would risk the two silently drifting.
  *
  * Preview text is the first non-empty *line* of the body (the marker line
  * itself excluded) — a callout can hold several paragraphs, and only the one
@@ -57,21 +56,22 @@ function listItemText(node: ListItem): string {
  * falls back to the type's own translated label, the same string
  * data-alert-label already renders for it.
  */
-function calloutPreview(node: Blockquote): { type: AlertType; text: string } | null {
+function calloutPreview(node: Blockquote): { type: string; kind: CalloutKind; text: string } | null {
   const first = node.children[0];
   if (!first || first.type !== 'paragraph') return null;
   const firstInline = first.children[0];
   if (!firstInline || firstInline.type !== 'text') return null;
 
-  const marker = matchAlertMarker((firstInline as Text).value);
+  const marker = matchCalloutMarker((firstInline as Text).value);
   if (!marker) return null;
+  const rest = (firstInline as Text).value.slice(marker.length).replace(/^[ \t\u00a0]+/, '');
 
   const paragraphs = node.children.filter((child): child is Paragraph => child.type === 'paragraph');
   const lines = paragraphs
     .map((paragraph, index) => {
       const children =
         index === 0
-          ? [{ ...(firstInline as Text), value: marker.rest }, ...paragraph.children.slice(1)]
+          ? [{ ...(firstInline as Text), value: rest }, ...paragraph.children.slice(1)]
           : paragraph.children;
       return inlineText(children);
     })
@@ -80,7 +80,7 @@ function calloutPreview(node: Blockquote): { type: AlertType; text: string } | n
     .map((line) => line.trim());
 
   const text = lines.find((line) => line.length > 0);
-  return { type: marker.type, text: text ?? t(`alerts.${marker.type.toLowerCase()}`) };
+  return { type: marker.type, kind: calloutKind(marker.type), text: text ?? calloutDisplayName(marker.type) };
 }
 
 /**
@@ -118,7 +118,7 @@ export function extractNotes(markdown: string): NoteEntry[] {
       if (!preview) return;
       const start = node.position?.start?.offset;
       if (start === undefined) return;
-      out.push({ kind: preview.type.toLowerCase() as NoteKind, checked: false, text: preview.text, pos: shift + start });
+      out.push({ kind: preview.kind, checked: false, text: preview.text, pos: shift + start });
     }
   });
 

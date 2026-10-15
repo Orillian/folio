@@ -59,3 +59,17 @@ export function splitFragment(href: string): { path: string; hash: string } {
 export function isMarkdownPath(path: string): boolean {
   return /\.md$/i.test(path);
 }
+
+/**
+ * True if a relative link (fragment/query stripped) may name another page: a
+ * `.md` path, or one whose last segment has no extension at all
+ * (`guide/getting-started`, `guide/` — links written for a site generator or a
+ * git host). The page is found by /api/resolve, which also tries `<path>.md`,
+ * a folder's index.md/README.md and the percent-decoded path
+ * (`Getting%20Started.md`); a path that names no page shows "page not found".
+ */
+export function isPageLinkPath(path: string): boolean {
+  if (isMarkdownPath(path)) return true;
+  const last = path.split('/').filter((s) => s && s !== '.' && s !== '..').pop() ?? '';
+  return last !== '' && !last.includes('.');
+}

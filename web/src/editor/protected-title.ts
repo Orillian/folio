@@ -2,17 +2,37 @@ import { EditorState, type Extension, type Transaction } from '@codemirror/state
 import { EditorView } from '@codemirror/view';
 
 const LEADING_H1 = /^#\s+\S/;
+/** A heading marker with its text erased: `#`, `# ` (not `## Sub`). */
+const EMPTY_H1 = /^#[ \t]*$/;
 
-/** Gives the document its structural H1 back without touching the rest of the markdown. */
+/**
+ * Gives the document its structural H1 back without touching the rest of the
+ * markdown. The H1 counts when it is the first NON-BLANK line — the server's
+ * own title rule (storage.ts findH1LineIndex): front matter often leaves a
+ * blank line above the heading, and putting another `# Title` on top of such a
+ * page duplicated it (Docusaurus pages, docs-as-code test 14.10.2026).
+ */
 export function ensureProtectedPageTitle(markdown: string, title: string): string {
   const safe = title.trim() || 'Untitled';
-  const firstEnd = markdown.indexOf('\n');
-  const first = firstEnd === -1 ? markdown : markdown.slice(0, firstEnd);
+  const lead = /^(?:[ \t]*\n)*/.exec(markdown)![0].length;
+  const firstEnd = markdown.indexOf('\n', lead);
+  const first = firstEnd === -1 ? markdown.slice(lead) : markdown.slice(lead, firstEnd);
   if (LEADING_H1.test(first)) return markdown;
-  if (/^#\s*/.test(first)) {
-    return `# ${safe}${firstEnd === -1 ? '' : markdown.slice(firstEnd)}`;
+  if (EMPTY_H1.test(first)) {
+    return `${markdown.slice(0, lead)}# ${safe}${firstEnd === -1 ? '' : markdown.slice(firstEnd)}`;
   }
   return `# ${safe}\n\n${markdown}`;
+}
+
+/**
+ * Whether the guard below looks after this document: only while its H1 stands
+ * on line 1 (or its bare `# ` while it is being retyped). A page shaped
+ * otherwise — a blank line above its heading, or no heading at all — is edited
+ * freely; the guard would refuse almost every edit there.
+ */
+function guardsTitle(tr: Transaction): boolean {
+  const first = tr.startState.doc.line(1).text;
+  return LEADING_H1.test(first) || EMPTY_H1.test(first);
 }
 
 function userChangedDocument(tr: Transaction): boolean {
@@ -60,7 +80,7 @@ function confinedToFirstLine(tr: Transaction): boolean {
  */
 export function protectPageTitle(): Extension {
   const reject = EditorState.changeFilter.of((tr) => {
-    if (!userChangedDocument(tr)) return true;
+    if (!userChangedDocument(tr) || !guardsTitle(tr)) return true;
     const first = tr.newDoc.line(1).text;
     // "# " without text — the user erased the heading to type a new one; that
     // is allowed (06.09.2026, "it is impossible to overwrite it completely"). A
@@ -81,7 +101,7 @@ export function protectPageTitle(): Extension {
   });
 
   const repair = EditorState.transactionFilter.of((tr) => {
-    if (!userChangedDocument(tr)) return tr;
+    if (!userChangedDocument(tr) || !guardsTitle(tr)) return tr;
     const first = tr.newDoc.line(1).text;
     if (LEADING_H1.test(first) || /^#\s*$/.test(first)) return tr;
     if (!replacesWholeDocument(tr)) {

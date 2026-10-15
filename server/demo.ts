@@ -30,11 +30,21 @@
  *                                every space-admin action that could break the
  *                                demo for the next visitor (the shared login may
  *                                be a space admin, so it can read and edit `.agent`):
- *                                deleting/renaming a space, space visibility,
- *                                members and roles, revoking invites, git
- *                                sync/reset, page permissions, purging the trash.
+ *                                deleting/renaming a space, members and roles,
+ *                                revoking invites, git sync/reset, page
+ *                                permissions, purging the trash.
  *   assertDemoAgentRootIntact    the same demo accounts may edit `.agent/**` but not
  *                                delete, move or rename the `.agent` folder itself.
+ *
+ * Publishing is the deliberate exception (owner's decision 14.10): a demo account
+ * that administers a space MAY change its visibility and publish settings
+ * (PATCH /api/spaces/:space, PUT /api/spaces/:space/public-settings), so a visitor
+ * can see "Publish as website" work. The seed pre-publishes the Folio Handbook.
+ * Whatever a visitor changes is undone by the daily reset. What stays off:
+ *   assertNoDemoPublicHostnames  a subdomain or a custom domain cannot be bound to a
+ *                                space (400): the shared demo answers only at
+ *                                <PUBLIC_URL>/public/<space>, whatever the visitors do.
+ *                                The public Ask stays behind assertNotDemo (no AI key).
  *
  * Request limits for /mcp and the OAuth endpoints (FOLIO_DEMO_MCP_RPM, FOLIO_DEMO_MCP_WRITES_PER_HOUR, size caps) live in demoLimits.ts.
  *
@@ -44,7 +54,7 @@
 import * as fs from 'node:fs';
 import { z } from 'zod';
 import { AGENT_FOLDER, type DemoAccount, type DemoInfo, type User } from '../shared/contracts.js';
-import { forbidden } from './errors.js';
+import { badRequest, forbidden } from './errors.js';
 
 const demoAccountSchema = z.object({
   email: z.string().trim().min(1).max(254),
@@ -136,6 +146,17 @@ export function assertNotDemo(what: string): void {
 /** Refuses (403) an action a shared demo login must not perform. A no-op outside demo mode and for every non-demo user. */
 export function assertNotDemoAccount(user: Pick<User, 'email'>, what: string): void {
   if (isDemoAccountEmail(user.email)) throw forbidden(`${what} is disabled in the public demo`);
+}
+
+/**
+ * Refuses (400) binding a subdomain or a custom domain to a space while the mode is on, for EVERYONE
+ * (nobody may point hostnames at the shared demo). A site stays reachable at /public/<space>. A no-op
+ * outside demo mode and when both are null.
+ */
+export function assertNoDemoPublicHostnames(settings: { subdomain: string | null; domain: string | null }): void {
+  if (isDemoMode() && (settings.subdomain || settings.domain)) {
+    throw badRequest('Subdomains and custom domains are disabled in the public demo');
+  }
 }
 
 /** The `.agent` folder at a space's content root, or its index page. */

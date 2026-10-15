@@ -69,7 +69,8 @@ export interface PageAccessInfo {
 
 /**
  * A page is a file on disk under data/spaces/<space>/.
- * - kind "doc": a *.md file; title = first H1 of the body (NOT frontmatter).
+ * - kind "doc": a *.md file; title = first H1 of the body, else the front
+ *   matter `title:` (Hugo, Jest/Docusaurus, Jekyll), else the file name.
  * - kind "board": a *.excalidraw.svg file; title = filename without extension.
  * `path` is relative to the space root, e.g. "architecture/data-flow.md".
  * A directory page is its "index.md"; its children are siblings in that directory.
@@ -98,6 +99,13 @@ export interface TreeNode extends PageMeta {
 export const pageDocSchema = pageMetaSchema.extend({
   markdown: z.string().optional(),
   svg: z.string().optional(),
+  /**
+   * A doc of a light-footprint space (a repository sub-folder with rootPath
+   * set, or an Obsidian vault / a space flagged light — server/storage.ts
+   * isLightFootprintSpace): its file belongs to the repository, so the editor
+   * neither inserts nor guards an H1 there. Absent otherwise.
+   */
+  lightFootprint: z.literal(true).optional(),
 });
 export type PageDoc = z.infer<typeof pageDocSchema>;
 
@@ -107,6 +115,9 @@ export const searchHitSchema = z.object({
   path: z.string(),
   title: z.string(),
   snippet: z.string(),
+  /** Wave 3 (search v2), additive: the page kind and its normalized tags. Older servers omit them. */
+  kind: pageKindSchema.optional(),
+  tags: z.array(z.string()).optional(),
 });
 export type SearchHit = z.infer<typeof searchHitSchema>;
 
@@ -120,6 +131,19 @@ export interface SpaceInfo {
   assetMode?: SpaceAssetMode;
   /** Round 27: private (default) = explicit members only; instance = plus any active user as an implicit viewer. */
   visibility?: SpaceVisibility;
+  /**
+   * The space is "light footprint" (an Obsidian vault, or a sub-folder of a
+   * product repository): Folio never adds an `id` to its files. Effective value
+   * — a non-empty rootPath implies it. Absent when false.
+   */
+  lightFootprint?: boolean;
+  /**
+   * The space's own extra scan-ignore entries (top-level names / `prefix*`
+   * patterns, see normalizeScanIgnoreEntry), WITHOUT DEFAULT_SCAN_IGNORE, which
+   * always applies. Sent to space admins only (GET /api/spaces); an empty array
+   * means "just the defaults".
+   */
+  scanIgnore?: string[];
   /**
    * `.agent/**` assistant rules for this space (owner spec, 21.09.2026;
    * widened 22.09.2026 — see the round's own note below).
@@ -137,6 +161,62 @@ export interface SpaceInfo {
    */
   agentRules?: { used: boolean; pages: number; path?: string };
 }
+
+// ---------- scan settings (Obsidian vault compatibility, wave 1a) ----------
+
+/**
+ * Top-level entries every scan skips, whatever the space's own list says. They
+ * are dotfolders — which the scan has never indexed — written out so the rule is
+ * visible (and shown in the UI) instead of being buried in a `startsWith('.')`.
+ */
+export const DEFAULT_SCAN_IGNORE = ['.obsidian/', '.trash/', '.git/'] as const;
+export const MAX_SCAN_IGNORE_ENTRIES = 50;
+
+/**
+ * Normalizes one scan-ignore entry, or returns null when it is not acceptable.
+ * An entry names a TOP-LEVEL file or folder of the content root: one path
+ * segment, `*` as the only wildcard (any run of characters, never a `/`), an
+ * optional trailing `/` meaning "folders only". A leading `./` or `/` is
+ * dropped; `..`, inner slashes, backslashes, control characters, an empty name
+ * and a pattern that is nothing but `*` (it would hide the whole space) are
+ * refused. Matching is case-insensitive (server/scanIgnore.ts).
+ */
+export function normalizeScanIgnoreEntry(raw: string): string | null {
+  let value = raw.trim();
+  while (value.startsWith('./')) value = value.slice(2);
+  value = value.replace(/^\/+/, '');
+  const dirOnly = value.endsWith('/');
+  const name = dirOnly ? value.slice(0, -1) : value;
+  if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\') || name.includes('..')) return null;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(name)) return null;
+  if (/^\*+$/.test(name)) return null;
+  return dirOnly ? `${name}/` : name;
+}
+
+export const scanIgnoreEntrySchema = z
+  .string()
+  .max(200)
+  .refine((v) => normalizeScanIgnoreEntry(v) !== null, { message: 'a top-level file or folder name, `*` allowed, no ".." or inner slashes' })
+  .transform((v) => normalizeScanIgnoreEntry(v) as string);
+
+/**
+ * PATCH /api/spaces/:space/scan-settings (space admin). Either field may be
+ * sent; at least one must be. Changing `scanIgnore` rescans the space (pages
+ * under a newly ignored entry leave the index, pages under a released one
+ * enter it); `lightFootprint` only affects what Folio writes from then on.
+ */
+export const updateScanSettingsBodySchema = z
+  .object({
+    scanIgnore: z
+      .array(scanIgnoreEntrySchema)
+      .max(MAX_SCAN_IGNORE_ENTRIES)
+      .transform((list) => [...new Set(list)])
+      .optional(),
+    lightFootprint: z.boolean().optional(),
+  })
+  .refine((body) => body.scanIgnore !== undefined || body.lightFootprint !== undefined, { message: 'nothing to change' });
+export type UpdateScanSettingsBody = z.infer<typeof updateScanSettingsBodySchema>;
 
 // ---------- access & permissions (round 27) ----------
 
@@ -178,11 +258,17 @@ export const publicSubdomainSchema = z.string().trim().toLowerCase().regex(/^[a-
 export const publicDomainSchema = z.string().trim().toLowerCase().regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/, 'invalid domain');
 
 /** PUT /api/spaces/:space/public-settings — space admin or instance admin, cookie-only. Visibility itself is changed via PATCH /api/spaces/:space. */
+export const publicPrimaryHostSchema = z.enum(['auto', 'path', 'subdomain', 'domain']);
+export type PublicPrimaryHost = z.infer<typeof publicPrimaryHostSchema>;
 export const updateSpacePublicSettingsBodySchema = z.object({
   subdomain: publicSubdomainSchema.nullable(),
   domain: publicDomainSchema.nullable(),
   allowDownload: z.boolean(),
   allowAssistant: z.boolean(),
+  /** 14.10.2026: may search engines index the site? false → `noindex` on every page and `Disallow: /` in robots.txt. Default true. */
+  indexing: z.boolean().default(true),
+  /** 14.10.2026: which address is canonical. 'auto' = domain if set, else subdomain if set, else path. */
+  primaryHost: publicPrimaryHostSchema.default('auto'),
 });
 export type SpacePublicSettings = z.infer<typeof updateSpacePublicSettingsBodySchema>;
 
@@ -211,8 +297,20 @@ export interface PublicSiteInfo {
   mode: 'path' | 'host';
   /** The space's root page (index) to open at the site root; null when the space has none (the SPA then shows the tree). */
   homePageId: string | null;
-  /** Absolute PUBLIC_URL of the instance — the "Sign in" / "Powered by Folio" link. */
+  /** Absolute PUBLIC_URL of the instance — the "Sign in" link. */
   instanceUrl: string;
+  /** 14.10.2026, from .folio/site.json (see "Space appearance" below); null when not set. */
+  title: string | null;
+  tagline: string | null;
+  lang: string | null;
+  /** Absolute/relative URLs served by GET /api/public/spaces/:slug/site-assets/:name; null when the file is not configured. */
+  logoUrl: string | null;
+  faviconUrl: string | null;
+  /** URL of the sanitized site stylesheet (GET /api/public/spaces/:slug/site.css?v=<hash>), null when the space has no site.css. */
+  cssUrl: string | null;
+  /** The canonical absolute URL of the site root (according to primaryHost). */
+  canonicalBase: string;
+  indexing: boolean;
 }
 
 /**
@@ -228,6 +326,437 @@ export interface PublicSiteInfo {
 export interface PublicPagePayload {
   page: PageDoc;
   spaceName: string;
+}
+
+// ---------- Space appearance: the `.folio/` folder in the repository, 14.10.2026 — the orchestrator's contract ----------
+// Owner's decision (14.10.2026, after the proposal): HYBRID storage. "Who sees the
+// site and where" stays in PostgreSQL (visibility, subdomain/domain, download and
+// assistant toggles, indexing, primary host — the publish dialog stays where it is).
+// "What we show and how it looks" lives in the repository, in `.folio/` at the
+// CONTENT ROOT (next to `<slug>.folio` / `.<slug>.folio`; for a rootPath space that
+// is `<rootPath>/.folio/`):
+//   .folio/site.json        — title, tagline, description, lang, ogImage, favicon, logo (names in assets/)
+//   .folio/site.css         — stylesheet of the public site only (sanitized, never inside the app)
+//   .folio/export.css       — print stylesheet for PDF (replaces <slug>.export.css)
+//   .folio/pdf-header.html  — PDF header (placeholders {{page}} {{pages}} {{title}} {{space}} {{date}}; <img src="logo.png"> from assets/)
+//   .folio/pdf-footer.html  — PDF footer
+//   .folio/assets/          — og.png, favicon.svg, logo.png, *.woff2 … (public while the space is public)
+// One settings page edits all of it: /s/<space>/settings (space admins; the
+// instance admin sees the publish block only), three tabs: Site, Site appearance
+// (CSS), PDF. Every file shows its repo path + "Open in repository"; each save is
+// one commit `settings: update .folio/<files>`; git is an equal editor: etag per
+// file, a mismatch is 409. Legacy `<slug>.folio` `export` section and
+// `<slug>.export.css` are still read and are migrated into `.folio/` on the first
+// save of the PDF tab (one commit). The "Powered by Folio" footer of public sites
+// is NOT configurable (owner's decision).
+// Security: site.css is sanitized (no @import, no comments, url() only data:image/*
+// or an assets/ name rewritten to the site-assets route, size cap), served with
+// text/css + nosniff + ETag only while the space is public; no JavaScript, no
+// third-party snippets. Assets: allowed extensions only, per-file and per-folder caps.
+
+export const APPEARANCE_DIR = '.folio';
+export const SITE_ASSET_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}\.(png|jpe?g|webp|gif|svg|ico|woff2?)$/i;
+export const SITE_ASSET_MAX_BYTES = 1024 * 1024;
+export const SITE_ASSETS_MAX_TOTAL_BYTES = 5 * 1024 * 1024;
+export const SITE_CSS_MAX_BYTES = 256 * 1024;
+export const PDF_CHROME_MAX_BYTES = 64 * 1024;
+
+/** `.folio/site.json`. Unknown keys are kept (passthrough) so hand edits survive a save from the UI. */
+export const siteSettingsSchema = z
+  .object({
+    v: z.literal(1).default(1),
+    /** Site name; defaults to the space name when absent. */
+    title: z.string().trim().max(80).optional(),
+    tagline: z.string().trim().max(160).optional(),
+    /** Default meta description of the site (a page's own front matter `description` wins). */
+    description: z.string().trim().max(300).optional(),
+    /** BCP-47, e.g. "en", "uk", "en-GB". Defaults to the instance default. */
+    lang: z.string().regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/).optional(),
+    /** File names inside .folio/assets/. */
+    ogImage: z.string().regex(SITE_ASSET_NAME_RE).optional(),
+    favicon: z.string().regex(SITE_ASSET_NAME_RE).optional(),
+    logo: z.string().regex(SITE_ASSET_NAME_RE).optional(),
+  })
+  .passthrough();
+export type SiteSettings = z.infer<typeof siteSettingsSchema>;
+
+export const appearanceFileSchema = z.enum(['site.json', 'site.css', 'export.css', 'pdf-header.html', 'pdf-footer.html']);
+export type AppearanceFile = z.infer<typeof appearanceFileSchema>;
+
+/**
+ * PUT /api/spaces/:space/appearance — space admin, cookie-only. All changes land in
+ * ONE commit. `etag` is the etag the client last saw for that file (null = it did
+ * not exist); a mismatch → 409 `appearance file changed in the repository` with
+ * the current state in the body. An empty `content` deletes the file.
+ */
+export const putAppearanceBodySchema = z.object({
+  changes: z
+    .array(
+      z.object({
+        file: appearanceFileSchema,
+        content: z.string().max(1024 * 1024),
+        etag: z.string().nullable(),
+      }),
+    )
+    .min(1)
+    .max(5),
+});
+export type PutAppearanceBody = z.infer<typeof putAppearanceBodySchema>;
+
+export interface AppearanceFileState {
+  file: AppearanceFile;
+  /** Repo-relative path, e.g. "docs/.folio/site.css". */
+  path: string;
+  exists: boolean;
+  /** sha1 of the content as stored (null when the file does not exist). */
+  etag: string | null;
+  content: string;
+  /** 'folio' = read from .folio/; 'legacy' = read from the <slug>.folio export section or <slug>.export.css (moves into .folio/ on the first save of the PDF tab); 'none' = no content anywhere. */
+  source: 'folio' | 'legacy' | 'none';
+  /** Sanitizer / validation warnings for the stored content (same rules the server applies when serving). */
+  warnings: string[];
+}
+export interface SiteAssetInfo {
+  name: string;
+  size: number;
+  /** URL the asset is served from on the public site (null while the space is not public). */
+  url: string | null;
+}
+/** GET /api/spaces/:space/appearance (space admin). */
+export interface SpaceAppearanceResponse {
+  files: AppearanceFileState[];
+  assets: SiteAssetInfo[];
+  /** Content root relative to the repo root ("" or the space rootPath). */
+  contentRoot: string;
+  /** Base URL of a file in the hosting UI (GitHub/GitLab "blob" on the space's branch), null when unknown; the client appends the repo-relative path. */
+  repoFileBaseUrl: string | null;
+  /** True when legacy PDF settings exist and the next save of the PDF tab will migrate them (the UI shows a banner). */
+  legacyPending: boolean;
+  /** True when the space is public (the CSS preview iframe can load /public/<slug>). */
+  isPublic: boolean;
+}
+/**
+ * POST /api/spaces/:space/appearance/assets?name=<file> — raw body (Content-Type of the file) or multipart `file`; name must match
+ * SITE_ASSET_NAME_RE; 413 over the caps; 409 when the name exists unless `?replace=1`. Returns SiteAssetInfo. Committed as
+ * `settings: add .folio/assets/<name>`. DELETE /api/spaces/:space/appearance/assets/:name → 204, commit `settings: remove …`.
+ *
+ * Anonymous (404 unless the space is public):
+ *   GET /api/public/spaces/:slug/site.css?v=<etag>     → text/css, sanitized, nosniff, ETag, Cache-Control public max-age=300
+ *   GET /api/public/spaces/:slug/site-assets/:name      → the file (SVG with the sandbox CSP), immutable caching keyed by ?v=
+ *   GET /robots.txt, GET /sitemap.xml                   → host-dependent (site host: that site; main host: Disallow /s/ /share/ /api/ + sitemaps of path-mode sites)
+ *   GET /public/:slug/sitemap.xml                       → the sitemap of a path-mode site (lastmod = page updatedAt; restricted/.agent/_templates excluded)
+ * Server-rendered <head> for every public page (SEO): <title> = page title (front matter `title` → H1 → file name) + " · " + site title,
+ * meta description = front matter `description` → site description → excerpt, og:* (site_name = site title, image = front matter
+ * `image`/`cover` → site ogImage), canonical = canonicalBase + page path, <html lang>, favicon, and `noindex` when indexing is off or the
+ * page is `unlisted: true`. A page that does not exist on the site answers 404 (HTML shell with the status), not 200.
+ */
+export type AppearanceRoutes = never;
+
+// ---------- Index v2 (Obsidian brief, wave 1b), 14.10.2026 — the orchestrator's contract ----------
+// One mdast parse per page (remark-parse + remark-gfm, positions on) at scan and
+// save time feeds derived tables: headings, ^block ids, tags (body `#tag` and
+// front matter `tags:`/`labels:`), the whole front matter as jsonb, and typed
+// links (md | wikilink | embed | image | html | reference) with fragment and
+// position. Links are resolved in a SECOND, set-based phase per space
+// (index(page) writes raw rows; resolveSpaceLinks(space) joins pages_index), so
+// a target that appears later resolves the old links and a deleted target turns
+// its links into `unresolved` instead of deleting the rows (FK ON DELETE SET
+// NULL). `pages_index.meta_version` marks rows parsed with an older parser;
+// the scan re-parses them. Every read goes through the same SQL ACL fragment as
+// search (space membership/visibility, page_access, `.agent` hidden,
+// `_templates/` hidden). Table names are fixed in docs/spec.md §"Index v2".
+// Wikilink resolution (donor §2.7): explicit extension as written, else `.md`;
+// path from the source folder → path from the space root → unique basename
+// (nearest folder wins) → unresolved; `#heading` by heading slug, `#^id` by block.
+
+export type LinkSyntax = 'md' | 'wikilink' | 'embed' | 'image' | 'html' | 'reference';
+export type LinkKind = 'page' | 'asset' | 'external' | 'unresolved';
+export type LinkFragmentKind = 'heading' | 'block';
+
+export interface PageHeading {
+  level: 1 | 2 | 3 | 4 | 5 | 6;
+  text: string;
+  /** Same slug the web outline uses (web/src/markdown/headingIds.ts rules) — the target of `#heading` links. */
+  slug: string;
+  line: number;
+}
+export interface PageBlockRef {
+  /** The id after `^`, as written (no `^`). */
+  blockId: string;
+  line: number;
+}
+export interface PageTagRef {
+  /** Normalized: lowercase, no leading `#`, hierarchy kept (`a/b`). */
+  tag: string;
+  source: 'body' | 'frontmatter';
+  line: number | null;
+}
+export interface PageLinkRef {
+  /** The target as written in the page (no `#fragment`, no `|alias`), e.g. `Note`, `folder/img.png` — what the reading view looks a wikilink up by. */
+  linkPath: string;
+  targetPath: string;
+  targetPageId: string | null;
+  syntax: LinkSyntax;
+  kind: LinkKind;
+  fragment: string | null;
+  fragmentKind: LinkFragmentKind | null;
+  /** null when there is no fragment or the target is not a page. */
+  fragmentResolved: boolean | null;
+  displayText: string | null;
+  line: number;
+  /** The source line, trimmed, ≤ 300 chars — the "context" of a backlink. */
+  context: string;
+}
+/** GET /api/pages/:id/meta — viewer+ on the page; `.agent` pages admins only (requirePageRole). */
+export interface PageMetadata {
+  id: string;
+  space: string;
+  path: string;
+  title: string;
+  headings: PageHeading[];
+  blocks: PageBlockRef[];
+  tags: PageTagRef[];
+  /** The page's whole front matter (Folio keys included, foreign keys kept). `{}` when none. */
+  properties: Record<string, unknown>;
+  links: PageLinkRef[];
+  /** Inbound page links the caller may see. */
+  backlinkCount: number;
+  metaVersion: number;
+}
+/**
+ * GET /api/pages/:id/backlinks — ADDITIVE: every entry keeps today's fields and gains
+ * `syntax`, `fragment`, `line`, `context` (one entry per link, so a page linking twice appears twice;
+ * clients that want one row per page dedupe by `id`).
+ */
+export interface BacklinkContext {
+  syntax: LinkSyntax;
+  fragment: string | null;
+  line: number;
+  context: string;
+}
+export interface SpaceTag {
+  tag: string;
+  /** Distinct pages the caller may see that carry the tag. */
+  pages: number;
+}
+/** GET /api/spaces/:space/tags — viewer+ on the space. */
+export interface SpaceTagsResponse {
+  tags: SpaceTag[];
+}
+export interface UnresolvedLink {
+  sourceId: string;
+  sourcePath: string;
+  sourceTitle: string;
+  targetPath: string;
+  syntax: LinkSyntax;
+  fragment: string | null;
+  line: number;
+  context: string;
+}
+/** GET /api/spaces/:space/unresolved-links?limit=&offset= — viewer+; only sources the caller may see; sorted by targetPath, then source path. */
+export interface UnresolvedLinksResponse {
+  links: UnresolvedLink[];
+  total: number;
+}
+export interface OrphanPage {
+  id: string;
+  path: string;
+  title: string;
+  updatedAt: string;
+}
+/** GET /api/spaces/:space/orphans — viewer+; pages with no inbound page link from a visible page, excluding the space index page, `_templates/` and `.agent/`. */
+export interface OrphansResponse {
+  pages: OrphanPage[];
+}
+/**
+ * MCP (read-only, annotated like the other read tools, NOT in MCP_WRITE_TOOL_NAMES):
+ *   get_page_metadata { id } → PageMetadata
+ *   list_unresolved_links { space, limit? } → UnresolvedLinksResponse
+ *   list_orphans { space } → OrphansResponse
+ *   get_backlinks gains the BacklinkContext fields per entry.
+ * Same ACL as the REST routes; a space or page the caller cannot see → "space not found" / "page not found".
+ */
+// ---------- Reading Obsidian markdown (wave 2), 14.10.2026 ----------
+// The reading view renders `[[wikilinks]]`, `![[embeds]]`, callouts, `%%comments%%`, `^block-id`s, `#tags` and
+// `$math$` from the file as it is (shared/ofm, web/src/markdown); nothing is ever written back. It resolves the
+// wikilinks of the page it shows through ONE request, GET /api/pages/:id/meta (PageMetadata.links, matched by
+// `linkPath` + `fragment`), and loads an embedded note through:
+//
+//   GET /api/pages/:id/embed?fragment=<heading slug | ^block-id>&depth=<1..3>      → EmbedPayload
+//        viewer+ on the embedded page, exactly like reading it (requirePageRole: 403 for a page the reader may not see,
+//        404 for one that does not exist or is `.agent` and the reader is no admin).
+//        `fragment` absent: the whole page body; a heading (its slug, or the text as written in `[[Note#Heading]]`):
+//        that heading and everything under it up to the next heading of the same or a higher level; `^id`: the block
+//        that carries the id (a paragraph, a list item with its children, or the block above an id standing alone).
+//        A fragment the page does not have: 404 `fragment not found`. Only documents embed (400 otherwise).
+//        `depth` is the nesting level of this embed — the client sends 1 for an embed in the page it shows and adds one
+//        for an embed inside an embedded note; above EMBED_MAX_DEPTH (3) the server refuses (400). The client also keeps
+//        the chain of page ids it descended through and shows a note instead of embedding a page into itself.
+//   GET /api/public/spaces/:slug/pages/:id/embed?fragment=&depth=                  → EmbedPayload (anonymous)
+//        the same, for a page of the public set (isPublicPage); anything else: 404 `page not found`.
+//   GET /api/public/spaces/:slug/pages/:id/links                                    → { links: PageLinkRef[] }
+//        the typed links of a public page, for wikilinks on a public site; a target outside the public set reads as
+//        unresolved (no id, no fragment check).
+//
+// POST /api/pages gains an optional `fileStem`: the exact file name (without `.md`) of a new doc — what "Create page
+// “Note”" on an unresolved wikilink sends, so `[[Note]]` resolves to the file it just made. The server refuses stems
+// with path separators or characters a link cannot carry, and still makes the name unique.
+export const EMBED_MAX_DEPTH = 3;
+export interface EmbedPayload {
+  id: string;
+  space: string;
+  /** Path of the embedded page — relative links and images inside `markdown` resolve against its folder. */
+  path: string;
+  title: string;
+  markdown: string;
+}
+export interface PublicPageLinks {
+  links: PageLinkRef[];
+}
+
+export const INDEX_META_VERSION = 2;
+
+// ---------- Obsidian brief, wave 3 (14.10.2026) — the orchestrator's contract ----------
+// Owner's decisions (14.10.2026): (1) files of a space (assets/, attachments, any
+// non-page file under the content root) are indexed AS FILES — a separate table,
+// never a page kind, never in the tree or the search — so links and embeds to
+// them resolve through the index and missing attachments show up as unresolved;
+// (2) property TYPES live in the repository, `.folio/properties.json`, with
+// `.obsidian/types.json` read as the default when Folio's own file is absent;
+// (3) `labels:` stays a read-only synonym of `tags:` — the UI always writes
+// `tags:` and the docs recommend only `tags:`; (4) a Folio key with a value Folio
+// would not write (e.g. `status: deprecated`) is kept as is and shown in the
+// properties panel as a "foreign value", never rewritten. The properties panel
+// is collapsed by default. Front matter is edited OUTSIDE the collaborative
+// body: PUT /api/pages/:id/properties rewrites the front matter block only
+// (byte-preserving everything else, like mergeFrontmatter) and commits like a save.
+
+// --- files of a space ---
+export interface SpaceFileInfo {
+  /** Path relative to the content root, e.g. "assets/diagram.png". */
+  path: string;
+  size: number;
+  updatedAt: string;
+  /** Pages (visible to the caller) that link to or embed the file. */
+  referencedBy: number;
+}
+/** GET /api/spaces/:space/files?prefix=&q=&limit=&offset= — viewer+; lists indexed files (dotfiles, .git, .folio/, pages never). */
+export interface SpaceFilesResponse {
+  files: SpaceFileInfo[];
+  total: number;
+}
+
+// --- properties (front matter) and their types ---
+export const propertyTypeSchema = z.enum(['text', 'number', 'checkbox', 'date', 'datetime', 'list', 'tags', 'aliases']);
+export type PropertyType = z.infer<typeof propertyTypeSchema>;
+/** `.folio/properties.json` */
+export const propertyTypesFileSchema = z.object({
+  v: z.literal(1).default(1),
+  types: z.record(z.string().min(1).max(100), propertyTypeSchema).default({}),
+}).passthrough();
+export type PropertyTypesFile = z.infer<typeof propertyTypesFileSchema>;
+/** GET /api/spaces/:space/property-types (viewer+) — merged view; PUT (space admin) writes `.folio/properties.json` (one commit). */
+export interface SpacePropertyTypesResponse {
+  types: Record<string, PropertyType>;
+  /** Where the types came from: Folio's own file, Obsidian's `.obsidian/types.json`, or nothing. */
+  source: 'folio' | 'obsidian' | 'none';
+  /** Keys seen in the space's front matter with their inferred type and page count (for the picker). */
+  known: { key: string; inferred: PropertyType; pages: number }[];
+}
+export const updatePropertyTypesBodySchema = z.object({ types: z.record(z.string().min(1).max(100), propertyTypeSchema) });
+export type UpdatePropertyTypesBody = z.infer<typeof updatePropertyTypesBodySchema>;
+
+/** GET /api/pages/:id/properties — viewer+ (requirePageRole). */
+export interface PagePropertiesResponse {
+  /** The whole front matter as parsed (Folio keys included, foreign keys kept). */
+  properties: Record<string, unknown>;
+  /** Effective types (space types + inference for keys without a type). */
+  types: Record<string, PropertyType>;
+  /** Folio-owned keys (id, order, status, icon, cover) whose current value Folio would not write itself — shown read-only as "foreign value". */
+  foreign: string[];
+  /** Keys the editor must not offer for editing (id). */
+  readOnly: string[];
+  canEdit: boolean;
+  /** sha1 of the file's front matter block as it is on disk (delimiters included), null when the file has none — send it back as the PUT's `etag`. Added by the A1 server (14.10.2026). */
+  etag: string | null;
+}
+/**
+ * PUT /api/pages/:id/properties — editor+ on the page, cookie or write-scope PAT.
+ * Replaces the editable front matter keys with `properties` (a key missing from
+ * `properties` is removed; `id` can never be changed; Folio keys keep their
+ * validation; `tags` is written as `tags:` even if the file had `labels:` —
+ * then `labels:` is removed); byte-preserves the body and unknown formatting
+ * (same guarantees as mergeFrontmatter). One commit like a page save.
+ */
+export const updatePagePropertiesBodySchema = z.object({
+  properties: z.record(z.string().min(1).max(100), z.unknown()),
+  /** Optimistic lock: the file's current etag (sha1 of the front matter block) from GET; mismatch → 409. */
+  etag: z.string().nullable().optional(),
+});
+export type UpdatePagePropertiesBody = z.infer<typeof updatePagePropertiesBodySchema>;
+
+// --- tags ---
+/** GET /api/spaces/:space/tags/:tag/pages?limit=&offset= — viewer+; `tag` is the normalized tag (URL-encoded, `/` allowed). */
+export interface TagPagesResponse {
+  tag: string;
+  pages: { id: string; path: string; title: string; updatedAt: string; sources: ('body' | 'frontmatter')[] }[];
+  total: number;
+}
+/**
+ * POST /api/spaces/:space/tags/rename — editor+ on the space; rewrites `#from` (and `#from/…` children) in
+ * bodies and `from` in `tags:`/`labels:` front matter of every page the caller may edit, ONE commit
+ * `docs: rename tag #from -> #to`; pages the caller cannot edit are skipped and counted.
+ */
+export const renameTagBodySchema = z.object({
+  from: z.string().trim().min(1).max(200),
+  to: z.string().trim().min(1).max(200).regex(/^[\p{L}\p{N}_\-/]+$/u, 'invalid tag'),
+});
+export type RenameTagBody = z.infer<typeof renameTagBodySchema>;
+export interface RenameTagResult {
+  pagesChanged: number;
+  pagesSkipped: number;
+}
+
+// --- search v2 ---
+/**
+ * GET /api/search?q=&space=&limit=&offset= — the same route; `q` is parsed by `parseSearchQuery` (shared/searchQuery.ts):
+ *   words             → websearch_to_tsquery('simple', unaccent(words)) OR title trigram
+ *   "exact phrase"    → phrase search
+ *   -word             → exclusion
+ *   tag:a/b           → page_tags (hierarchy: tag:a also matches a/b)
+ *   kind:doc|table|board|form|pdf|office
+ *   status:draft|published|archived
+ *   in:folder/        → path prefix
+ *   prop:key=value    → front matter equality (string/number/boolean), prop:key (key exists)
+ * Operators AND together; the ACL is the same SQL fragment (accessSql). `SearchHit` gains optional `tags` and `kind`.
+ */
+export interface SearchQueryAst {
+  words: string[];
+  phrases: string[];
+  excluded: string[];
+  tags: string[];
+  kinds: PageKind[];
+  statuses: PageStatus[];
+  pathPrefixes: string[];
+  props: { key: string; value?: string }[];
+}
+export interface SavedSearch {
+  id: string;
+  name: string;
+  query: string;
+  /** Space slug the search is pinned to, or null for all spaces. */
+  space: string | null;
+  createdAt: string;
+}
+/** GET /api/me/saved-searches → { searches }; POST { name, query, space } → SavedSearch (max 50 per user); DELETE /api/me/saved-searches/:id → 204. Cookie or PAT (read for GET). */
+export const createSavedSearchBodySchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  query: z.string().trim().min(1).max(500),
+  space: z.string().trim().max(200).nullable().default(null),
+});
+export type CreateSavedSearchBody = z.infer<typeof createSavedSearchBodySchema>;
+export interface SavedSearchesResponse {
+  searches: SavedSearch[];
 }
 
 /**
@@ -353,6 +882,12 @@ export const createPageBodySchema = z.object({
   parentPath: z.string(),
   title: z.string().min(1),
   kind: pageKindSchema.default('doc'),
+  /**
+   * Wave 2 (Obsidian): the exact file name of a new DOC, without `.md` — "Create page “Note”" on an unresolved
+   * `[[Note]]` sends `Note` so the link finds the file. Ignored for other kinds. No `/`, `\\`, `#`, `|`, `^`, `:`,
+   * `[`, `]`, `%`, no leading dot; made unique like any name.
+   */
+  fileStem: z.string().min(1).max(200).optional(),
   /**
    * Round 26 (DATA TABLES), spec §8: "Creating a table is the existing
    * POST /api/pages with kind: 'table' (+ optionally columns for a template)".
@@ -627,6 +1162,8 @@ export type ChangePageSlugBody = z.infer<typeof changePageSlugBodySchema>;
 export interface GitRepoTreeResponse {
   /** The names of the subdirectories inside path (without path itself), sorted. */
   dirs: string[];
+  /** true — `path` itself holds an `.obsidian/` folder: the repository (or the chosen sub-folder) is an Obsidian vault. */
+  vault?: boolean;
 }
 
 export const updateMyPreferencesBodySchema = z.object({
@@ -821,8 +1358,13 @@ export const createSpaceGit = z.object({
   rootPath: z.string().optional(),      // default: "" (the root of the repository)
   token: z.string().optional(),         // an https token; kept outside git, not logged
   importId: z.string().uuid().optional(), // an id for polling the progress of a long git import
+  /** Light footprint (no ids in files). Omitted = on for a repository that brings its own files (an Obsidian vault, a notes repo, a wiki), off for an empty repository and for one that already is a Folio space (a `<slug>.folio` at its root); a non-empty rootPath is light regardless. */
+  lightFootprint: z.boolean().optional(),
 });
 export type CreateSpaceGitBody = z.infer<typeof createSpaceGit>;
+
+/** POST /api/spaces and POST /api/spaces/:space/connect-git: the space, plus whether the repository turned out to be an Obsidian vault (an `.obsidian/` folder at the content root or the repository root). */
+export type SpaceWithVaultNote = SpaceInfo & { vaultDetected?: boolean };
 
 export type SpaceImportPhase = 'preparing' | 'checking' | 'cloning' | 'scanning' | 'finalizing' | 'done' | 'error';
 export interface SpaceImportProgress {

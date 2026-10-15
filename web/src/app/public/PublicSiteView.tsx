@@ -52,7 +52,9 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
 
   const nodes = useMemo(() => (treeQuery.data ? getTopLevelNodes({ tree: treeQuery.data.tree }) : []), [treeQuery.data]);
   const page = pageQuery.data?.page;
-  const spaceName = pageQuery.data?.spaceName ?? site.name;
+  // The site's own title (.folio/site.json) wins over the space's name.
+  const spaceName = site.title ?? pageQuery.data?.spaceName ?? site.name;
+  const siteName = site.title ?? site.name;
 
   // `<page> · <space>`; restored on the way out, like useDocumentTitle does for the app.
   useEffect(() => {
@@ -62,6 +64,31 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
       document.title = original;
     };
   }, [page, spaceName]);
+
+  // The site's stylesheet (.folio/site.css, sanitized by the server): linked while the site is on screen. A server-rendered
+  // <link> to the same URL is reused, not duplicated, and stays when the site unmounts.
+  useEffect(() => {
+    const href = site.cssUrl;
+    if (!href) return;
+    const present = Array.from(document.head.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')).some((link) => link.getAttribute('href') === href);
+    if (present) return;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = href;
+    document.head.appendChild(link);
+    return () => link.remove();
+  }, [site.cssUrl]);
+
+  // <html lang> from site.json, put back on the way out.
+  useEffect(() => {
+    const lang = site.lang;
+    if (!lang) return;
+    const original = document.documentElement.lang;
+    document.documentElement.lang = lang;
+    return () => {
+      document.documentElement.lang = original;
+    };
+  }, [site.lang]);
 
   // The page area is its own scroll container, so moving to another page must not keep the previous page's scroll offset.
   useEffect(() => {
@@ -94,11 +121,12 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
   const pageNotFound = pageQuery.isError && pageQuery.error instanceof ApiError && pageQuery.error.status === 404;
 
   return (
-    <div className="flex h-full min-h-0 bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+    <div className="folio-site flex h-full min-h-0 bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
       {menuOpen && <div className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
 
       <aside
-        aria-label={site.name}
+        aria-label={siteName}
+        data-folio-site-part="sidebar"
         className={`${
           menuOpen ? 'fixed inset-y-0 left-0 z-40 flex shadow-xl' : 'hidden'
         } w-72 max-w-[85vw] shrink-0 flex-col border-r border-neutral-200 bg-neutral-50 md:static md:z-auto md:flex md:max-w-none md:shadow-none dark:border-neutral-800 dark:bg-neutral-900`}
@@ -108,9 +136,10 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
           <Link
             to={publicHomeUrl(site)}
             onClick={() => setMenuOpen(false)}
-            className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight text-neutral-900 dark:text-neutral-100"
+            className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold tracking-tight text-neutral-900 dark:text-neutral-100"
           >
-            {site.name}
+            {site.logoUrl && <img src={site.logoUrl} alt="" className="h-6 w-auto max-w-[8rem] shrink-0 object-contain" />}
+            <span className="min-w-0 truncate">{siteName}</span>
           </Link>
           <button
             type="button"
@@ -152,7 +181,7 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
         </div>
 
         {/* Pinned to the bottom like the app sidebar's user menu: the way into the app, and the product credit. */}
-        <div className="shrink-0 border-t border-neutral-200 p-2 dark:border-neutral-800">
+        <div data-folio-site-part="footer" className="shrink-0 border-t border-neutral-200 p-2 dark:border-neutral-800">
           <a
             href={appPageUrl(site, effectiveId)}
             className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-neutral-700 hover:bg-neutral-100 md:py-1.5 dark:text-neutral-300 dark:hover:bg-neutral-800/70"
@@ -174,7 +203,10 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Heights and padding as the app's header (header/Header.tsx). No backdrop-blur and no z-index on purpose: the Ask AI sheet and the search dialog are `fixed` inside it, and a backdrop-filter would make the header their containing block. */}
-        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-neutral-200 bg-white px-3 dark:border-neutral-800 dark:bg-neutral-950">
+        <header
+          data-folio-site-part="header"
+          className="flex h-14 shrink-0 items-center gap-2 border-b border-neutral-200 bg-white px-3 dark:border-neutral-800 dark:bg-neutral-950"
+        >
           <button
             type="button"
             aria-label={t('publicSite.openMenu')}
@@ -188,7 +220,7 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
             <ol className="flex min-w-0 items-center gap-1 text-sm text-neutral-500 dark:text-neutral-400">
               <li className="min-w-0 shrink-0 truncate">
                 <Link to={publicHomeUrl(site)} className="hover:text-neutral-900 dark:hover:text-neutral-100">
-                  {site.name}
+                  {siteName}
                 </Link>
               </li>
               {crumbs.map((crumb) => (
@@ -220,7 +252,7 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
           )}
         </header>
 
-        <main ref={mainRef} className="min-h-0 flex-1 overflow-auto">
+        <main ref={mainRef} data-folio-site-part="main" className="min-h-0 flex-1 overflow-auto">
           {pageQuery.isLoading && <div className="p-8 text-sm text-neutral-400">{t('ui.loading')}</div>}
           {pageNotFound && (
             <div className="p-8 text-sm text-neutral-500 dark:text-neutral-400">
@@ -233,10 +265,14 @@ export function PublicSiteView({ site, pageId }: PublicSiteViewProps) {
           {pageQuery.isError && !pageNotFound && (
             <div className="p-8 text-sm text-red-600 dark:text-red-400">{t('publicSite.loadFailed')}</div>
           )}
-          {page && <PublicPageBody site={site} page={page} />}
+          {page && (
+            <div data-folio-site-part="page" className="h-full">
+              <PublicPageBody site={site} page={page} />
+            </div>
+          )}
           {!effectiveId && (
             <div className="mx-auto max-w-2xl px-6 py-10">
-              <h1 className="mb-4 text-2xl font-semibold tracking-tight">{site.name}</h1>
+              <h1 className="mb-4 text-2xl font-semibold tracking-tight">{siteName}</h1>
               {treeQuery.isLoading && <p className="text-sm text-neutral-400">{t('ui.loading')}</p>}
               {treeQuery.data && nodes.length === 0 && <p className="text-sm text-neutral-500 dark:text-neutral-400">{t('publicSite.empty')}</p>}
               {treeQuery.data && nodes.length > 0 && (

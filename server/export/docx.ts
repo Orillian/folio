@@ -21,10 +21,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
+  Image,
   Node,
   Nodes,
   Parent,
   PhrasingContent,
+  Root,
   RootContent,
   Table as MdTable,
   TableCell as MdTableCell,
@@ -57,6 +59,8 @@ import {
 import * as storage from '../storage.js';
 import type { PageIndexEntry } from '../storage.js';
 import { rasterizeSvg } from './pdf.js';
+import { fitImage, probeImage, splitAltSize } from './imageSize.js';
+import { visit } from 'unist-util-visit';
 import {
   groupLegacyMarkupSpans,
   isHighlightGroup,
@@ -65,10 +69,12 @@ import {
   type HighlightItem,
   type HighlightTextAdapter,
 } from '../../shared/highlight.js';
+import { remarkOfm } from '../../shared/ofm/remark.js';
 import { remarkUnderline } from '../../shared/underline.js';
 import { DECODED_STATUS_RE, STATUS_PALETTE, cleanStatusLabel, parseStatusAttrs, resolveStatusColor } from '../../shared/status.js';
 
-const parser = unified().use(remarkParse).use(remarkGfm).use(remarkUnderline);
+// remarkOfm (export mode) is a transformer, so the tree is RUN as well as parsed; see print.ts for what it turns Obsidian syntax into.
+const parser = unified().use(remarkParse).use(remarkGfm).use(remarkUnderline).use(remarkOfm, { mode: 'export' });
 
 const HEADING_LEVELS = [
   HeadingLevel.HEADING_1,
@@ -123,7 +129,7 @@ interface DocxContext {
   space: string;
   baseUrl: string;
   /** Images already read/rasterized, keyed by their resolved absolute path. */
-  imageCache: Map<string, { data: Buffer; width: number; height: number } | null>;
+  imageCache: Map<string, LoadedImage | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +160,8 @@ function markTag(node: PhrasingContent): 'open' | 'close' | undefined {
   return undefined;
 }
 
+type InlineRun = TextRun | ImageRun | ExternalHyperlink;
+
 /**
  * Entry point for a run of sibling `PhrasingContent` — a paragraph's,
  * heading's, table cell's, or list item's inline content, AND (via the
@@ -165,7 +173,7 @@ function markTag(node: PhrasingContent): 'open' | 'close' | undefined {
  * left, so a `==` span is free to sit next to (never inside) a legacy one —
  * before handing the result to `renderHighlightItems`.
  */
-function renderInline(nodes: readonly PhrasingContent[], style: InlineStyle): (TextRun | ExternalHyperlink)[] {
+function renderInline(nodes: readonly PhrasingContent[], style: InlineStyle): InlineRun[] {
   const items = splitHighlightMarkers(groupLegacyMarkupSpans(nodes, markTag), mdastHighlightAdapter);
   return renderHighlightItems(items, style);
 }
@@ -174,8 +182,8 @@ function renderInline(nodes: readonly PhrasingContent[], style: InlineStyle): (T
 function renderHighlightItems(
   items: readonly HighlightItem<PhrasingContent>[],
   style: InlineStyle,
-): (TextRun | ExternalHyperlink)[] {
-  const out: (TextRun | ExternalHyperlink)[] = [];
+): InlineRun[] {
+  const out: InlineRun[] = [];
   let batch: PhrasingContent[] = [];
   const flush = (): void => {
     if (batch.length === 0) return;
@@ -227,8 +235,8 @@ function textRuns(value: string, style: InlineStyle): TextRun[] {
   return runs;
 }
 
-function runsFor(nodes: readonly PhrasingContent[], style: InlineStyle): (TextRun | ExternalHyperlink)[] {
-  const out: (TextRun | ExternalHyperlink)[] = [];
+function runsFor(nodes: readonly PhrasingContent[], style: InlineStyle): InlineRun[] {
+  const out: InlineRun[] = [];
   for (const node of nodes) {
     switch (node.type) {
       case 'text':
@@ -253,13 +261,19 @@ function runsFor(nodes: readonly PhrasingContent[], style: InlineStyle): (TextRu
         out.push(new TextRun({ text: '', break: 1 }));
         break;
       case 'link': {
-        const children = renderInline(node.children, { ...style }).filter((c): c is TextRun => c instanceof TextRun);
+        const children = renderInline(node.children, { ...style }).filter((c): c is TextRun | ImageRun => c instanceof TextRun || c instanceof ImageRun);
         const label = children.length > 0 ? children : [new TextRun({ text: node.url })];
         // In-document `#anchor` links have no Word target here (the collated
         // document has no bookmarks) — render them as plain text rather than
         // as a hyperlink that goes nowhere.
         if (node.url.startsWith('#')) out.push(...label);
         else out.push(new ExternalHyperlink({ children: label.map((r) => r), link: node.url }));
+        break;
+      }
+      case 'image': {
+        // Inline image (a paragraph that also has text): an inline run, or a visible placeholder — never silently dropped.
+        const run = imageRunFor(node);
+        out.push(run ?? new TextRun({ text: `[image: ${imageName(node)}]`, italics: true, ...style }));
         break;
       }
       case 'html':
@@ -287,13 +301,19 @@ function insideSpace(spaceDir: string, candidate: string): boolean {
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
-/** Reads the intrinsic size out of a PNG header, so an inserted image keeps its aspect ratio. */
-function pngSize(buf: Buffer): { width: number; height: number } | null {
-  if (buf.length < 24 || buf.readUInt32BE(0) !== 0x89504e47) return null;
-  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+interface LoadedImage {
+  data: Buffer;
+  /** What docx embeds it as — the library takes png, jpg, gif, bmp (WebP and SVG are converted to PNG first). */
+  type: 'png' | 'jpg' | 'gif' | 'bmp';
+  /** Natural size in CSS pixels. */
+  width: number;
+  height: number;
 }
 
-async function loadImage(ctx: DocxContext, url: string): Promise<{ data: Buffer; width: number; height: number } | null> {
+/** Loaded images by their mdast node, filled by `prepareImages` before rendering so the synchronous inline renderer can embed them. */
+const resolvedImages = new WeakMap<object, LoadedImage | null>();
+
+async function loadImage(ctx: DocxContext, url: string): Promise<LoadedImage | null> {
   const prefixes = [`${ctx.baseUrl}/files/${ctx.space}/`, `/files/${ctx.space}/`];
   const prefix = prefixes.find((p) => url.startsWith(p));
   if (!prefix) return null; // remote images are not fetched — same policy as the PDF path
@@ -311,25 +331,34 @@ async function loadImage(ctx: DocxContext, url: string): Promise<{ data: Buffer;
   const cached = ctx.imageCache.get(abs);
   if (cached !== undefined) return cached;
 
-  let result: { data: Buffer; width: number; height: number } | null = null;
+  let result: LoadedImage | null = null;
   try {
-    if (relPath.endsWith('.excalidraw.svg') || relPath.endsWith('.svg')) {
+    if (/\.svg$/i.test(relPath)) {
       // R23 addendum 3: SVG in DOCX is unreliable, so the board goes through
       // the same chromium the PDF path already needs, at 2x for legible labels.
       const svg = await fs.readFile(abs, 'utf8');
       const png = await rasterizeSvg(svg.replace(/^(?:\s*<!--\s*folio-[a-z-]+:[^>]*-->)+\s*/i, ''));
       if (png) {
-        const size = pngSize(png) ?? { width: CONTENT_WIDTH_PX, height: 400 };
-        result = { data: png, ...size };
+        const size = probeImage(png) ?? { width: CONTENT_WIDTH_PX, height: 400 };
+        result = { data: png, type: 'png', width: size.width, height: size.height };
       }
-    } else if (/\.png$/i.test(relPath)) {
+    } else {
       const data = await fs.readFile(abs);
-      const size = pngSize(data) ?? { width: CONTENT_WIDTH_PX, height: 400 };
-      result = { data, ...size };
+      const probe = probeImage(data);
+      if (probe && probe.type !== 'webp') {
+        result = { data, type: probe.type, width: probe.width, height: probe.height };
+      } else if (probe) {
+        // WebP: docx cannot embed it and no image library is installed, so chromium (already needed for PDF) decodes it.
+        const w = Math.min(probe.width, 4000);
+        const h = Math.max(1, Math.round((probe.height * w) / Math.max(1, probe.width)));
+        const png = await rasterizeSvg(
+          `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><image width="${w}" height="${h}" href="data:image/webp;base64,${data.toString('base64')}"/></svg>`,
+          w,
+        );
+        if (png) result = { data: png, type: 'png', width: probe.width, height: probe.height };
+      }
     }
-    // Other bitmap formats are skipped rather than guessed at: docx needs a
-    // declared type AND real pixel dimensions, and inventing either produces
-    // a document Word renders wrong.
+    // Anything else (AVIF, TIFF, ...) stays null: the caller prints a visible placeholder rather than dropping it.
   } catch {
     result = null;
   }
@@ -338,10 +367,35 @@ async function loadImage(ctx: DocxContext, url: string): Promise<{ data: Buffer;
   return result;
 }
 
-function scaleToWidth(size: { width: number; height: number }): { width: number; height: number } {
-  if (size.width <= CONTENT_WIDTH_PX) return size;
-  const ratio = CONTENT_WIDTH_PX / size.width;
-  return { width: CONTENT_WIDTH_PX, height: Math.max(1, Math.round(size.height * ratio)) };
+/** Resolves every image in the tree up front (the inline renderer is synchronous). */
+async function prepareImages(tree: Root, ctx: DocxContext): Promise<void> {
+  const images: Image[] = [];
+  visit(tree, 'image', (node: Image) => {
+    images.push(node);
+  });
+  for (const node of images) resolvedImages.set(node, await loadImage(ctx, node.url));
+}
+
+function imageRunFor(node: Image): ImageRun | null {
+  const loaded = resolvedImages.get(node);
+  if (!loaded) return null;
+  const { width, height } = splitAltSize(node.alt);
+  return new ImageRun({
+    type: loaded.type,
+    data: loaded.data,
+    transformation: fitImage(loaded, { width, height }, CONTENT_WIDTH_PX),
+    altText: { name: 'image', description: splitAltSize(node.alt).alt || 'image', title: splitAltSize(node.alt).alt || 'image' },
+  });
+}
+
+function imageName(node: Image): string {
+  const alt = splitAltSize(node.alt).alt;
+  if (alt) return alt;
+  try {
+    return decodeURIComponent(node.url.split('#')[0].split('?')[0].split('/').pop() || node.url);
+  } catch {
+    return node.url;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -427,22 +481,16 @@ async function blockFor(node: RootContent, ctx: DocxContext): Promise<(Paragraph
       // the board page's title — see markdown.ts's board section).
       const only = node.children.length === 1 ? node.children[0] : undefined;
       if (only && only.type === 'image') {
-        const loaded = await loadImage(ctx, only.url);
-        const caption = only.alt ?? '';
-        if (!loaded) {
+        const run = imageRunFor(only);
+        const caption = splitAltSize(only.alt).alt;
+        if (!run) {
           return [
             new Paragraph({
-              children: [new ExternalHyperlink({ children: [new TextRun({ text: caption || only.url, italics: true })], link: only.url })],
+              children: [new ExternalHyperlink({ children: [new TextRun({ text: caption ? `[image: ${caption}]` : only.url, italics: true })], link: only.url })],
             }),
           ];
         }
-        const size = scaleToWidth(loaded);
-        const blocks: Paragraph[] = [
-          new Paragraph({
-            alignment: AlignmentType.CENTER,
-            children: [new ImageRun({ type: 'png', data: loaded.data, transformation: size })],
-          }),
-        ];
+        const blocks: Paragraph[] = [new Paragraph({ alignment: AlignmentType.CENTER, children: [run] })];
         if (caption) {
           blocks.push(
             new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: caption, italics: true, size: 18 })] }),
@@ -504,8 +552,9 @@ export interface RenderDocxOptions {
 }
 
 export async function renderDocx(opts: RenderDocxOptions): Promise<Buffer> {
-  const tree = parser.parse(opts.markdown);
+  const tree = (await parser.run(parser.parse(opts.markdown), opts.markdown)) as Root;
   const ctx: DocxContext = { space: opts.entry.space, baseUrl: opts.baseUrl, imageCache: new Map() };
+  await prepareImages(tree, ctx);
 
   const children: (Paragraph | Table)[] = [];
   for (const node of tree.children) children.push(...(await blockFor(node, ctx)));

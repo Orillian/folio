@@ -50,6 +50,37 @@ describe('links / backlinks (real PG)', () => {
     expect(rows.some((r) => r.kind === 'page' && r.target_page_id === target.id)).toBe(true);
   });
 
+  it('a percent-encoded or extensionless link to an existing page is a page link, and resolve() opens it', async () => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const dir = storage.getSpaceDir(spaceSlug);
+    await fs.mkdir(path.join(dir, 'guide'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'guide', 'Getting Started.md'), '# Getting Started\n', 'utf8');
+    await fs.writeFile(path.join(dir, 'guide', 'install.md'), '# Install\n', 'utf8');
+    await storage.scanSpace(spaceSlug);
+    const started = (await storage.getEntryIdByExactPath(spaceSlug, 'guide/Getting Started.md'))!;
+    const install = (await storage.getEntryIdByExactPath(spaceSlug, 'guide/install.md'))!;
+    expect(started && install).toBeTruthy();
+
+    const source = await storage.createPage({ space: spaceSlug, parentPath: '', title: 'Tolerant Links', kind: 'doc' });
+    await storage.writeDocBody(source.id, '# Tolerant Links\n\n[a](guide/Getting%20Started.md) [b](./guide/install) [c](guide/missing)\n');
+    const rows = await query<{ kind: string; target_page_id: string | null; target_path: string }>(
+      'SELECT kind, target_page_id, target_path FROM links WHERE source_page_id = $1 ORDER BY target_path',
+      [source.id],
+    );
+    expect(rows.filter((r) => r.kind === 'page').map((r) => r.target_page_id).sort()).toEqual([started, install].sort());
+    // Wave 3: a non-page target that is no file of the space (and no folder) is unresolved, not an asset.
+    expect(rows.find((r) => r.target_path === 'guide/missing')?.kind).toBe('broken');
+    expect((await links.getBacklinks(started)).map((b) => b.id)).toContain(source.id);
+
+    expect((await storage.resolve(spaceSlug, 'guide/Getting%20Started.md')).id).toBe(started);
+    expect((await storage.resolve(spaceSlug, 'guide/Getting%20Started')).id).toBe(started);
+    expect((await storage.resolve(spaceSlug, 'guide/install')).id).toBe(install);
+    await expect(storage.resolve(spaceSlug, 'guide/missing')).rejects.toThrow();
+    // A malformed escape is a miss, not a crash.
+    await expect(storage.resolve(spaceSlug, 'guide/100%.md')).rejects.toThrow(/page/);
+  });
+
   it('delete+reinsert: removing the link from the source body removes the backlink', async () => {
     const target = await storage.createPage({ space: spaceSlug, parentPath: '', title: 'Volatile Target', kind: 'doc' });
     const source = await storage.createPage({ space: spaceSlug, parentPath: '', title: 'Volatile Source', kind: 'doc' });

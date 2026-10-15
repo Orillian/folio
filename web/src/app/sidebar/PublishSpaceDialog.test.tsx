@@ -8,6 +8,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router';
 import i18next from 'i18next';
 import type { SpacePublicSettingsResponse, SpaceVisibility } from '@shared/contracts';
 import { ToastProvider } from '../ui/Toast';
@@ -26,7 +27,7 @@ afterEach(() => {
 function settings(overrides: Partial<SpacePublicSettingsResponse> = {}, visibility: SpaceVisibility = 'public'): SpacePublicSettingsResponse {
   return {
     visibility,
-    settings: { subdomain: null, domain: null, allowDownload: false, allowAssistant: false },
+    settings: { subdomain: null, domain: null, allowDownload: false, allowAssistant: false, indexing: true, primaryHost: 'auto' },
     urls: { path: 'https://folio.example.com/public/docs', subdomain: null, domain: null },
     sitesDomain: 'sites.example.com',
     mainHost: 'folio.example.com',
@@ -68,7 +69,9 @@ function renderDialog() {
   return render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <PublishSpaceDialog space="docs" onClose={() => {}} />
+        <MemoryRouter>
+          <PublishSpaceDialog space="docs" onClose={() => {}} />
+        </MemoryRouter>
       </ToastProvider>
     </QueryClientProvider>,
   );
@@ -134,7 +137,24 @@ describe('PublishSpaceDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(puts()[0]).toEqual({ subdomain: 'my-docs', domain: 'docs.example.com', allowDownload: true, allowAssistant: false });
+    expect(puts()[0]).toEqual({ subdomain: 'my-docs', domain: 'docs.example.com', allowDownload: true, allowAssistant: false, indexing: true, primaryHost: 'auto' });
+  });
+
+  it('sends the indexing switch and the primary address, offering only the addresses that are filled in, and links to the site settings page', async () => {
+    const { puts } = stubApi(settings({ settings: { subdomain: null, domain: 'docs.example.com', allowDownload: false, allowAssistant: false, indexing: true, primaryHost: 'auto' } }));
+    renderDialog();
+    const primary = (await screen.findByLabelText('Primary address')) as HTMLSelectElement;
+    const option = (value: string) => Array.from(primary.options).find((o) => o.value === value) as HTMLOptionElement;
+    expect(option('domain').disabled).toBe(false);
+    expect(option('subdomain').disabled).toBe(true); // no subdomain chosen yet
+
+    fireEvent.click(screen.getByLabelText('Allow search engines to index this site'));
+    fireEvent.change(primary, { target: { value: 'domain' } });
+    expect(screen.getByRole('link', { name: 'Appearance, SEO and CSS of the site →' }).getAttribute('href')).toBe('/s/docs/settings?tab=site');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(puts()[0]).toEqual({ subdomain: null, domain: 'docs.example.com', allowDownload: false, allowAssistant: false, indexing: false, primaryHost: 'domain' });
   });
 
   it('refuses an invalid subdomain before sending anything', async () => {

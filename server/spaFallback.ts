@@ -22,7 +22,10 @@ import type { FastifyStaticOptions } from '@fastify/static';
 // inscrutable "Failed to fetch dynamically imported module" instead of a
 // clean 404 the client can actually detect and recover from (see
 // web/src/app/stale-chunk.ts).
-const NEVER_SPA_FALLBACK = ['/api/', '/files/', '/a/', '/collab', '/assets/'];
+// `/robots.txt` and `/sitemap.xml` (public sites, 14.10.2026) are answered by
+// publicSeo.ts; a miss there must never be index.html with 200 — a crawler
+// would take the HTML for the file.
+const NEVER_SPA_FALLBACK = ['/api/', '/files/', '/a/', '/collab', '/assets/', '/robots.txt', '/sitemap.xml'];
 
 export function shouldServeSpaFallback(method: string | undefined, url: string): boolean {
   if (method !== 'GET') return false;

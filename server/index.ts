@@ -20,8 +20,15 @@ import { registerExportRoutes, registerPublicExportRoutes } from './export/route
 import { registerAccessRoutes } from './access/routes.js';
 import { registerPublicSiteRoutes, registerPublicSiteAdminRoutes } from './publicSiteRoutes.js';
 import { publicSiteForShell } from './publicSites.js';
+import { resolvePublicSiteHead } from './publicSiteMeta.js';
+import { registerPublicSeoRoutes } from './publicSeo.js';
+import { registerSpaceAppearanceRoutes } from './spaceAppearanceRoutes.js';
+import { registerPropertiesRoutes } from './propertiesRoutes.js';
+import { registerSpaceFilesRoutes } from './spaceFilesRoutes.js';
 import { registerTrashRoutes } from './trash/routes.js';
 import { registerPageChangeRoutes } from './pageChangesRoutes.js';
+import { registerTagRoutes } from './tagsRoutes.js';
+import { registerSavedSearchRoutes } from './savedSearchesRoutes.js';
 import { registerAssistantRoutes } from './assistant/routes.js';
 import { registerPublicAssistantRoutes } from './assistant/publicRoutes.js';
 import { registerAssistantAdminRoutes } from './assistant/adminRoutes.js';
@@ -111,12 +118,16 @@ app.setNotFoundHandler(async (request, reply) => {
   const pathname = request.url.split('?')[0];
   const requestOrigin = `${request.protocol}://${request.hostname}`;
   // A published space (public sites): its own host, or /public/<slug>, gets the
-  // space's name as <title> and, on its own host, the folio-public-site marker.
-  const site = await publicSiteForShell(request.hostname, pathname);
+  // page's SEO head (publicSiteMeta.ts: title, description, canonical, lang,
+  // favicon, noindex) and, on its own host, the folio-public-site marker. A page
+  // that is not on the site answers 404 with the same shell (the SPA still
+  // renders its not-found view; a crawler sees the status).
+  const head = await resolvePublicSiteHead(request.hostname, pathname, requestOrigin);
+  const site = head ? head.site : await publicSiteForShell(request.hostname, pathname);
   const indexHtml = renderIndexHtml(fs.readFileSync(indexPath, 'utf8'), requestOrigin, pathname, site);
   const shareMatch = matchShareRoute(pathname);
   if (!shareMatch) {
-    reply.type('text/html').send(indexHtml);
+    reply.status(head?.status ?? 200).type('text/html').send(indexHtml);
     return;
   }
   // Share links are unlisted, not public — same header the JSON share
@@ -179,6 +190,9 @@ async function main(): Promise<void> {
   // "Ask Folio AI" on a public site: POST/GET /api/public/spaces/:slug/assistant/** —
   // anonymous, Ask-only, confined to that one space, limited per IP and per space.
   registerPublicAssistantRoutes(app);
+  // Public sites, SEO (14.10.2026): GET /robots.txt, /sitemap.xml (both by Host) and
+  // /public/:slug/sitemap.xml. Real routes, so they win over the SPA fallback.
+  registerPublicSeoRoutes(app);
 
   // Round 8 follow-up (prod bug: images inside a shared page were 401ing for a
   // guest — this route used to live inside the session-gated scope below).
@@ -252,11 +266,18 @@ async function main(): Promise<void> {
     registerExportRoutes(protectedScope);
     registerAccessRoutes(protectedScope);
     registerPublicSiteAdminRoutes(protectedScope);
+    // 14.10.2026: GET/PUT /api/spaces/:space/appearance and its assets — the space's `.folio/` folder.
+    registerSpaceAppearanceRoutes(protectedScope);
+    registerPropertiesRoutes(protectedScope);
+    registerSpaceFilesRoutes(protectedScope);
     registerTrashRoutes(protectedScope);
     registerPageChangeRoutes(protectedScope);
     registerAssistantRoutes(protectedScope);
     registerAssistantAdminRoutes(protectedScope);
     registerNotificationRoutes(protectedScope);
+    // 14.10.2026 (Obsidian wave 3): tag pages + rename, and the person's saved searches.
+    registerTagRoutes(protectedScope);
+    registerSavedSearchRoutes(protectedScope);
   });
 
   // Production: the built SPA is served by this same process (Docker image has no
@@ -272,13 +293,16 @@ async function main(): Promise<void> {
       if (request.method !== 'GET' && request.method !== 'HEAD') return;
       const pathname = request.url.split('?')[0];
       if (pathname !== '/' && pathname !== '/index.html') return;
+      const origin = `${request.protocol}://${request.hostname}`;
+      // On a site's own host '/' is the site's home page: its SEO head (publicSiteMeta.ts).
+      const head = await resolvePublicSiteHead(request.hostname, '/', origin);
       const html = renderIndexHtml(
         fs.readFileSync(path.join(distRoot, 'index.html'), 'utf8'),
-        `${request.protocol}://${request.hostname}`,
+        origin,
         '/',
-        await publicSiteForShell(request.hostname, '/'),
+        head ? head.site : await publicSiteForShell(request.hostname, '/'),
       );
-      return reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(html);
+      return reply.status(head?.status ?? 200).header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(html);
     });
     await app.register(fastifyStatic, spaStaticOptions(distRoot));
     spaFallbackRoot = distRoot;

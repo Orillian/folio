@@ -7,7 +7,10 @@ import remarkRehype from 'remark-rehype';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import rehypeStringify from 'rehype-stringify';
-import { remarkAlerts } from './alerts';
+import { remarkOfm } from '@shared/ofm/remark';
+import { calloutDisplayName } from './alerts';
+import { rehypeOfmLinks } from './rehypeOfmLinks';
+import { WIKILINKS_UNAVAILABLE, type WikilinkContext } from './wikilinks';
 import { remarkGlossaryTerms } from './glossaryTerms';
 import { remarkDirectiveFallback } from './directiveFallback';
 import { remarkStatus } from './status';
@@ -57,6 +60,19 @@ export interface RenderOptions {
    * exactly as without a share token.
    */
   publicSite?: Pick<MarkdownPublicSite, 'space' | 'pageUrl' | 'homeUrl' | 'instanceUrl'>;
+  /**
+   * Obsidian wikilinks (`[[Note]]`, `![[Note]]`): what the page's metadata says about them - see wikilinks.ts.
+   * Absent = nothing can resolve them here, they are drawn as their text.
+   */
+  wikilinks?: WikilinkContext;
+  /** The in-app URL of one page, for a resolved wikilink. Default `/s/<space>/p/<id>`; the public site passes its own. */
+  pageUrl?: (pageId: string) => string;
+  /** `![[Note]]` placeholders may be filled by the component (a session or a public site is there to fetch the note). Default false. */
+  embedsEnabled?: boolean;
+  /** A `#tag` chip is a link that does something (opens the search). Default false: the chip is plain. */
+  tagsClickable?: boolean;
+  /** Rendering a note embedded in another page: the host's note numbering is left alone. */
+  embedded?: boolean;
   /** Test-only override for rehypeFolioPageLinks' resolve/hasFailed/ensureResolve — see its own doc comment. Production callers never pass this, defaulting to the real folioLinkIndex.ts cache. */
   folioLinks?: Pick<FolioPageLinksOptions, 'resolve' | 'hasFailed' | 'ensureResolve'>;
 }
@@ -65,10 +81,14 @@ export interface RenderOptions {
  * Renders one markdown *segment* (never raw ```mermaid fences — those are
  * split out by `splitMermaidFences` before this runs) to sanitized HTML.
  *
- * Pipeline: remark-parse -> remark-gfm -> remarkAlerts -> remarkGlossaryTerms
+ * Pipeline: remark-parse -> remark-gfm -> remarkOfm (Obsidian-flavoured markdown:
+ * wikilinks and embeds, `%%comments%%`, `#tags`, `$math$`, callouts of any type
+ * with fold and title - GitHub's five alerts included - and `^block-id`s; ONE
+ * plugin, shared/ofm/remark.ts, also run by the PDF/DOCX exports. It needs the
+ * parser's node positions, so it runs before remark-breaks) -> remarkGlossaryTerms
  * (glossary terms, round 31: strips `*[Term]: description` declarations and
  * wraps later occurrences of the term in `<abbr title="description">` — see
- * glossaryTerms.ts; runs on mdast, like remarkAlerts, before anything turns
+ * glossaryTerms.ts; runs on mdast, like remarkOfm, before anything turns
  * this into hast) -> remarkDirective
  * (round 13: parses `::name{attrs}` syntax into leafDirective/
  * containerDirective mdast nodes — doesn't render anything itself, see its
@@ -84,7 +104,9 @@ export interface RenderOptions {
  * e.g. a pasted "Copy link" link — becomes an in-app page link
  * showing its title, see rehypeFolioLinks.ts; must run BEFORE
  * rehypeRelativeLinks below, which would otherwise treat it as a plain
- * external link) -> rehypeRelativeLinks (rewrites RELATIVE hrefs/srcs, must
+ * external link) -> rehypeOfmLinks (wikilinks resolved through the page's
+ * metadata, embed placeholders, tag chips - see rehypeOfmLinks.ts; AFTER the
+ * Folio-URL pass so a wikilink keeps the words its author wrote) -> rehypeRelativeLinks (rewrites RELATIVE hrefs/srcs, must
  * see real <a>/<img> elements, so after rehype-raw) -> rehypeTableExtensions (round 17: rebuilds a pipe table's rows
  * from the merge layer the source carries and the `[//]: # (folio-table: …)`
  * metadata line — it re-reads the markdown through the node positions, so it
@@ -148,8 +170,8 @@ export function renderMarkdownToHtml(
     // into one line, and a page typed line by line in Live edit became one
     // solid paragraph in reading. remarkBreaks makes a soft break a real <br>,
     // so reading shows the same thing the person saw while writing.
+    .use(remarkOfm, { mode: 'reading', calloutLabel: calloutDisplayName })
     .use(remarkBreaks)
-    .use(remarkAlerts)
     .use(remarkGlossaryTerms)
     .use(remarkDirective)
     .use(remarkStatus)
@@ -157,13 +179,20 @@ export function renderMarkdownToHtml(
     .use(remarkRehype, { allowDangerousHtml: true })
     .use(rehypeRaw)
     .use(rehypeFolioPageLinks, { origin: options.origin, shareToken: options.shareToken, publicSite: options.publicSite, ...options.folioLinks })
-    .use(rehypeRelativeLinks, options)
+    .use(rehypeOfmLinks, {
+      space: options.space,
+      wikilinks: options.wikilinks ?? WIKILINKS_UNAVAILABLE,
+      pageUrl: options.pageUrl ?? ((pageId: string) => `/s/${encodeURIComponent(options.space)}/p/${encodeURIComponent(pageId)}`),
+      embeds: options.embedsEnabled ?? false,
+      tagsClickable: options.tagsClickable ?? false,
+    })
+    .use(rehypeRelativeLinks, { ...options, wikilinks: options.wikilinks })
     .use(rehypeTableExtensions)
     .use(rehypeCellLists)
     .use(rehypeWrapTables, tableIndexCursor)
     .use(rehypeFlagStrayTables)
     .use(rehypeAssignHeadingIds, headingCursor)
-    .use(rehypeAssignNoteIds, noteCursor)
+    .use(rehypeAssignNoteIds, options.embedded ? undefined : noteCursor)
     .use(rehypeCollapsibleSections)
     .use(rehypeMentions, options.mentionLookup)
     .use(rehypeHighlight)

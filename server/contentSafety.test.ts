@@ -225,9 +225,12 @@ describe('a doc room never holds a carriage return (review of 54d4e76)', () => {
       Y.applyUpdate(stored, (await collab.loadSnapshot(page.id))!);
       expect(stored.getText('content').toString()).toBe('# Crlf\n\nthree\n');
 
-      // Non-live body write: the file is written LF-only.
+      // Non-live body write: the text goes in LF-only; the file (LF block over a CRLF body) keeps each line's own ending.
       await collab.editDocBody(page.id, '# Crlf\r\n\r\nfour\r\n');
-      expect(await storage.readFreshDocBody(page.id)).toBe('# Crlf\n\nfour\n');
+      expect(await storage.readFreshDocBody(page.id)).toBe('# Crlf\r\n\r\nfour\r\n');
+      const live = new Y.Doc();
+      await collab.bindState(page.id, live);
+      expect(live.getText('content').toString()).toBe('# Crlf\n\nfour\n');
     } finally {
       await deleteTestSpace(space.slug);
     }

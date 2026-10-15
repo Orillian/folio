@@ -30,7 +30,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) } as Response;
 }
 
-function stubApi() {
+function stubApi(opts: { vault?: boolean } = {}) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     if (url.startsWith('/api/me/git-credentials')) {
@@ -50,7 +50,11 @@ function stubApi() {
       });
     }
     if (url.startsWith('/api/git/branches')) return jsonResponse({ branches: ['main'], defaultBranch: 'main', empty: false });
-    if (url.startsWith('/api/git/tree')) return jsonResponse({}, 404); // not under test here — degrades silently
+    if (url.startsWith('/api/git/tree')) {
+      // Not under test unless a vault is asked for — otherwise it degrades silently, as when the endpoint is unavailable.
+      return opts.vault ? jsonResponse({ dirs: ['.obsidian', 'Notes'], vault: true }) : jsonResponse({}, 404);
+    }
+    if (url === '/api/spaces' && _init?.method === 'POST') return jsonResponse({ slug: 'new-space', name: 'New', pageCount: 0 }, 201);
     return jsonResponse({ error: 'not found' }, 404);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -196,5 +200,78 @@ describe('CreateSpaceDialog — rootPath defaults to the repository root', () =>
     // And a later name edit must not clobber that choice.
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Something else' } });
     expect(rootPathInput.value).toBe('docs');
+  });
+});
+
+/**
+ * Obsidian vault compatibility (wave 1a): a repository whose chosen folder holds
+ * `.obsidian/` is announced, light footprint is on by default for it, and the
+ * checkbox is a manual choice that always wins once touched.
+ */
+describe('CreateSpaceDialog — Obsidian vault note and light footprint', () => {
+  const NOTE = /Obsidian vault detected: Folio keeps ids out of your files and ignores \.obsidian\/ and \.trash\//;
+
+  async function typeRepo() {
+    fireEvent.change(screen.getByRole('combobox', { name: 'Repository' }), { target: { value: 'https://github.com/acme/vault.git' } });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My vault' } });
+  }
+  function postedBody(fetchMock: ReturnType<typeof stubApi>) {
+    const call = fetchMock.mock.calls.find(([input, init]) => String(input) === '/api/spaces' && (init as RequestInit | undefined)?.method === 'POST')!;
+    return JSON.parse((call[1] as RequestInit).body as string);
+  }
+
+  it('shows the note, ticks light footprint by default, and leaves the choice to the server while untouched', async () => {
+    const fetchMock = stubApi({ vault: true });
+    renderDialog();
+    await openGitTab();
+    await typeRepo();
+
+    expect(await screen.findByText(NOTE, undefined, { timeout: 4000 })).toBeTruthy();
+    const light = screen.getByRole('checkbox', { name: /Light footprint/ }) as HTMLInputElement;
+    expect(light.checked).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input) === '/api/spaces' && (init as RequestInit)?.method === 'POST')).toBe(true));
+    expect(postedBody(fetchMock).lightFootprint).toBeUndefined();
+  });
+
+  it('a manual untick is sent as an explicit false', async () => {
+    const fetchMock = stubApi({ vault: true });
+    renderDialog();
+    await openGitTab();
+    await typeRepo();
+    await screen.findByText(NOTE, undefined, { timeout: 4000 });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Light footprint/ }));
+    expect((screen.getByRole('checkbox', { name: /Light footprint/ }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input) === '/api/spaces' && (init as RequestInit)?.method === 'POST')).toBe(true));
+    expect(postedBody(fetchMock).lightFootprint).toBe(false);
+  });
+
+  it('no vault: no note, the box is still on (the server keeps ids out of a repository\'s own files), untouched is left to the server, unticking sends false', async () => {
+    const fetchMock = stubApi();
+    renderDialog();
+    await openGitTab();
+    await typeRepo();
+
+    const light = screen.getByRole('checkbox', { name: /Light footprint/ }) as HTMLInputElement;
+    expect(light.checked).toBe(true);
+    expect(screen.queryByText(NOTE)).toBeNull();
+    fireEvent.click(light);
+    expect(light.checked).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input) === '/api/spaces' && (init as RequestInit)?.method === 'POST')).toBe(true));
+    expect(postedBody(fetchMock).lightFootprint).toBe(false);
+  });
+
+  it('a sub-folder space is always light: the box is ticked and locked', async () => {
+    stubApi();
+    renderDialog();
+    await openGitTab();
+    fireEvent.change(screen.getByLabelText('Root path inside the repository'), { target: { value: 'docs' } });
+    const light = screen.getByRole('checkbox', { name: /Light footprint/ }) as HTMLInputElement;
+    expect(light.checked).toBe(true);
+    expect(light.disabled).toBe(true);
   });
 });

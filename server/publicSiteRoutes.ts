@@ -18,19 +18,22 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   updateSpacePublicSettingsBodySchema,
+  type EmbedPayload,
+  type PublicPageLinks,
   type PublicPagePayload,
   type PublicSiteInfo,
   type SearchHit,
-  type SpacePublicSettings,
   type SpacePublicSettingsResponse,
   type TreeNode,
   type User,
 } from '../shared/contracts.js';
 import { recordAudit } from './audit.js';
 import * as session from './auth/session.js';
-import { assertNotDemoAccount } from './demo.js';
+import { assertNoDemoPublicHostnames, isDemoMode } from './demo.js';
+import { buildEmbed, parseEmbedDepth } from './embed.js';
 import { forbidden, notFound } from './errors.js';
 import { registerPublicSiteExportRoutes } from './export/routes.js';
+import { getPageLinks } from './indexV2/read.js';
 import { buildPageDoc } from './pageDoc.js';
 import {
   buildPublicSiteInfo,
@@ -44,8 +47,10 @@ import {
   setSpacePublicSettings,
   sitesDomain,
   type PublicSpace,
+  type SpacePublicSettingsInput,
 } from './publicSites.js';
 import { searchPublicSpace } from './search.js';
+import { readAsset, readSiteCss } from './spaceAppearance.js';
 import * as storage from './storage.js';
 import { parseBody, queryString } from './validate.js';
 
@@ -62,6 +67,17 @@ async function requirePublicSpace(request: FastifyRequest): Promise<PublicSpace>
   const site = await getPublicSpace(slug);
   if (!site) throw notFound('space');
   return site;
+}
+
+/**
+ * The page `:id` of a published space, or 404 `page not found`. The same 404 for "no such page", "page of another
+ * space", a synthetic folder node (`dir:...`, which storage.getEntry would 400 on) and "not public" - nothing to probe.
+ */
+async function requirePublicPage(request: FastifyRequest, site: PublicSpace): Promise<storage.PageIndexEntry> {
+  const { id } = request.params as { id: string };
+  const entry = id.startsWith('dir:') ? undefined : await storage.getEntry(id);
+  if (!entry || entry.space !== site.slug || !(await isPublicPage(entry))) throw notFound('page');
+  return entry;
 }
 
 export function registerPublicSiteRoutes(app: FastifyInstance): void {
@@ -84,12 +100,23 @@ export function registerPublicSiteRoutes(app: FastifyInstance): void {
 
   app.get('/api/public/spaces/:slug/pages/:id', async (request): Promise<PublicPagePayload> => {
     const site = await requirePublicSpace(request);
-    const { id } = request.params as { id: string };
-    // A synthetic folder node ('dir:...') is not a page; storage.getEntry would 400 on it.
-    const entry = id.startsWith('dir:') ? undefined : await storage.getEntry(id);
-    // Same 404 for "no such page", "page of another space" and "not public" - nothing to probe.
-    if (!entry || entry.space !== site.slug || !(await isPublicPage(entry))) throw notFound('page');
+    const entry = await requirePublicPage(request, site);
     return { page: await buildPageDoc(entry), spaceName: site.name };
+  });
+
+  // Wave 2 (Obsidian): an embedded note (`![[Note#Heading]]`) of a public page - the whole page, a heading section or a ^block (server/embed.ts).
+  app.get('/api/public/spaces/:slug/pages/:id/embed', async (request): Promise<EmbedPayload> => {
+    const site = await requirePublicSpace(request);
+    const entry = await requirePublicPage(request, site);
+    parseEmbedDepth(queryString(request.query, 'depth'));
+    return buildEmbed(entry, queryString(request.query, 'fragment') || null);
+  });
+
+  // Wave 2: the typed links of a public page, for its wikilinks. The SQL ACL (accessSql.ts) reads a target outside the public set as unresolved; nothing but `links` leaves.
+  app.get('/api/public/spaces/:slug/pages/:id/links', async (request): Promise<PublicPageLinks> => {
+    const site = await requirePublicSpace(request);
+    const entry = await requirePublicPage(request, site);
+    return { links: await getPageLinks(entry.id, { kind: 'public', space: site.slug }) };
   });
 
   // Relative .md links inside a page: space-relative path -> page id.
@@ -108,6 +135,32 @@ export function registerPublicSiteRoutes(app: FastifyInstance): void {
 
   // .../pages/:id/export.(md|pdf|docx) - opt-in per space, throttled per IP.
   registerPublicSiteExportRoutes(app);
+
+  // The site's own stylesheet, `.folio/site.css` sanitized (shared/siteCss.ts): 404 when the space has none.
+  app.get('/api/public/spaces/:slug/site.css', async (request, reply) => {
+    const site = await requirePublicSpace(request);
+    const css = await readSiteCss(site.slug);
+    if (!css || !css.css.trim()) throw notFound('site.css');
+    const etag = `"${css.etag}"`;
+    reply.header('Content-Type', 'text/css; charset=utf-8');
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('ETag', etag);
+    reply.header('Cache-Control', 'public, max-age=300');
+    if (request.headers['if-none-match'] === etag) return reply.status(304).send();
+    return reply.send(css.css);
+  });
+
+  // A file of `.folio/assets/` (logo, favicon, og image, fonts): images inline (SVG sandboxed), fonts as font/*.
+  app.get('/api/public/spaces/:slug/site-assets/:name', async (request, reply) => {
+    const site = await requirePublicSpace(request);
+    const { name } = request.params as { name: string };
+    const asset = await readAsset(site.slug, name);
+    if (!asset) throw notFound('asset');
+    reply.headers(asset.headers);
+    const versioned = queryString(request.query, 'v') !== '';
+    reply.header('Cache-Control', versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=300');
+    return reply.send(asset.bytes);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -136,14 +189,21 @@ export async function getPublicSettings(actor: User, space: string, originFallba
   return settingsResponse(space, originFallback);
 }
 
-export async function updatePublicSettings(actor: User, space: string, settings: SpacePublicSettings, originFallback: string): Promise<SpacePublicSettingsResponse> {
+/** Space admin or instance admin only. In the public demo the demo accounts may publish too, but subdomain and custom domain are refused (demo.ts: assertNoDemoPublicHostnames) and Ask stays off. */
+export async function updatePublicSettings(actor: User, space: string, input: SpacePublicSettingsInput, originFallback: string): Promise<SpacePublicSettingsResponse> {
   await requireSettingsAdmin(actor, space);
-  await setSpacePublicSettings(space, settings, originFallback);
+  assertNoDemoPublicHostnames(input);
+  // Public demo: the assistant runs are refused for everyone there (assertNotDemo), so a
+  // saved `allowAssistant` would only put an "Ask AI" button on the site that answers 403.
+  const effective: SpacePublicSettingsInput = isDemoMode() ? { ...input, allowAssistant: false } : input;
+  const { settings } = await setSpacePublicSettings(space, effective, originFallback);
   recordAudit(actor.id, 'space.public_settings', space, {
     subdomain: settings.subdomain,
     domain: settings.domain,
     allowDownload: settings.allowDownload,
     allowAssistant: settings.allowAssistant,
+    indexing: settings.indexing,
+    primaryHost: settings.primaryHost,
   });
   return settingsResponse(space, originFallback);
 }
@@ -157,7 +217,6 @@ export function registerPublicSiteAdminRoutes(app: FastifyInstance): void {
   });
 
   app.put('/api/spaces/:space/public-settings', async (request) => {
-    assertNotDemoAccount(request.authUser!, 'Publishing a space');
     session.requireCookieAuth(request);
     session.requireWriteScope(request);
     const { space } = request.params as { space: string };

@@ -5,7 +5,7 @@
  * Pure: no PG, no fs (see frontmatterPreserve.test.ts for the storage paths).
  */
 import { describe, expect, it } from 'vitest';
-import { mergeFrontmatter } from './frontmatter.js';
+import { keepLineEndings, mergeFrontmatter, writeFrontmatterKeys } from './frontmatter.js';
 
 const FOREIGN = [
   '# Docusaurus page settings',
@@ -63,6 +63,15 @@ describe('mergeFrontmatter', () => {
     expect(mergeFrontmatter(raw, { id: null }, '# Hello\n\nText.\n')).toBe(file(['title: T']));
   });
 
+  it('a save never clears a Folio-named key whose value Folio does not write — it is another tool’s data', () => {
+    const raw = file(['title: Old API', 'status: deprecated', "order: '2'", 'icon: 42', 'cover: ""']);
+    expect(mergeFrontmatter(raw, {}, '# Hello\n\nText.\n')).toBe(raw);
+    // A value Folio did write is still cleared.
+    expect(mergeFrontmatter(file(['title: T', 'status: draft', 'order: 3', 'icon: cat']), {}, '# Hello\n\nText.\n')).toBe(file(['title: T']));
+    // And an explicit new value still replaces the foreign one.
+    expect(mergeFrontmatter(raw, { status: 'archived' }, '# Hello\n\nText.\n')).toBe(raw.replace('status: deprecated', 'status: archived'));
+  });
+
   it('no block and nothing to write -> no block at all; Folio keys only -> a fresh block, id first', () => {
     expect(mergeFrontmatter('# Plain\n', {}, '# Plain\n')).toBe('# Plain\n');
     expect(mergeFrontmatter(undefined, {}, '# New')).toBe('# New\n');
@@ -82,6 +91,42 @@ describe('mergeFrontmatter', () => {
   it('keeps CRLF line endings of the block', () => {
     const raw = '---\r\ntitle: T\r\n---\r\n# Hello\r\n';
     expect(mergeFrontmatter(raw, { icon: 'x' }, '# Hello\r\n')).toBe('---\r\ntitle: T\r\nicon: x\r\n---\r\n# Hello\r\n');
+  });
+
+  it('a CRLF file stays CRLF when the body arrives with LF only; a missing final newline stays missing', () => {
+    expect(mergeFrontmatter('---\r\ntitle: T\r\n---\r\n# Hello\r\n\r\nText.\r\n', {}, '# Hello\n\nEdited.\n')).toBe('---\r\ntitle: T\r\n---\r\n# Hello\r\n\r\nEdited.\r\n');
+    expect(mergeFrontmatter('# CRLF\r\nno front matter\r\n', {}, '# CRLF\nedited')).toBe('# CRLF\r\nedited\r\n');
+    expect(mergeFrontmatter('---\ntitle: T\n---\n# Hello\n\nNo newline', {}, '# Hello\n\nStill none')).toBe('---\ntitle: T\n---\n# Hello\n\nStill none');
+    expect(mergeFrontmatter('# Plain, no newline', {}, '# Plain, edited')).toBe('# Plain, edited');
+    // A block with no body under it gets no blank line added.
+    expect(mergeFrontmatter('---\ntitle: T\n---\n', {}, '')).toBe('---\ntitle: T\n---\n');
+  });
+
+  it('a file with mixed line endings keeps every untouched line\'s own ending: a one-line edit is a one-line diff', () => {
+    // LF front matter over a CRLF body (the Obsidian test's Crlf.md)
+    const raw = '---\ntitle: T\ntags: [a]\n---\r\n# Hello\r\n\r\nLine one\r\nLine two\r\nLine three\r\n';
+    const out = mergeFrontmatter(raw, {}, '# Hello\n\nLine one\nLine 2, edited\nLine three\n');
+    expect(out).toBe('---\ntitle: T\ntags: [a]\n---\r\n# Hello\r\n\r\nLine one\r\nLine 2, edited\r\nLine three\r\n');
+    // an inserted line takes the ending of its neighbourhood; a deleted one takes nothing else with it
+    expect(mergeFrontmatter(raw, {}, '# Hello\n\nLine one\nNew line\nLine two\nLine three\n')).toBe(
+      '---\ntitle: T\ntags: [a]\n---\r\n# Hello\r\n\r\nLine one\r\nNew line\r\nLine two\r\nLine three\r\n',
+    );
+    expect(mergeFrontmatter(raw, {}, '# Hello\n\nLine one\nLine three\n')).toBe('---\ntitle: T\ntags: [a]\n---\r\n# Hello\r\n\r\nLine one\r\nLine three\r\n');
+    // mixed inside the body too, and no final newline: each line as it was
+    const body = '# H\r\nlf line\ncrlf line\r\nlast';
+    expect(mergeFrontmatter(body, {}, '# H\nlf line\ncrlf line\nlast, edited')).toBe('# H\r\nlf line\ncrlf line\r\nlast, edited');
+    // a Folio key added to an LF block over a CRLF body: the new line is LF like the block
+    expect(mergeFrontmatter(raw, { icon: 'x' }, '# Hello\n\nLine one\nLine two\nLine three\n')).toBe(
+      '---\ntitle: T\ntags: [a]\nicon: x\n---\r\n# Hello\r\n\r\nLine one\r\nLine two\r\nLine three\r\n',
+    );
+    // the properties writer: the body stays byte for byte, the changed key line keeps its block's ending
+    expect(writeFrontmatterKeys(raw, new Map([['title', { set: 'U' }]]))).toBe(raw.replace('title: T', 'title: U'));
+  });
+
+  it('keepLineEndings: unchanged lines keep their break, a changed one takes the break of the line it replaces', () => {
+    expect(keepLineEndings('a\r\nb\nc\r\n', 'a\nB\nc\n')).toBe('a\r\nB\nc\r\n');
+    expect(keepLineEndings('a\r\nb\nc', 'a\nb\nc\nd')).toBe('a\r\nb\nc\nd');
+    expect(keepLineEndings('a\r\nb\n', '')).toBe('');
   });
 
   it('an unparseable foreign block is kept verbatim; only the body changes', () => {

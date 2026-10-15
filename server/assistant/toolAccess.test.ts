@@ -336,8 +336,9 @@ describe('assistant tools only return what the user may read (real PG, in-proces
     expect(names.sort()).toEqual(
       [
         'board_ops', 'create_board', 'create_page', 'folio_table_add_column', 'folio_table_create', 'folio_table_delete', 'folio_table_insert',
-        'folio_table_list', 'folio_table_query', 'folio_table_schema', 'folio_table_update', 'get_backlinks', 'list_spaces', 'list_tree', 'page_at_sha',
-        'page_history', 'read_page', 'read_skill', 'report_unanswered_question', 'resolve_folio_url', 'search_pages', 'update_board', 'update_page',
+        'folio_table_list', 'folio_table_query', 'folio_table_schema', 'folio_table_update', 'get_backlinks', 'get_page_metadata', 'list_orphans', 'list_spaces',
+        'list_tree', 'list_unresolved_links', 'page_at_sha', 'page_history', 'read_page', 'read_skill', 'report_unanswered_question', 'resolve_folio_url',
+        'search_pages', 'update_board', 'update_page',
       ].sort(),
     );
     // `search` / `fetch` are the ChatGPT-named MCP wrappers; the assistant has search_pages / read_page instead, in either mode.

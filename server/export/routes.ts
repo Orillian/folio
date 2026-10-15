@@ -9,7 +9,6 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { badRequest, notFound } from '../errors.js';
 import { publicUrlOrOrigin } from '../publicUrl.js';
 import * as session from '../auth/session.js';
-import * as gitSync from '../gitSync.js';
 import * as storage from '../storage.js';
 import type { PageIndexEntry } from '../storage.js';
 import { getPublicSpace, isPublicPage, publicReadablePageIds } from '../publicSites.js';
@@ -235,12 +234,13 @@ export function registerExportRoutes(app: FastifyInstance): void {
 
   /**
    * R23 tail (headers and footers) — the space-level PDF header/footer templates
-   * print.ts already renders. Admin of the SPACE ITSELF (requireSpaceRole
-   * 'admin'), deliberately not canAdministerSpace: these land in the space's
-   * git repo as content (`<slug>.folio`), and round 27's line is that an
-   * instance admin without a membership administers ACCESS, never writes
-   * content. GET returns the raw stored templates (sanitization is css.ts's
-   * render-time job — the editor must show what was saved, not a rewrite).
+   * print.ts renders. Since 14.10.2026 a thin wrapper over the `.folio/` store
+   * (spaceSettings.ts / spaceAppearance.ts), kept for one release; the space
+   * settings page uses /api/spaces/:space/appearance. Admin of the SPACE ITSELF
+   * (requireSpaceRole 'admin'), deliberately not canAdministerSpace: these land
+   * in the space's git repo as content, and round 27's line is that an instance
+   * admin without a membership administers ACCESS, never writes content. GET
+   * returns the raw stored templates (sanitization is css.ts's render-time job).
    */
   app.get('/api/spaces/:space/export-settings', async (request) => {
     const { space } = request.params as { space: string };
@@ -253,16 +253,12 @@ export function registerExportRoutes(app: FastifyInstance): void {
     await session.requireSpaceRole(request, space, 'admin');
     session.requireWriteScope(request);
     const settings = validateExportSettingsBody(request.body);
-    // Owner follow-up: external <img src> in the templates are downloaded and
-    // inlined as data: URIs here, BEFORE the write — see spaceSettings.ts's
-    // inlineTemplateImages / headerFooterImages.ts for the SSRF gateway this
-    // goes through. A failed fetch throws (400), same as a validation error.
+    // External <img src> in the templates are downloaded and inlined as data:
+    // URIs BEFORE the write (headerFooterImages.ts is the SSRF gateway); the
+    // store then moves them into .folio/assets/. A failed fetch throws (400).
     const withImages = await inlineTemplateImages(settings);
-    // Same write-back shape as any other content edit: the file change rides
-    // the standard debounced auto-commit, attributed to the caller.
-    gitSync.recordEditor(space, { name: request.authUser!.name, email: request.authUser!.email });
-    await writeSpaceExportSettings(space, withImages);
-    gitSync.noteActivity(space);
+    // One explicit commit of the .folio/ paths, attributed to the caller.
+    await writeSpaceExportSettings(space, withImages, { name: request.authUser!.name, email: request.authUser!.email });
     return readSpaceExportSettings(space);
   });
 }

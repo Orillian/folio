@@ -44,12 +44,19 @@ const ABSOLUTE = /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|\/\/)/;
  * Absolute URLs, protocol-relative URLs and root-relative paths are kept as-is;
  * everything else resolves against `/files/<space>/<dir-of-page>/`.
  */
-export function resolveAssetSrc(src: string, space: string, pagePath: string, shareToken?: string): string {
+export function resolveAssetSrc(
+  src: string,
+  space: string,
+  pagePath: string,
+  shareToken?: string,
+  /** The index's answer for a src it resolved by name (Obsidian: `x.png` -> `Attachments/x.png`); undefined keeps the path as written. */
+  attachment?: (src: string) => string | undefined,
+): string {
   const raw = src.trim().replace(/^<(.*)>$/, '$1');
   if (!raw) return '';
   if (ABSOLUTE.test(raw) || raw.startsWith('/')) return raw;
   const dir = dirname(pagePath);
-  const joined = normalizeRelative(dir ? `${dir}/${raw}` : raw);
+  const joined = attachment?.(raw) ?? normalizeRelative(dir ? `${dir}/${raw}` : raw);
   const url = `/files/${space}/${joined}`;
   // A guest editing through a share link has no session, so /files answers 401
   // without the token — the markdown renderer already appends it the same way

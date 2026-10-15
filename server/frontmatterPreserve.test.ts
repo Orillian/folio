@@ -129,6 +129,28 @@ describe('front matter preservation (real PG + fs)', () => {
     expect(foreignLines(await fs.readFile(path.join(copyDir, 'leaf.md'), 'utf8'))).toEqual(FOREIGN);
   });
 
+  it('another tool’s value under a Folio key (MkDocs `status: deprecated`) survives the scan and a save', async () => {
+    const abs = path.join(dir, 'deprecated.md');
+    await fs.writeFile(abs, '---\ntitle: Old API\nstatus: deprecated\n---\n# Old API\n\nBody.\n', 'utf8');
+    await storage.scanSpace(slug);
+    const id = (await storage.getEntryIdByExactPath(slug, 'deprecated.md'))!;
+    expect(await fs.readFile(abs, 'utf8')).toBe(`---\ntitle: Old API\nstatus: deprecated\nid: ${id}\n---\n# Old API\n\nBody.\n`);
+    await storage.writeDocBody(id, '# Old API\n\nEdited.\n');
+    expect(await fs.readFile(abs, 'utf8')).toBe(`---\ntitle: Old API\nstatus: deprecated\nid: ${id}\n---\n# Old API\n\nEdited.\n`);
+  });
+
+  it('a file with mixed line endings (LF block, CRLF body): a body edit changes exactly the edited line', async () => {
+    const abs = path.join(dir, 'mixed.md');
+    const id = '01MIXEDEOLPAGE0000000000AA';
+    const raw = `---\nid: ${id}\ntitle: Mixed\n---\r\n# Mixed\r\n\r\nOne\r\nTwo\r\nThree\r\n`;
+    await fs.writeFile(abs, raw, 'utf8');
+    await storage.scanSpace(slug);
+    expect(await storage.getEntryIdByExactPath(slug, 'mixed.md')).toBe(id);
+    expect(await fs.readFile(abs, 'utf8')).toBe(raw);
+    await storage.writeDocBody(id, '# Mixed\n\nOne\nTwo, edited\nThree\n');
+    expect(await fs.readFile(abs, 'utf8')).toBe(raw.replace('Two\r\n', 'Two, edited\r\n'));
+  });
+
   it('a file with unparseable front matter is still never rewritten by the scan', async () => {
     const abs = path.join(dir, 'broken.md');
     const raw = '---\ntitle: Fix: login\n---\n# Broken\n';

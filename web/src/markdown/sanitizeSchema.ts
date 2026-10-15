@@ -3,7 +3,12 @@ import type { Options as Schema } from 'rehype-sanitize';
 
 const defaultAttributes = defaultSchema.attributes ?? {};
 const defaultWildcard = defaultAttributes['*'] ?? [];
-const defaultA = defaultAttributes.a ?? [];
+// The default schema lets an <a> carry only the class GFM footnotes give their back-reference. The OFM links
+// (wikilinks, tag chips - rehypeOfmLinks.ts) are <a>s with classes of their own.
+const OFM_LINK_CLASSES = ['folio-wikilink', 'folio-wikilink--unresolved', 'folio-wikilink--file', 'folio-tag'];
+const defaultA = (defaultAttributes.a ?? []).map((entry) =>
+  Array.isArray(entry) && entry[0] === 'className' ? (([...entry, ...OFM_LINK_CLASSES] as unknown) as typeof entry) : entry,
+);
 const defaultTagNames = defaultSchema.tagNames ?? [];
 
 /**
@@ -11,7 +16,7 @@ const defaultTagNames = defaultSchema.tagNames ?? [];
  * renderer additionally produces:
  * - `className` everywhere (GFM alert callouts, mermaid/segment wrappers,
  *   round 15's `.folio-mention` pill — see mentions.ts);
- * - `dataFolioLink`/`dataAlert`/`dataAlertLabel`/`dataDirectiveLabel`/
+ * - `dataFolioLink`/`dataFolioFile`/`dataAlert`/`dataAlertLabel`/`dataDirectiveLabel`/
  *   `dataCollapseSlug`/`dataCollapseToggle`/`dataNoteIndex`, this renderer's
  *   own data-* hooks (round 5 adds the collapse pair; round 22 adds the
  *   translated alert label; `dataDirectiveLabel` names an unknown container
@@ -22,6 +27,13 @@ const defaultTagNames = defaultSchema.tagNames ?? [];
  *   carries the app route to navigate to on click, same idea as
  *   `dataFolioLink` for a relative `.md` link but already a full route, not
  *   a page-relative path needing `/api/resolve`);
+ * - the OFM hooks (Obsidian vault compatibility, wave 2; see shared/ofm/remark.ts and
+ *   rehypeOfmLinks.ts): `dataCallout` (the callout's own type, `info`, `faq` ... next
+ *   to the look in `dataAlert`), `dataWikilink*` (a wikilink's target, fragment, state),
+ *   `dataFolioTag` (a tag chip), `dataMath` (the TeX of a formula, which KaTeX draws
+ *   in the browser), `dataFolioEmbed`/`dataEmbedFragment`/`dataEmbedLabel` (the
+ *   placeholder an embedded note is drawn into). `open` on `details` is a callout
+ *   that starts unfolded (`> [!tip]+`) - the default schema already allows it.
  * - `target`/`rel` on links, for external links opened in a new tab;
  * - `details`/`summary` (already default, listed to make the intent explicit);
  * - `button` (round 5: the collapsible-section toggle; the fit/scroll table
@@ -70,14 +82,26 @@ export const folioSanitizeSchema: Schema = {
       'className',
       'dataAlert',
       'dataAlertLabel',
+      'dataCallout',
+      'dataWikilink',
+      'dataWikilinkFragment',
+      'dataWikilinkEmbed',
+      'dataWikilinkState',
+      'dataWikilinkSelf',
+      'dataFolioTag',
+      'dataMath',
+      'dataFolioEmbed',
+      'dataEmbedFragment',
+      'dataEmbedLabel',
       'dataDirectiveLabel',
       'dataFolioLink',
+      'dataFolioFile',
       'dataFolioNav',
       'dataCollapseSlug',
       'dataNoteIndex',
       'id',
     ],
-    a: [...defaultA, 'target', 'rel', 'dataFolioLink', 'dataFolioNav'],
+    a: [...defaultA, 'target', 'rel', 'dataFolioLink', 'dataFolioFile', 'dataFolioNav'],
     button: ['type', 'ariaLabel', 'dataCollapseToggle', 'dataTableToggle'],
   },
 };

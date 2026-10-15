@@ -33,6 +33,14 @@ const SITE: PublicSiteInfo = {
   mode: 'host',
   homePageId: 'p1',
   instanceUrl: 'https://folio.example.com',
+  title: null,
+  tagline: null,
+  lang: null,
+  logoUrl: null,
+  faviconUrl: null,
+  cssUrl: null,
+  canonicalBase: 'https://docs.example.com',
+  indexing: true,
 };
 
 function stubFetch() {

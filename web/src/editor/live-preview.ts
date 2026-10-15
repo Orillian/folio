@@ -40,6 +40,8 @@ export interface PageContext {
    * Asset URLs need it appended or /files answers 401 — see resolveAssetSrc.
    */
   shareToken?: string;
+  /** Attachments the index resolved by name (see resolveAssetSrc); absent until the page's links arrive. */
+  attachment?: (src: string) => string | undefined;
 }
 
 const EMPTY_CONTEXT: PageContext = { space: '', pagePath: '', pageId: '' };
@@ -74,7 +76,9 @@ function inlineDecoration(spec: InlineSpec, lang: string): Range<Decoration> | n
     case 'callout':
       // Carries the language for the same reason the block widgets do: the
       // label is translated text baked into the widget's DOM (round 22).
-      return Decoration.replace({ widget: new CalloutLabelWidget(spec.type, lang) }).range(spec.from, spec.to);
+      return Decoration.replace({
+        widget: new CalloutLabelWidget(spec.type, spec.rawType, spec.fold, spec.hasTitle, lang),
+      }).range(spec.from, spec.to);
   }
 }
 
@@ -107,7 +111,7 @@ function blockDecoration(spec: BlockSpec, ctx: PageContext, lang: string): Range
       const widget = new ImageWidget(
         spec.alt,
         spec.src,
-        resolveAssetSrc(spec.src, ctx.space, ctx.pagePath, ctx.shareToken),
+        resolveAssetSrc(spec.src, ctx.space, ctx.pagePath, ctx.shareToken, ctx.attachment),
         spec.width,
       );
       return Decoration.replace({ widget, block: true }).range(spec.from, spec.to);

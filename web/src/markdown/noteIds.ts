@@ -23,7 +23,7 @@ function hasClass(node: Element, name: string): boolean {
 }
 
 /**
- * Stamps `data-note-index="N"` on every callout `<div>` (remarkAlerts's own
+ * Stamps `data-note-index="N"` on every callout `<div>`/`<details>` (remarkOfm's own
  * `md-alert`/`data-alert` — checked here via `data-alert`'s mere presence,
  * not by type, since a note entry's kind isn't this plugin's concern) and
  * every checked-or-unchecked task `<li class="task-list-item">`, in exactly
@@ -50,7 +50,8 @@ export function rehypeAssignNoteIds(cursor: NoteIdCursor | undefined) {
     visit(tree, 'element', (node: Element) => {
       if (node.tagName === 'table') return SKIP;
 
-      const isCallout = node.tagName === 'div' && typeof node.properties?.dataAlert === 'string';
+      // A foldable callout (`> [!faq]-`) is a <details>, any other a <div> (shared/ofm/remark.ts).
+      const isCallout = (node.tagName === 'div' || node.tagName === 'details') && typeof node.properties?.dataAlert === 'string';
       const isTask = node.tagName === 'li' && hasClass(node, 'task-list-item');
       if (!isCallout && !isTask) return;
 

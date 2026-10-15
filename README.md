@@ -43,7 +43,8 @@ Not ready to install? [Try the live demo](https://demo.foliowiki.online/?utm_sou
   roadmap table next to the spec, next to the architecture board, next to the
   signed PDF.
 - **Publish what should be public.** Turn a space into a read-only website,
-  with search and an optional "Ask AI", on your own domain.
+  with search and an optional "Ask AI" for visitors, at a path of your
+  instance, on a subdomain or on your own domain.
 - **One command to run.** Docker, and nothing to configure for a first start.
 
 ---
@@ -56,6 +57,8 @@ Short walkthroughs, no slides. The voice in the videos is synthetic.
 - [An AI agent updates your wiki over MCP](https://youtu.be/3ORtBgYlIeY) — one request: the agent reads the release process, writes release notes and adds a roadmap row (0:53)
 - [Onboarding a sales rep with Folio AI](https://youtu.be/T4JXTNRrsMg) — answers from the team's own pages with sources, a weekly check as a form, and the results in a table (1:22)
 - [Whiteboards that live in Git](https://youtu.be/HNK17qafhtc) — draw together, embed the board in a document, and keep every version in history (0:51)
+- [Docs as code without the IDE](https://youtu.be/_e3qILMTFKg) — the `docs/` folder of a product repository becomes a space; a technical writer edits it by hand and with Folio AI, an agent adds a release entry over MCP, and the developer reads the commits with `git pull` (1:36)
+- [Publish a space as a public website, with Ask AI for visitors](https://youtu.be/L8Qd4gm_0d4) — one setting makes a space a read-only site on a path, a subdomain or your own domain; visitors search it, download pages and ask Folio AI (1:21)
 - [The editor and Mermaid diagrams](https://youtu.be/MfK7bhKoxSs) — live Markdown, a source view of the same page, and diagrams you edit visually or as code (1:04)
 - [Is your wiki's AI assistant helping? Folio AI analytics](https://youtu.be/7aszLTDQV8w) — instance admins see rated conversations and unanswered questions, add the missing page, and the same question gets an answer with its source (1:21)
 
@@ -115,12 +118,13 @@ What that gives you:
   each in its own folder — so documentation can live right next to the code.
 - **Review like code.** Merge requests, blame, diff and revert work on your
   wiki because it *is* a repository.
-- **Docs-as-code friendly.** Front matter written by Docusaurus, MkDocs, Hugo or
-  Jekyll is kept byte for byte; a space bound to a folder such as `docs/`
-  writes no ids into your files; images can be stored in the repository next to
-  the page and linked by a relative path, so GitHub shows them; and moving a
-  page rewrites the links that point to it and the ones inside it, in one
-  commit.
+- **Docs-as-code friendly.** Front matter keys written by Docusaurus, MkDocs,
+  Hugo or Jekyll are kept byte for byte; a space bound to a folder such as
+  `docs/` writes no ids into your files (a space over a whole repository does);
+  images can be stored in the repository next to the page and linked by a
+  relative path, so GitHub shows them; and moving a page rewrites the links
+  that point to it and the ones inside it, in one commit. A full scenario is in
+  [Docs as code, without the IDE](#docs-as-code-without-the-ide).
 - **Nothing is lost quietly.** Sync state is always visible — clean, ahead,
   behind, conflict — and conflicts are listed for the whole space. "Take the
   version from Git" resets a space to the remote branch and saves what was
@@ -141,6 +145,55 @@ What that gives you:
 ```
 
 ![Page history with authors](docs/images/history.png)
+
+---
+
+## Docs as code, without the IDE
+
+If your documentation lives in the `docs/` folder of a product repository,
+Folio can show that folder as a space. Writers edit it in a browser, developers
+keep their IDE and read ordinary commits, and an agent works on the same pages.
+
+- **Connect the folder, not the repository.** Create a space from the
+  repository URL, choose the branch and pick `docs/` as the root path. Only
+  that folder becomes the space: Markdown files are pages; source code and
+  other files are not pages and are never touched. Folio keeps its page ids in
+  its own index, and the only file it adds is a hidden `docs/.<slug>.folio`.
+- **A writer edits in the browser.** Reading, Live edit or Source (plain
+  Markdown), several people on one page, or a request to Folio AI in the side
+  panel. Folio writes each edit to the file at once and commits after about 90
+  seconds of quiet, or immediately on Sync, to the branch the space follows.
+- **A developer sees a commit with the author's name.** `git pull`, `git log`
+  and `git blame` show the person who edited as the author; Folio is the
+  committer and the message is `folio:update`. Only the last editor in a window
+  is recorded as author. The developer's own commits come back into the space
+  by fetch roughly every three minutes and on every Sync.
+- **An agent updates pages through MCP.** Claude Code, Cursor or any MCP
+  client connects with a personal access token or through OAuth, reads and
+  edits the same pages with the rights of the token's owner and no more, and
+  the commit carries that person's name.
+- **The space can become a docs portal.** Make it public and the same pages
+  are served as a read-only website with search and, if you switch them on,
+  downloads and "Ask AI" for visitors, see [Publish a space as a website](#publish-a-space-as-a-website).
+
+Where it stops: a space follows exactly one branch and Folio pushes straight to
+it, without pull requests (point the space at a `docs` branch if you want
+review before `main`; a protected branch makes the push fail and the space
+shows git's message). A space over the whole repository, with no root path,
+writes an `id` into every page and a small file into the repository root,
+unless an administrator ticks "Light footprint" (a repository with `.obsidian/`
+is detected on its own). Opening a page writes nothing: a file changes only
+when someone edits it. A page's title comes from its first `#` heading, then
+from a front matter `title:`, then from the file name, and Folio does not add a
+heading to a page that has none. An `id` that another tool put in front matter
+(Docusaurus and Jest use `id: intro`) never moves a page between spaces. MDX
+files (`.mdx`) are not pages; the scan logs how many it skipped. Pasted images
+stay in Folio's asset store until a space administrator turns on "Store images
+in the repository". See also [What is not there yet](docs/LIMITATIONS.md).
+
+The walkthrough is in the post
+[Docs-as-code without the IDE: edit your repository's docs in a browser](https://foliowiki.online/blog/docs-as-code-in-the-browser/)
+and in the [video](https://youtu.be/_e3qILMTFKg).
 
 ---
 
@@ -365,15 +418,16 @@ Folio pages, not as configuration.
 The instructions apply to every run in the space, in Ask and Agent modes
 alike.
 
-### Bring your own subscription
+### Bring your own key
 
-Folio does not resell AI and does not mark it up. You connect the
-subscription you already pay for, and the assistant runs on it.
+Folio does not resell AI and does not mark it up. The assistant runs on a
+Cursor key: your own, or one that an administrator provides for a space or for
+the whole instance. Whoever owns the key pays.
 
 | Provider | Status |
 |---|---|
 | Cursor | **available** — each person connects their own key, or an administrator provides one for a space or for the whole instance |
-| Others | coming soon |
+| Others | not supported yet |
 
 **Who pays.** A run uses the first key that exists: the person's own key, then
 the key of the space, then the key of the instance, then `CURSOR_API_KEY` from
@@ -385,15 +439,19 @@ log. Visitors of a [public site](#publish-a-space-as-a-website) have no key of
 their own, so their questions run on the key of the space, of the instance or
 of the server environment, in that order.
 
-Without a subscription everything else in Folio works as usual.
+Without a key everything else in Folio works as usual.
 
 ---
 
 ## Built for agents
 
-**MCP server.** 23 tools over `/mcp` with personal access tokens: list and
-search spaces, read and write pages, create and edit whiteboards, query and
-update data tables, read history.
+**MCP server.** 26 tools over `/mcp`: list and search spaces, read and write
+pages, read a page's outline, tags, properties and links, find unresolved links
+and orphan pages, create and edit whiteboards, query and update data tables,
+read history.
+Connect with a personal access token, or through OAuth 2.1 from clients that
+run in a vendor's cloud (claude.ai, Claude Desktop, ChatGPT). `search` and
+`fetch` are there for ChatGPT deep research.
 
 ```bash
 claude mcp add folio --transport http https://wiki.example.com/mcp \
@@ -417,9 +475,14 @@ curl https://wiki.example.com/share/<token>.md
 **Export in the formats agents and people need**: Markdown, YAML, PDF, DOCX,
 or a zip of a whole space.
 
-**Safe by design.** A token never has more rights than its owner, a `read`
-token cannot write, and administrative actions are not available to tokens at
-all. Details: [docs/MCP.md](docs/MCP.md).
+For claude.ai or ChatGPT, add `https://wiki.example.com/mcp` as a custom
+connector, sign in to Folio and allow `read` or `read` + `write` on the consent
+screen. The connector acts with your rights and its writes are saved in Git
+under your name. Steps: [docs/MCP.md](docs/MCP.md#oauth-connect-from-claudeai--chatgpt).
+
+**Safe by design.** A token or an OAuth grant never has more rights than its
+owner, a `read` token cannot write, and administrative actions are not
+available to either at all. Details: [docs/MCP.md](docs/MCP.md).
 
 ---
 
@@ -480,9 +543,10 @@ members, to you only, or to selected people with view or edit rights.
 
 **For agents and scripts**
 
-- Personal access tokens with `read` or `write` scope. A token never has more
-  rights than its owner, and administrative actions are not available to
-  tokens at all.
+- Personal access tokens with `read` or `write` scope, or an OAuth connection
+  from claude.ai, Claude Desktop or ChatGPT (removable under "Connected apps").
+  A token never has more rights than its owner, and administrative actions are
+  not available to tokens at all.
 - The `.agent` folder is visible to space administrators only.
 
 ---
@@ -493,9 +557,24 @@ One setting turns a space into a read-only website for people without an
 account. Open the space menu, choose **Publish as website** and make the space
 public. It is the same space, not a copy: edit a page and the site shows the
 change. Signed-in people read a public space the way they read any space that is
-open to the instance.
+open to the instance. Typical uses: a documentation portal built from the
+`docs/` folder of a repository (see
+[Docs as code, without the IDE](#docs-as-code-without-the-ide)), a public
+handbook, a changelog.
 
 <!-- screenshot: public site -->
+
+A short walkthrough: [Publish a space as a public website, with Ask AI for visitors](https://youtu.be/L8Qd4gm_0d4) (1:21).
+
+How the site looks is kept in your repository, not in the database. Open the
+space menu, choose **Site & PDF settings…** and one page edits the site title,
+description, language, favicon, logo and social image, the site's stylesheet
+and the PDF header, footer and print styles. Everything is saved as files in a
+`.folio/` folder at the root of the space's content (`site.json`, `site.css`,
+`export.css`, `pdf-header.html`, `pdf-footer.html` and `assets/`), one commit
+per save, so you can edit the same files in Git too. Search engines get a
+`<head>` per page, `robots.txt` and `sitemap.xml`; an "index this site" switch
+and a primary address are in the publishing dialog.
 
 | Address | When it works |
 |---|---|
@@ -514,10 +593,19 @@ open to the instance.
 - **What is never published.** Pages with their own access restrictions, the
   `.agent` folder and templates. A restriction is not inherited by child pages,
   so check the tree before you publish and lock every page that must stay closed.
-- **Who can publish.** Space and instance administrators, from the browser; the
-  settings live in the database, not in Git. The public demo cannot publish.
-- **Not yet.** Folio does not generate `robots.txt` or a sitemap for these
-  sites, and the rate limits are counted per server process.
+- **Who can publish.** Space and instance administrators, from the browser. The
+  decisions (who sees the site, where, downloads, Folio AI, indexing) live in
+  the database, not in Git; the look of the site lives in `.folio/` in the
+  repository and is changed by space administrators. In the public demo the
+  Folio Handbook is published at
+  <https://demo.foliowiki.online/public/folio-handbook>; you can try the dialog
+  there (no subdomain, custom domain or Ask), and everything resets daily.
+- **Search engines.** Each page carries its own title, description, Open Graph
+  tags and canonical link, and a page with `unlisted: true` in its front matter
+  stays out of the sitemap. The public demo is never indexed.
+- **Not yet.** There is no PDF preview before saving, `site.css` cannot load
+  external fonts or images (put them in `.folio/assets/`), and the rate limits
+  are counted per server process.
 
 What the operator sets up for subdomains and custom domains:
 [docs/INSTALL.md](docs/INSTALL.md#public-sites). Limits:
@@ -602,6 +690,7 @@ gets in your way.
 - Alternatives, compared honestly: [Confluence](https://foliowiki.online/alternatives/confluence/) · [Notion](https://foliowiki.online/alternatives/notion/) · [self-hosted wikis](https://foliowiki.online/alternatives/self-hosted-wiki/)
 - [Installation, HTTPS, updates, backups](docs/INSTALL.md)
 - [Features](docs/FEATURES.md)
+- [Docs-as-code without the IDE: edit your repository's docs in a browser](https://foliowiki.online/blog/docs-as-code-in-the-browser/)
 - [What is not there yet](docs/LIMITATIONS.md)
 - [MCP and REST for agents](docs/MCP.md)
 - [Changelog](CHANGELOG.md)

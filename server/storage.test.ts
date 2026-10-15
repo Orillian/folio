@@ -660,6 +660,48 @@ describe('storage integration (real fs under a throwaway data/spaces/<temp> dir,
     await deleteTestSpace(space.slug);
   });
 
+  it('a doc without an H1 is titled by its front matter `title:` (Hugo, Jest), then by its file name; an H1 still wins', async () => {
+    const space = await storage.createSpace(`Vitest FM Title ${Date.now()}`, null);
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const dir = path.join(storage.REPOS_DIR, space.slug);
+    await fs.writeFile(path.join(dir, 'shortcodes.md'), '---\ntitle: "Shortcodes: the basics"\nweight: 3\n---\nBody without a heading.\n', 'utf8');
+    await fs.writeFile(path.join(dir, 'both.md'), '---\ntitle: From front matter\n---\n# From the heading\n', 'utf8');
+    await fs.writeFile(path.join(dir, 'odd-title.md'), '---\ntitle: [not, a, string]\n---\nBody.\n', 'utf8');
+    await storage.scanSpace(space.slug);
+    const byPath = new Map((await storage.listEntries(space.slug)).map((e) => [e.relPath, e]));
+    expect(byPath.get('shortcodes.md')?.title).toBe('Shortcodes: the basics');
+    expect(byPath.get('both.md')?.title).toBe('From the heading');
+    expect(byPath.get('odd-title.md')?.title).toBe('odd-title');
+
+    // An edit that still has no H1 keeps the front matter title (patchEntryContent).
+    const meta = await storage.writeDocBody(byPath.get('shortcodes.md')!.id, 'Edited body, still no heading.\n');
+    expect(meta.title).toBe('Shortcodes: the basics');
+
+    await deleteTestSpace(space.slug);
+  });
+
+  it('reports the .mdx/.markdown files it skips instead of silently indexing nothing', async () => {
+    const space = await storage.createSpace(`Vitest MDX ${Date.now()}`, null);
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const dir = path.join(storage.REPOS_DIR, space.slug, 'docs');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'intro.mdx'), "import Tabs from '@theme/Tabs';\n\n# Intro\n", 'utf8');
+    await fs.writeFile(path.join(dir, 'tabs.MDX'), '# Tabs\n', 'utf8');
+    let stats = await storage.scanSpace(space.slug);
+    expect(stats.skippedUnsupported).toBe(2);
+    expect((await storage.listEntries(space.slug)).some((e) => e.relPath.startsWith('docs/'))).toBe(false);
+
+    await fs.writeFile(path.join(dir, 'old.markdown'), '# Old\n', 'utf8');
+    await fs.writeFile(path.join(dir, 'real.md'), '# Real\n', 'utf8');
+    stats = await storage.scanSpace(space.slug);
+    expect(stats.skippedUnsupported).toBe(3);
+    expect((await storage.listEntries(space.slug)).map((e) => e.relPath)).toContain('docs/real.md');
+
+    await deleteTestSpace(space.slug);
+  });
+
   it('a board with no explicit order serializes order:0 in PageMeta, not the internal MAX_SAFE_INTEGER sentinel', async () => {
     const space = await storage.createSpace(`Vitest Order ${Date.now()}`, null);
     spaceSlug = space.slug;

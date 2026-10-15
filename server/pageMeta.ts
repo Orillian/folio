@@ -9,7 +9,9 @@
  * overridden with FOLIO_OG_TITLE / FOLIO_OG_DESCRIPTION / FOLIO_OG_IMAGE.
  *
  * Share links (shareMeta.ts) run on top of this: they replace title,
- * description and url with the shared page's own.
+ * description and url with the shared page's own. Public-site pages
+ * (publicSiteMeta.ts) hand renderIndexHtml a resolved `seo` block: title,
+ * description, site name, canonical URL, image, lang, favicon and noindex.
  *
  * Every env value reaches an HTML attribute, so every value is escaped.
  */
@@ -36,6 +38,8 @@ export interface PageMeta {
   imageAlt: string;
   /** Only known for the bundled 1200x630 images, not for a custom FOLIO_OG_IMAGE. */
   imageSize?: { width: number; height: number };
+  /** og:site_name; "Folio" when absent. */
+  siteName?: string;
 }
 
 function envText(name: string): string {
@@ -59,6 +63,7 @@ export function resolvePageMeta(origin: string): PageMeta {
 
 // Tags this module owns: removed from the built HTML, then written back once, in a fixed shape that shareMeta.ts keys on.
 const OWNED_TAGS: RegExp[] = [
+  /[ \t]*<meta\s+name="robots"[^>]*>\s*\n?/g,
   /[ \t]*<meta\s+name="description"[^>]*>\s*\n?/g,
   /[ \t]*<meta\s+property="og:[^"]*"[^>]*>\s*\n?/g,
   /[ \t]*<meta\s+name="twitter:[^"]*"[^>]*>\s*\n?/g,
@@ -80,7 +85,7 @@ export function applyPageMeta(html: string, meta: PageMeta, absoluteUrl: string)
   const lines = [
     `<meta name="description" content="${d}" />`,
     `<meta property="og:type" content="website" />`,
-    `<meta property="og:site_name" content="Folio" />`,
+    `<meta property="og:site_name" content="${escapeHtmlAttr(meta.siteName ?? 'Folio')}" />`,
     `<meta property="og:title" content="${t}" />`,
     `<meta property="og:description" content="${d}" />`,
     `<meta property="og:url" content="${escapeHtmlAttr(absoluteUrl)}" />`,
@@ -101,12 +106,62 @@ export function applyPageMeta(html: string, meta: PageMeta, absoluteUrl: string)
   return `${head.replace(/\s*$/, '\n')}    ${lines.join('\n    ')}\n  ${html.slice(headClose)}`;
 }
 
-/** A published space the page belongs to (publicSites.publicSiteForShell). */
+/** The resolved SEO head of one public-site page (publicSiteMeta.resolvePublicSiteHead). Values are raw: escaped here. */
+export interface PublicPageSeo {
+  /** Full <title>: page title · site title (or the site title alone). */
+  title: string;
+  description: string;
+  /** og:site_name — the site title. */
+  siteName: string;
+  /** Absolute canonical URL (<link rel=canonical>, og:url); undefined for a 404 or a redirecting path. */
+  canonical?: string;
+  /** Absolute og:image; the instance image when undefined. */
+  image?: string;
+  /** <html lang>; the built index.html's own when undefined. */
+  lang?: string;
+  /** Favicon URL (a site asset); /favicon.svg stays when undefined. */
+  favicon?: string;
+  noindex: boolean;
+}
+
+/** A published space the page belongs to (publicSites.publicSiteForShell / publicSiteMeta.resolvePublicSiteHead). */
 export interface PublicSiteMeta {
   slug: string;
   name: string;
   /** Served on the site's own host: the SPA mounts the site at '/', which it learns from the `folio-public-site` meta tag. */
   hostMode: boolean;
+  /** 14.10.2026: the page's own SEO head; without it the space name is the title (as before). */
+  seo?: PublicPageSeo;
+}
+
+function faviconType(href: string): string {
+  const ext = href.split('?')[0].split('.').pop()?.toLowerCase();
+  if (ext === 'svg') return 'image/svg+xml';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'ico') return 'image/x-icon';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  return 'image/png';
+}
+
+/** canonical, robots, lang and favicon of a public-site page — on top of applyPageMeta's output. */
+function applySeoExtras(html: string, seo: PublicPageSeo): string {
+  let out = html;
+  if (seo.lang) out = out.replace(/<html\b([^>]*?)\slang="[^"]*"/i, `<html$1 lang="${escapeHtmlAttr(seo.lang)}"`).replace(/<html(?![^>]*\slang=)([^>]*)>/i, `<html lang="${escapeHtmlAttr(seo.lang)}"$1>`);
+  if (seo.favicon) {
+    const tag = `<link rel="icon" type="${faviconType(seo.favicon)}" href="${escapeHtmlAttr(seo.favicon)}" />`;
+    out = /<link\s+rel="icon"[^>]*>/i.test(out) ? out.replace(/<link\s+rel="icon"[^>]*>/i, tag) : out;
+    if (!out.includes(tag)) out = insertBeforeHeadClose(out, tag);
+  }
+  if (seo.canonical) out = insertBeforeHeadClose(out, `<link rel="canonical" href="${escapeHtmlAttr(seo.canonical)}" />`);
+  if (seo.noindex) out = insertBeforeHeadClose(out, '<meta name="robots" content="noindex" />');
+  return out;
+}
+
+function insertBeforeHeadClose(html: string, tag: string): string {
+  const headClose = html.indexOf('</head>');
+  return headClose === -1 ? html : `${html.slice(0, headClose)}  ${tag}\n  ${html.slice(headClose)}`;
 }
 
 /**
@@ -121,10 +176,27 @@ export function renderIndexHtml(html: string, requestOrigin: string, pathname: s
   if (!site) return applyPageMeta(html, resolvePageMeta(origin), `${origin}${pathname}`);
 
   const base = resolvePageMeta(origin);
-  const meta: PageMeta = { ...base, title: site.name, description: `${site.name} \u2014 published with Folio` };
-  const rendered = applyPageMeta(html, meta, `${site.hostMode ? requestOrigin : origin}${pathname}`);
+  const requestUrl = `${site.hostMode ? requestOrigin : origin}${pathname}`;
+  let rendered: string | undefined;
+  if (site.seo) {
+    try {
+      const seo = site.seo;
+      const meta: PageMeta = {
+        ...base,
+        title: seo.title,
+        description: seo.description,
+        siteName: seo.siteName,
+        ...(seo.image ? { image: seo.image, imageAlt: seo.title, imageSize: undefined } : {}),
+      };
+      rendered = applySeoExtras(applyPageMeta(html, meta, seo.canonical ?? requestUrl), seo);
+    } catch {
+      rendered = undefined; // never fail a page over its SEO head: the plain site shell below
+    }
+  }
+  if (rendered === undefined) {
+    const meta: PageMeta = { ...base, title: site.name, description: `${site.name} \u2014 published with Folio` };
+    rendered = applyPageMeta(html, meta, requestUrl);
+  }
   if (!site.hostMode) return rendered;
-  const tag = `<meta name="folio-public-site" content="${escapeHtmlAttr(site.slug)}" />`;
-  const headClose = rendered.indexOf('</head>');
-  return headClose === -1 ? rendered : `${rendered.slice(0, headClose)}  ${tag}\n  ${rendered.slice(headClose)}`;
+  return insertBeforeHeadClose(rendered, `<meta name="folio-public-site" content="${escapeHtmlAttr(site.slug)}" />`);
 }

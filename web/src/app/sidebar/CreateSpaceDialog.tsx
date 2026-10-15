@@ -75,6 +75,8 @@ export function CreateSpaceDialog({ onClose, initialTab = 'empty' }: CreateSpace
   // stranger's repo by accident; the tree picker and the "one repo, several
   // spaces" hint below remain for the deliberate sub-folder case.
   const [rootPath, setRootPath] = useState('');
+  // Light footprint (Folio keeps ids out of the files): on by default for an Obsidian vault, a manual choice always wins once touched — same contract as nameTouched. null = untouched.
+  const [lightChoice, setLightChoice] = useState<boolean | null>(null);
   const [token, setToken] = useState('');
   const [importId, setImportId] = useState<string | null>(null);
   const [progress, setProgress] = useState<SpaceImportProgress | null>(null);
@@ -164,6 +166,20 @@ export function CreateSpaceDialog({ onClose, initialTab = 'empty' }: CreateSpace
   const canBrowseTree = tab === 'git' && debouncedRepoUrl.length > 0 && debouncedBranch.length > 0;
   const treeCredentialId = usingSavedToken ? selectedCredential?.id : undefined;
 
+  // Obsidian vault autodetect: does the chosen folder (the repository root while rootPath is empty) hold `.obsidian/`? The same listing the folder picker reads; a failure just means "no note".
+  const debouncedRootPath = useDebouncedValue(rootPath, 600).trim();
+  const vaultProbe = useQuery({
+    queryKey: ['git-tree', debouncedRepoUrl, debouncedBranch, treeCredentialId, debouncedRootPath],
+    queryFn: () => api.getGitTree({ repoUrl: debouncedRepoUrl, branch: debouncedBranch, path: debouncedRootPath, credentialId: treeCredentialId }),
+    enabled: canBrowseTree,
+    retry: false,
+  });
+  const vaultDetected = canBrowseTree && vaultProbe.data?.vault === true;
+  // A space bound to a sub-folder is always light; otherwise the choice, else on: the server keeps a repository's
+  // own files free of ids by default (it turns light off only for an empty repository or one that already is a Folio space).
+  const rootPathSet = rootPath.trim() !== '';
+  const lightChecked = rootPathSet || (lightChoice ?? true);
+
   const create = useMutation({
     mutationFn: (jobId?: string) =>
       api.createSpace(
@@ -175,6 +191,8 @@ export function CreateSpaceDialog({ onClose, initialTab = 'empty' }: CreateSpace
               rootPath: rootPath.trim(),
               token: token.trim() || undefined,
               importId: jobId,
+              // untouched = let the server decide (light unless the repository is empty or already a Folio space)
+              lightFootprint: rootPathSet || lightChoice === null ? undefined : lightChoice,
             }
           : { name: name.trim() },
       ),
@@ -394,6 +412,24 @@ export function CreateSpaceDialog({ onClose, initialTab = 'empty' }: CreateSpace
                 onSelect={(path) => setRootPath(path)}
               />
             )}
+            {vaultDetected && (
+              <p role="status" className="rounded-md bg-violet-50 p-2.5 text-xs text-violet-800 dark:bg-violet-950/40 dark:text-violet-300">
+                {t('sidebar.createSpace.vaultDetected')}
+              </p>
+            )}
+            <label className="flex cursor-pointer items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={lightChecked}
+                disabled={rootPathSet}
+                onChange={(e) => setLightChoice(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-neutral-700 dark:text-neutral-300">{t('sidebar.createSpace.lightFootprint')}</span>
+                <span className="text-xs text-neutral-500 dark:text-neutral-400">{t('sidebar.createSpace.lightFootprintHint')}</span>
+              </span>
+            </label>
             {usingSavedToken ? (
               <div className="flex items-center justify-between gap-2 rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-600 dark:border-neutral-700 dark:text-neutral-400">
                 <span>{t('sidebar.createSpace.usingSavedToken')}</span>

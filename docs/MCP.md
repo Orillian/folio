@@ -76,15 +76,34 @@ Clients are public (no client secret). Redirect URIs must be `https`, or `http` 
 | Group | Tools |
 |---|---|
 | Reading | `list_spaces`, `list_tree`, `read_page`, `search_pages`, `resolve_folio_url`, `get_backlinks`, `page_history`, `page_at_sha` |
+| Page index | `get_page_metadata`, `list_unresolved_links`, `list_orphans` |
 | Pages (scope `write`) | `create_page`, `update_page` |
 | Whiteboards (scope `write`) | `create_board`, `update_board`, `board_ops` |
 | Data tables, reading | `folio_table_list`, `folio_table_schema`, `folio_table_query` |
 | ChatGPT deep research | `search`, `fetch` |
 | Data tables (scope `write`) | `folio_table_insert`, `folio_table_update`, `folio_table_delete`, `folio_table_add_column`, `folio_table_create` |
 
+**Page index.** `get_page_metadata(id)` returns one page's index entry: `headings` (level, text, anchor `slug`, line), `blocks` (`^id`s), `tags` (lowercased, from `#tags` in the text and front matter `tags` (`labels` is read as a synonym)), `properties` (the whole front matter), `links` (each with `targetPath`, `targetPageId`, `syntax` — `md`, `wikilink`, `embed`, `image`, `html` or `reference` — `kind` — `page`, `asset`, `external` or `unresolved` — the `#heading` / `#^block` `fragment` and whether it resolves, `displayText`, `line`, `context`), `backlinkCount` and `metaVersion`. `list_unresolved_links(space, limit?, offset?)` returns `{"links": [...], "total"}`, sorted by target path (`limit` 1–500, default 100); `list_orphans(space)` returns `{"pages": [...]}` — pages nothing links to, never the space home page, templates or `.agent`. `get_backlinks` returns one entry per link, with the source page's fields plus `syntax`, `fragment`, `line` and `context` (the source line). All of them count and list only pages you can open; a link to a page you cannot open is reported like a link to nothing.
+
 **`search` and `fetch`.** ChatGPT deep research and company knowledge only work with two read-only tools of exactly these names, so Folio has them next to `search_pages` and `read_page`; they apply the same access rules (spaces, page access, `.agent` for space admins only). `search(query)` returns `{"results": [{"id", "title", "url"}]}`; `fetch(id)` takes an `id` from `search` and returns `{"id", "title", "text", "url", "metadata"}`: `text` is the page as Markdown (a data table as a Markdown table of up to 500 rows, a board as a list of its labels and connections, a PDF or Office file as a short note without the file), `url` is the page's link in Folio, `metadata` holds `space`, `path`, `kind` and `updatedAt`. Both return the result as structured content and as a JSON string in the text content. A page that does not exist and a page you may not see give the same `page not found`.
 
-**Structured results.** Every tool declares an `outputSchema` in `tools/list` and returns its result as `structuredContent` (MCP spec 2025-06-18) in addition to the same data as JSON text in `content`, so clients that do not read structured content keep working unchanged. The schema root is always an object, so a tool whose answer is a list wraps it under one key in `structuredContent`: `list_spaces` → `{"spaces": [...]}`, `list_tree` → `{"tree": [...]}`, `search_pages` → `{"hits": [...]}`, `get_backlinks` → `{"backlinks": [...]}`, `page_history` → `{"revisions": [...]}`, `folio_table_list` → `{"tables": [...]}`; the text form stays the bare array. `folio_table_query` with `format: "markdown"` returns `{"markdown", "total"}`. A failed call is an ordinary `isError` result with a text message and no structured content.
+**Search syntax.** `search_pages(query, space?)` and `search(query)` read `query` with one grammar. Words, phrases and filters combine: every part must match.
+
+| Write | Finds |
+|---|---|
+| `words` | pages with all the words in the title or text (a title close to the words also counts, which forgives a typo) |
+| `"exact phrase"` | the words in this order, next to each other |
+| `-word`, `-"phrase"` | pages that do not contain it |
+| `tag:name` | pages with that tag; `tag:a` also finds `a/b`. Several `tag:` must all match |
+| `kind:doc` | one of `doc`, `table`, `board`, `form`, `pdf`, `office`; `kind:doc,table` means either |
+| `status:draft` | `draft`, `published` or `archived`; a page with no status is `published` |
+| `in:folder/` | pages inside the folder (a path prefix); several `in:` mean any of them |
+| `prop:key=value` | front matter: text (any case), number, `true`/`false`, an item of a list, or a date such as `2026-10-14` |
+| `prop:key` | the front matter has that key |
+
+Operator names are case-insensitive, and an unknown `something:else` is an ordinary word. A query made of filters alone (`tag:todo status:draft`) lists every matching page, most recently changed first. Each hit carries `id`, `space`, `path`, `title`, `snippet`, `kind` and `tags` (lowercase; `a/b` is a hierarchy). Access rules are the same as everywhere: a page you cannot open is never returned. Write tags in front matter under the key `tags:`.
+
+**Structured results.** Every tool declares an `outputSchema` in `tools/list` and returns its result as `structuredContent` (MCP spec 2025-06-18) in addition to the same data as JSON text in `content`, so clients that do not read structured content keep working unchanged. The schema root is always an object, so a tool whose answer is a list wraps it under one key in `structuredContent`: `list_spaces` → `{"spaces": [...]}`, `list_tree` → `{"tree": [...]}`, `search_pages` → `{"hits": [...]}`, `get_backlinks` → `{"backlinks": [...]}`, `list_orphans` → `{"pages": [...]}`, `page_history` → `{"revisions": [...]}`, `folio_table_list` → `{"tables": [...]}`; the text form stays the bare array. `folio_table_query` with `format: "markdown"` returns `{"markdown", "total"}`. A failed call is an ordinary `isError` result with a text message and no structured content.
 
 **Tool names.** Names are `snake_case`; the data-table tools share the `folio_table_` prefix, and `search` / `fetch` keep the exact names ChatGPT requires. Some catalogs (Smithery's "Naming" check) prefer dot-separated hierarchical names such as `table.query`. Folio does not use them: Claude, OpenAI and most other clients only accept tool names matching `[a-zA-Z0-9_-]`, and renaming would break every existing connection and saved prompt. The names stay as they are.
 
@@ -94,10 +113,13 @@ Clients are public (no client secret). Redirect URIs must be `https`, or `http` 
 |---|---|
 | space tree | `GET /api/spaces/:space/tree` |
 | find a page by path | `GET /api/resolve?space=…&path=…` (empty `path` = root) |
-| search | `GET /api/search?q=…` |
+| search | `GET /api/search?q=…&space=&limit=&offset=` (the syntax above; `limit` 1–100, default 50) |
+| saved searches | `GET /api/me/saved-searches` → `{ searches }`; `POST` `{name, query, space?}` → `201` (up to 50 per person, then `409`); `DELETE /api/me/saved-searches/:id` → `204`. Cookie or token: any token reads, scope `write` saves and deletes |
 | a page | `GET/PUT/DELETE /api/pages/:id` |
 | create a page | `POST /api/pages` |
 | child pages | `GET /api/pages/:id/subtree?depth=N` |
+| pages of a tag | `GET /api/spaces/:space/tags/:tag/pages?limit=&offset=` → `{ tag, pages: [{ id, path, title, updatedAt, sources }], total }` — the tag is URL-encoded (`a%2Fb`); lists the tag and its children (`a` includes `a/b`), only pages you can open |
+| rename a tag | `POST /api/spaces/:space/tags/rename` `{from, to}` → `{ pagesChanged, pagesSkipped }` — `editor+`, scope `write` for a token. Replaces `#from` (and `#from/…`) in the text and `from` in the front matter `tags:` of every page you can edit; bytes outside the tags are untouched, and code, links and HTML are left alone. `labels:` is a synonym of `tags:`: the tag is renamed in place under whichever key holds it; `labels:` is never moved into `tags:` or removed. One commit, `docs: rename tag #from -> #to`. Pages you cannot edit are skipped and counted in `pagesSkipped` |
 | move / rename / change slug | `POST /api/pages/:id/{move,rename,slug}` |
 | copy | `POST /api/pages/:id/copy` `{toSpace, toParentPath, includeChildren?}` — children are copied by default, `false` = the page only; pages hidden from you, and everything below them, are left out, and a copy of a page with its own access rules is private to you |
 | my structural changes / undo one | `GET /api/spaces/:space/changes`; `POST …/changes/:id/undo` |

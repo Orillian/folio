@@ -32,6 +32,10 @@ import * as collab from '../collab.js';
 import * as storage from '../storage.js';
 import type { PageIndexEntry } from '../storage.js';
 import { officeFormat } from '../../shared/contracts.js';
+import { baseNameOf, embedTargetKind, parseImageEmbedAlias, wikilinkParts } from '../../shared/ofm/wikilink.js';
+import { loadSpaceFiles } from '../indexV2/store.js';
+import type { FileLookup } from '../indexV2/resolve.js';
+import { resolveWikilinkPath } from '../wikilinks.js';
 import { boardStructureYaml } from './boardText.js';
 import type { CollectedSubtree, ExportPage } from './collect.js';
 import { byteLength, bytesTruncation, MAX_EXPORT_BYTES, truncationMarkerComment, type ExportTruncation } from './limits.js';
@@ -209,6 +213,8 @@ interface RewriteCtx {
   /** this page's own natural-slug -> final-anchor map, for same-page `#fragment` links */
   ownAnchors: Map<string, string>;
   shareToken?: string;
+  /** The space's files: an attachment that is not at the path as written is looked up by name (Obsidian: `x.png` -> `Attachments/x.png`), as the index did. */
+  files?: FileLookup;
 }
 
 /** `notes/x.md` -> the page id it names, honouring the same directory-style fallbacks server/links.ts uses. */
@@ -258,11 +264,39 @@ export function rewriteHref(hrefRaw: string, ctx: RewriteCtx): string {
   }
 
   // Asset (or a broken .md link): the file route, absolute, share-token-aware.
-  return withShare(`${ctx.baseUrl}/files/${ctx.space}/${resolved}${queryPart}${frag}`, ctx.shareToken);
+  let target = resolved;
+  if (ctx.files && !ctx.files.has(resolved)) {
+    const byName = resolveWikilinkPath(ctx.files.wikiIndex, ctx.dirPath, decodeURI(pathPart));
+    if (byName !== null) target = byName;
+  }
+  return withShare(`${ctx.baseUrl}/files/${ctx.space}/${target}${queryPart}${frag}`, ctx.shareToken);
 }
 
 const INLINE_LINK_RE = /(!?)\[((?:[^\][\\]|\\.|\[[^\]]*\])*)\]\(\s*(<[^>]*>|[^()\s]*(?:\([^()]*\)[^()\s]*)*)((?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?)\s*\)/g;
 const REF_DEF_RE = /^(\s{0,3}\[[^\]]+\]:\s*)(\S+)(.*)$/;
+
+/**
+ * An Obsidian image embed (`![[photo.png|300]]`) becomes a plain markdown image with the absolute file URL, so an
+ * export read outside the vault - and the PDF and DOCX made from it - shows the picture. Other wikilinks and note
+ * embeds stay as written: the PDF/DOCX stage turns them into their words (shared/ofm/remark.ts, export mode).
+ * Skipped inside an inline code span on the line.
+ */
+const IMAGE_EMBED_RE = /!\[\[([^\[\]\r\n]+)\]\](?!\()/g;
+
+function rewriteImageEmbeds(line: string, ctx: RewriteCtx): string {
+  if (!line.includes('![[')) return line;
+  return line.replace(IMAGE_EMBED_RE, (whole, inner: string, offset: number) => {
+    if ((line.slice(0, offset).match(/`/g) ?? []).length % 2 === 1) return whole;
+    const parts = wikilinkParts(inner);
+    if (!parts.path || embedTargetKind(parts.path) !== 'image') return whole;
+    const url = rewriteHref(encodeURI(parts.path), ctx);
+    const size = parseImageEmbedAlias(parts.alias);
+    // The size rides in the alt as Obsidian's own `![alt|200](url)`; the PDF and DOCX stages read it back (imageSize.ts).
+    const sizeSuffix = size.width !== undefined ? `|${size.width}${size.height !== undefined ? `x${size.height}` : ''}` : '';
+    const alt = size.alt || baseNameOf(parts.path);
+    return `![${alt.replace(/[\[\]|]/g, '')}${sizeSuffix}](${/[\s()]/.test(url) ? `<${url}>` : url})`;
+  });
+}
 
 /** Rewrites every inline link/image and every reference definition outside fenced code. */
 export function rewriteLinks(body: string, ctx: RewriteCtx): string {
@@ -272,7 +306,7 @@ export function rewriteLinks(body: string, ctx: RewriteCtx): string {
     const ref = REF_DEF_RE.exec(line);
     if (ref) return `${ref[1]}${rewriteHref(ref[2], ctx)}${ref[3]}`;
 
-    return line.replace(INLINE_LINK_RE, (whole, bang: string, text: string, href: string, title: string) => {
+    return rewriteImageEmbeds(line, ctx).replace(INLINE_LINK_RE, (whole, bang: string, text: string, href: string, title: string) => {
       const angled = href.startsWith('<') && href.endsWith('>');
       const bare = angled ? href.slice(1, -1) : href;
       const next = rewriteHref(bare, ctx);
@@ -409,6 +443,7 @@ export async function assembleMarkdown(collected: CollectedSubtree, opts: Assemb
   const collating = pages.length > 1;
 
   const idByPath = new Map((await storage.listEntries(space)).map((e) => [e.relPath, e.id]));
+  const files = await loadSpaceFiles(space).catch(() => undefined);
 
   const taken = new Set<string>();
   const staged: StagedSection[] = [];
@@ -462,6 +497,7 @@ export async function assembleMarkdown(collected: CollectedSubtree, opts: Assemb
       included,
       ownAnchors: s.anchors,
       shareToken: opts.shareToken,
+      files,
     }).trim(),
   );
 

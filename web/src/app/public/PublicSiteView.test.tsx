@@ -42,6 +42,14 @@ const SITE: PublicSiteInfo = {
   mode: 'path',
   homePageId: 'p1',
   instanceUrl: 'https://folio.example.com',
+  title: null,
+  tagline: null,
+  lang: null,
+  logoUrl: null,
+  faviconUrl: null,
+  cssUrl: null,
+  canonicalBase: 'https://folio.example.com/public/docs',
+  indexing: true,
 };
 
 function node(id: string, title: string, children: TreeNode[] = [], path = `${id}.md`): TreeNode {
@@ -286,6 +294,40 @@ describe('PublicSiteView', () => {
     // The list is fully expanded, children included.
     expect(within(index).getByRole('link', { name: 'Install' }).getAttribute('href')).toBe('/public/docs/p/p2');
     expect(screen.queryByTestId('markdown-body')).toBeNull();
+  });
+
+  it('applies the site appearance: the stylesheet link, <html lang>, the title and logo, and the stable hooks for CSS', async () => {
+    stubFetch();
+    const site: PublicSiteInfo = {
+      ...SITE,
+      title: 'Acme Docs',
+      lang: 'uk',
+      logoUrl: '/api/public/spaces/docs/site-assets/logo.png?v=1',
+      cssUrl: '/api/public/spaces/docs/site.css?v=abc',
+    };
+    const { unmount } = renderSite(site, '/public/docs');
+    await waitFor(() => expect(screen.getByTestId('markdown-body')).toBeTruthy());
+
+    const link = document.head.querySelector('link[rel="stylesheet"][href="/api/public/spaces/docs/site.css?v=abc"]');
+    expect(link).not.toBeNull();
+    expect(document.documentElement.lang).toBe('uk');
+
+    // The site title replaces the space name (left column, breadcrumbs, document title) and the logo sits next to it.
+    const aside = screen.getByRole('complementary', { name: 'Acme Docs' });
+    expect(within(aside).getByText('Acme Docs')).toBeTruthy();
+    expect(aside.querySelector('img')?.getAttribute('src')).toBe('/api/public/spaces/docs/site-assets/logo.png?v=1');
+    expect(document.title).toBe('Guide · Acme Docs');
+
+    // Hooks a site stylesheet can rely on.
+    expect(document.querySelector('.folio-site')).not.toBeNull();
+    for (const part of ['header', 'sidebar', 'main', 'footer', 'page']) {
+      expect(document.querySelector(`[data-folio-site-part="${part}"]`), part).not.toBeNull();
+    }
+
+    // Leaving the site takes the stylesheet and the language with it.
+    unmount();
+    expect(document.head.querySelector('link[href="/api/public/spaces/docs/site.css?v=abc"]')).toBeNull();
+    expect(document.documentElement.lang).not.toBe('uk');
   });
 
   it('says so, with a way back, when the page does not exist', async () => {

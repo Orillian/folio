@@ -1,10 +1,11 @@
 /**
- * R23 tail (headers and footers) — GET/PUT /api/spaces/:space/export-settings and the
- * read-modify-write of `<slug>.folio` behind it. Fastify harness per
- * ./routes.test.ts (the admin gate and the 401/403 split are HTTP facts);
- * the file-preservation properties are additionally checked against the raw
- * bytes on disk, because "leaves unrelated .folio content intact" is exactly
- * the kind of claim that must be proven, not narrated.
+ * R23 tail (headers and footers) — GET/PUT /api/spaces/:space/export-settings.
+ * Since 14.10.2026 a thin wrapper over the `.folio/` store (spaceAppearance.ts):
+ * the templates land in `.folio/pdf-header.html` / `.folio/pdf-footer.html` and
+ * `<slug>.folio` is never rewritten by a save that has nothing to migrate.
+ * Fastify harness per ./routes.test.ts (the admin gate and the 401/403 split
+ * are HTTP facts); the file-preservation properties are checked against the
+ * raw bytes on disk.
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -109,20 +110,18 @@ describe('R23 tail — space export settings (real PG, fastify inject)', () => {
     expect(doc.footerTemplate).toContain('pageNumber'); // {{page}} became chromium's own span
   });
 
-  it('leaves unrelated `.folio` content intact — v, name, and unknown keys survive the write byte-for-byte in JSON terms', async () => {
+  it('writes the templates into .folio/ and leaves `<slug>.folio` (v, name, unknown keys) byte-for-byte as it was', async () => {
     // Plant extra content the way a future Folio (or a human in the repo) might.
     const before = JSON.parse(await fs.readFile(folioFile, 'utf8')) as Record<string, unknown>;
     const planted: Record<string, unknown> = { ...before, custom: { keep: ['me', 1] }, trailing: 'stays' };
-    await fs.writeFile(folioFile, `${JSON.stringify(planted, null, 2)}\n`, 'utf8');
+    const plantedRaw = `${JSON.stringify(planted, null, 2)}\n`;
+    await fs.writeFile(folioFile, plantedRaw, 'utf8');
 
     await put({ headerHtml: '<span>H</span>' }, adminCookie);
 
-    const after = JSON.parse(await fs.readFile(folioFile, 'utf8')) as Record<string, unknown>;
-    expect(after.v).toBe(planted.v);
-    expect(after.name).toBe(planted.name);
-    expect(after.custom).toEqual(planted.custom);
-    expect(after.trailing).toBe('stays');
-    expect(after.export).toEqual({ headerHtml: '<span>H</span>' });
+    expect(await fs.readFile(folioFile, 'utf8')).toBe(plantedRaw);
+    expect(await fs.readFile(path.join(storage.getSpaceDir(space), '.folio', 'pdf-header.html'), 'utf8')).toBe('<span>H</span>');
+    expect((await get(adminCookie)).json()).toEqual({ headerHtml: '<span>H</span>' });
   });
 
   it('renaming the space keeps the export templates and every other key — only `name` changes', async () => {
@@ -172,15 +171,14 @@ describe('R23 tail — space export settings (real PG, fastify inject)', () => {
     expect((await get(adminCookie)).json()).toEqual({ footerHtml: '<span>keep</span>' });
   });
 
-  it('refuses to clobber a `.folio` that exists but is not JSON (409), leaving the bytes untouched', async () => {
+  it('never touches a `<slug>.folio` that is not JSON: the save goes to .folio/, the bytes stay', async () => {
     const good = await fs.readFile(folioFile, 'utf8');
     try {
       await fs.writeFile(folioFile, 'this is { not json', 'utf8');
-      const res = await put({ headerHtml: '<span>H</span>' }, adminCookie);
-      expect(res.statusCode).toBe(409);
+      const res = await put({ headerHtml: '<span>H2</span>' }, adminCookie);
+      expect(res.statusCode).toBe(200);
       expect(await fs.readFile(folioFile, 'utf8')).toBe('this is { not json');
-      // Reading settings from a corrupt file degrades to "none", same as css.ts.
-      expect((await get(adminCookie)).json()).toEqual({});
+      expect((await get(adminCookie)).json()).toEqual({ headerHtml: '<span>H2</span>' });
     } finally {
       await fs.writeFile(folioFile, good, 'utf8');
     }

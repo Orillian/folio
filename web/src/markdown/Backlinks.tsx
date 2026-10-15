@@ -33,7 +33,9 @@ export function Backlinks({ pageId }: BacklinksProps) {
     retry: false,
   });
 
-  const backlinks = data?.backlinks ?? [];
+  // Index v2 returns one entry per link (a page linking twice appears twice, with
+  // its own context); the reading-view panel lists each source page once.
+  const backlinks = Array.from(new Map((data?.backlinks ?? []).map((page) => [page.id, page])).values());
   if (isError || backlinks.length === 0) return null;
 
   return (

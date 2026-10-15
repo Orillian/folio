@@ -39,10 +39,22 @@ import { EditorSelection, EditorState, Prec, Transaction, findClusterBreak, type
 import { keymap, type Command } from '@codemirror/view';
 import type { SyntaxNode, Tree } from '@lezer/common';
 import { nearestLinkEdge } from './gfm-table';
-import { CALLOUT_TYPES } from './live-decorations';
+import { readCallout } from './live-decorations';
 import { liveModeFacet } from './live-preview';
+import { ofmOwned, ofmOwns } from './ofm-live';
 
-const CALLOUT_LABEL = new RegExp(`^!(${CALLOUT_TYPES.join('|')})$`, 'i');
+/**
+ * True for the `[!info]` of a callout's first line — the shortcut-reference
+ * link Lezer reads it as. Live mode replaces it with the callout's own label
+ * instead of folding its brackets (live-decorations.ts), and it asks the same
+ * `readCallout` the decorations do, so the two cannot disagree about which
+ * `[!x]` is a callout marker (any type word now, not only GitHub's five).
+ */
+function isCalloutMarker(link: SyntaxNode, doc: Text): boolean {
+  const quote = link.parent?.name === 'Paragraph' ? link.parent.parent : null;
+  if (quote?.name !== 'Blockquote') return false;
+  return readCallout(doc, quote)?.markerFrom === link.from;
+}
 
 /** The outer span of a folded construct, and where its visible text sits inside it. */
 interface FoldedSpan {
@@ -93,15 +105,18 @@ function constructNodeAt(tree: Tree, pos: number): SyntaxNode | null {
  * `LinkMark` — and marks[1] is the `]` that actually ends the visible label;
  * the last one is the closing `)` of the URL.
  */
-function foldedSpan(node: SyntaxNode, doc: Text): FoldedSpan | null {
+function foldedSpan(node: SyntaxNode, doc: Text, tree: Tree): FoldedSpan | null {
   const markName = MARK_CHILD[node.name];
   if (!markName) return null;
+  // `[Note]` inside `[[Note]]`, or `*` inside a formula or a comment: live
+  // mode leaves those as typed (live-decorations.ts), so there is no trap.
+  if (ofmOwns(ofmOwned(doc, tree), node.from, node.to)) return null;
   const marks = node.getChildren(markName);
   if (marks.length < 2) return null;
   const innerFrom = marks[0].to;
   const innerTo = marks[1].from;
   if (innerTo <= innerFrom) return null;
-  if (node.name === 'Link' && CALLOUT_LABEL.test(doc.sliceString(innerFrom, innerTo))) return null;
+  if (node.name === 'Link' && isCalloutMarker(node, doc)) return null;
   // `==text=={.green}`: the colour attribute is a sibling flush after the node
   // (highlight-syntax.ts) and belongs to the construct as far as folding goes.
   let outerTo = node.to;
@@ -141,9 +156,10 @@ function readHtmlTag(text: string, from: number, to: number): HtmlTagRef | null 
  */
 function htmlPairAt(tree: Tree, doc: Text, pos: number): FoldedSpan | null {
   const tags: HtmlTagRef[] = [];
+  const owned = ofmOwned(doc, tree);
   tree.iterate({
     enter: (node) => {
-      if (node.name !== 'HTMLTag') return;
+      if (node.name !== 'HTMLTag' || ofmOwns(owned, node.from, node.to)) return;
       const tag = readHtmlTag(doc.sliceString(node.from, node.to), node.from, node.to);
       if (tag) tags.push(tag);
     },
@@ -176,7 +192,7 @@ function htmlPairAt(tree: Tree, doc: Text, pos: number): FoldedSpan | null {
 function foldedConstructAt(tree: Tree, doc: Text, pos: number): FoldedSpan | null {
   const node = constructNodeAt(tree, pos);
   if (node) {
-    const span = foldedSpan(node, doc);
+    const span = foldedSpan(node, doc, tree);
     if (span) return span;
   }
   return htmlPairAt(tree, doc, pos);
@@ -225,7 +241,7 @@ function splittableChainAt(tree: Tree, doc: Text, pos: number): SplitChain | nul
   let inner: { from: number; to: number } | null = null;
   for (let node = constructNodeAt(tree, pos); node; node = node.parent) {
     if (!(node.name in MARK_CHILD)) continue;
-    const span = foldedSpan(node, doc);
+    const span = foldedSpan(node, doc, tree);
     if (!span || pos <= span.innerFrom || pos >= span.innerTo) break;
     if (!SPLITTABLE.has(node.name)) return null;
     marks.push({ open: doc.sliceString(span.outerFrom, span.innerFrom), close: doc.sliceString(span.innerTo, span.outerTo) });
@@ -481,7 +497,7 @@ function constructEmptiedBy(tree: Tree, doc: Text, from: number, to: number): Fo
   let inner = { from, to };
   for (let node = constructNodeAt(tree, from); node; node = node.parent) {
     if (!(node.name in MARK_CHILD)) continue;
-    const span = foldedSpan(node, doc);
+    const span = foldedSpan(node, doc, tree);
     if (!span || span.innerFrom !== inner.from || span.innerTo !== inner.to) break;
     result = span;
     inner = { from: span.outerFrom, to: span.outerTo };
@@ -524,7 +540,7 @@ function stepOutOfConstruct(tree: Tree, doc: Text, at: number, start: boolean): 
   const outer = start ? 'outerFrom' : 'outerTo';
   for (let node = constructNodeAt(tree, at); node; node = node.parent) {
     if (!(node.name in MARK_CHILD)) continue;
-    const span = foldedSpan(node, doc);
+    const span = foldedSpan(node, doc, tree);
     if (span && span[inner] === at) return node.name === 'InlineCode' ? null : span[outer];
   }
   // `<ins>`/`<mark>` pairs take a whole-document walk to find, so only look

@@ -360,6 +360,7 @@ function SharedPageBody({ payload, token }: { payload: SharedPagePayload; token:
           pageId={page.id}
           space={page.space}
           pagePath={page.path}
+          lightFootprint={page.lightFootprint === true}
           collabUrl={wsBase}
           collabParams={{ share: token }}
           // The socket had the token; everything else the editor renders needs
@@ -388,6 +389,6 @@ function SharedPageBody({ payload, token }: { payload: SharedPagePayload; token:
     // working (SERVER's /files now accepts ?share=<token>) and stops the
     // relative-page-link click handler from ever calling the session-only
     // /api/resolve — see markdown/index.tsx and relativeLinks.ts.
-    <Markdown markdown={page.markdown ?? ''} space={page.space} pagePath={page.path} shareToken={token} />
+    <Markdown markdown={page.markdown ?? ''} space={page.space} pagePath={page.path} shareToken={token} shareLinksPageId={page.id} />
   );
 }

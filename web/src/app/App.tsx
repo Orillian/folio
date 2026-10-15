@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useMemo } from 'react';
+import { Suspense, lazy, useMemo } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { PUBLIC_SITE_PATH_PREFIX } from '@shared/contracts';
@@ -25,6 +25,10 @@ import { PublicHostRoutes, PublicPathRoutes } from './public/PublicSiteRoutes';
 import { readHostSiteSlug } from './public/publicSite';
 import './i18n/register';
 
+// The settings page carries the CodeMirror CSS/HTML modes and the CSS sanitizer; only space admins ever open it, so it is a chunk of its own
+// (the public sites share this bundle with the app and should not pay for it).
+const SpaceSettingsPage = lazy(() => import('./settings/SpaceSettingsPage').then((m) => ({ default: m.SpaceSettingsPage })));
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -38,7 +42,8 @@ const queryClient = new QueryClient({
  * App root: providers (react-query, toasts, router) + the route table.
  * `/` redirects to the first space; `/s/:space` is the space home (resolves
  * index.md); `/s/:space/p/:id` is a page by id; `/s/:space/d/*` is a
- * synthetic folder listing (round 3, git-native spaces); `/admin/access`
+ * synthetic folder listing (round 3, git-native spaces); `/s/:space/settings`
+ * is the space's "Site & PDF" settings; `/admin/access`
  * (round 27) is the instance-admin Access page — client-guarded, see
  * AccessAdmin — consolidating the old `/admin/users` and `/admin/spaces`
  * pages (round 22), which now just redirect here for any stale bookmark/link.
@@ -130,6 +135,15 @@ function AppRoutes() {
           <Route index element={<SpaceHome />} />
           <Route path="p/:id" element={<PageView />} />
           <Route path="d/*" element={<FolderView />} />
+          {/* 14.10.2026: "Site & PDF" — SEO, the public site's CSS and the PDF header/footer, kept in .folio/ in the repository (space admins). */}
+          <Route
+            path="settings"
+            element={
+              <Suspense fallback={<div className="p-8 text-sm text-neutral-400">{t('ui.loading')}</div>}>
+                <SpaceSettingsPage />
+              </Suspense>
+            }
+          />
         </Route>
         <Route path="/admin/access" element={<AccessAdmin />} />
         <Route path="/admin/assistant" element={<AssistantAnalytics />} />

@@ -9,23 +9,27 @@
  *    pages with a `page_access` row (private / specific people), `.agent/**`
  *    and `_templates/` — `publicReadablePageIds` / `isPublicPage`. These sets
  *    never depend on a user: the anonymous reader has no identity;
- *  - the publish settings (subdomain, custom domain, download, assistant) and
- *    the URLs the site answers at.
+ *  - the publish settings (subdomain, custom domain, download, assistant,
+ *    indexing, primary host) and the URLs the site answers at, the canonical
+ *    one included (canonicalSiteBase).
  *
  * Nothing here reads a session. See shared/contracts.ts ("Public sites") for
  * the routes and the three ways a site is reached.
  */
 import {
   PUBLIC_SITE_PATH_PREFIX,
+  type PublicPrimaryHost,
   type PublicSiteInfo,
   type SpacePublicSettings,
   type SpaceVisibility,
 } from '../shared/contracts.js';
 import { isAgentPath } from './agentPath.js';
 import { query, queryOne } from './db/pool.js';
+import { isDemoMode } from './demo.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import * as pageAccess from './pageAccess.js';
 import { publicUrlOrOrigin } from './publicUrl.js';
+import { readSiteCss, readSiteSettings, siteAssetUrl, statSiteAsset } from './spaceAppearance.js';
 import * as storage from './storage.js';
 
 export interface PublicSpace {
@@ -35,6 +39,10 @@ export interface PublicSpace {
   allowAssistant: boolean;
   subdomain: string | null;
   domain: string | null;
+  /** Migration 040: may search engines index the site (default true). */
+  indexing: boolean;
+  /** Migration 040: which address is canonical. */
+  primaryHost: PublicPrimaryHost;
 }
 
 interface PublicSpaceRow {
@@ -44,9 +52,16 @@ interface PublicSpaceRow {
   public_domain: string | null;
   public_allow_download: boolean;
   public_allow_assistant: boolean;
+  public_indexing: boolean;
+  public_primary_host: string;
 }
 
-const PUBLIC_SPACE_COLUMNS = 'slug, name, public_subdomain, public_domain, public_allow_download, public_allow_assistant';
+const PUBLIC_SPACE_COLUMNS =
+  'slug, name, public_subdomain, public_domain, public_allow_download, public_allow_assistant, public_indexing, public_primary_host';
+
+function validPrimaryHost(v: unknown): PublicPrimaryHost {
+  return v === 'path' || v === 'subdomain' || v === 'domain' ? v : 'auto';
+}
 
 function toPublicSpace(row: PublicSpaceRow): PublicSpace {
   return {
@@ -56,7 +71,25 @@ function toPublicSpace(row: PublicSpaceRow): PublicSpace {
     allowAssistant: row.public_allow_assistant,
     subdomain: row.public_subdomain,
     domain: row.public_domain,
+    indexing: row.public_indexing !== false,
+    primaryHost: validPrimaryHost(row.public_primary_host),
   };
+}
+
+/**
+ * Whether search engines may index the site: the stored `indexing` setting,
+ * except in the public demo (FOLIO_DEMO_MODE), where every published space is
+ * editable by any visitor under the shared login and therefore never indexed
+ * (noindex on every page, `Disallow` in robots.txt, no sitemap).
+ */
+export function siteIndexable(record: Pick<PublicSpace, 'indexing'>): boolean {
+  return record.indexing && !isDemoMode();
+}
+
+/** Every published space (robots.txt / sitemap index of the main host). */
+export async function listPublicSpaces(): Promise<PublicSpace[]> {
+  const rows = await query<PublicSpaceRow>(`SELECT ${PUBLIC_SPACE_COLUMNS} FROM spaces WHERE visibility = 'public' ORDER BY slug`);
+  return rows.map(toPublicSpace);
 }
 
 /** The space when it exists AND is published; undefined otherwise (private, instance and unknown look the same). */
@@ -210,6 +243,32 @@ export function publicSiteUrls(slug: string, settings: Pick<SpacePublicSettings,
   };
 }
 
+/**
+ * The canonical absolute URL of the site root, by `primaryHost` (migration 040):
+ * 'auto' = the custom domain if set, else the subdomain if set (and the instance
+ * has PUBLIC_SITES_DOMAIN), else the path form. A pinned host that is not
+ * configured falls back to 'auto'. No trailing slash.
+ */
+export function canonicalSiteBase(record: Pick<PublicSpace, 'slug' | 'subdomain' | 'domain' | 'primaryHost'>, originFallback: string): string {
+  const urls = publicSiteUrls(record.slug, record, originFallback);
+  const auto = urls.domain ?? urls.subdomain ?? urls.path;
+  if (record.primaryHost === 'path') return urls.path;
+  if (record.primaryHost === 'domain') return urls.domain ?? auto;
+  if (record.primaryHost === 'subdomain') return urls.subdomain ?? auto;
+  return auto;
+}
+
+/** True when the canonical base is the `/public/<slug>` form on the main host. */
+export function isPathCanonical(record: Pick<PublicSpace, 'slug' | 'subdomain' | 'domain' | 'primaryHost'>, originFallback: string): boolean {
+  return canonicalSiteBase(record, originFallback) === publicSiteUrls(record.slug, record, originFallback).path;
+}
+
+/** Canonical URL of a page of the site (`pageId` null/undefined or the home page = the site root). */
+export function canonicalPageUrl(base: string, pageId: string | null | undefined, homePageId: string | null): string {
+  if (!pageId || pageId === homePageId) return /^[a-z]+:\/\/[^/]+$/i.test(base) ? `${base}/` : base;
+  return `${base}/p/${encodeURIComponent(pageId)}`;
+}
+
 /** What the HTML shell needs to know about the site a request belongs to. */
 export interface PublicSiteShell {
   slug: string;
@@ -237,16 +296,29 @@ export async function publicSiteForShell(hostname: string | undefined, pathname:
   }
 }
 
-/** The payload of GET /api/public/site and GET /api/public/spaces/:slug. */
-export async function buildPublicSiteInfo(record: PublicSpace, mode: PublicSiteInfo['mode'], originFallback: string): Promise<PublicSiteInfo> {
-  let homePageId: string | null = null;
+/** The space's root page (index.md, then README.md) when it is public; null otherwise. */
+export async function publicHomePageId(slug: string): Promise<string | null> {
   try {
     // '' = the space root: index.md, then README.md.
-    const home = await storage.resolve(record.slug, '');
-    if (await isPublicPage({ id: home.id, space: record.slug, relPath: home.path })) homePageId = home.id;
+    const home = await storage.resolve(slug, '');
+    if (await isPublicPage({ id: home.id, space: slug, relPath: home.path })) return home.id;
   } catch {
     // no root page: the SPA shows the tree
   }
+  return null;
+}
+
+/** The payload of GET /api/public/site and GET /api/public/spaces/:slug. */
+export async function buildPublicSiteInfo(record: PublicSpace, mode: PublicSiteInfo['mode'], originFallback: string): Promise<PublicSiteInfo> {
+  const homePageId = await publicHomePageId(record.slug);
+  // Appearance lives in the repository (.folio/); a broken file never breaks the site.
+  const site = await readSiteSettings(record.slug).catch(() => ({}) as Awaited<ReturnType<typeof readSiteSettings>>);
+  const css = await readSiteCss(record.slug).catch(() => null);
+  const assetUrl = async (name: string | undefined): Promise<string | null> => {
+    if (!name) return null;
+    const stat = await statSiteAsset(record.slug, name).catch(() => null);
+    return stat ? siteAssetUrl(record.slug, name, stat.version) : null;
+  };
   return {
     space: record.slug,
     name: record.name,
@@ -255,6 +327,14 @@ export async function buildPublicSiteInfo(record: PublicSpace, mode: PublicSiteI
     mode,
     homePageId,
     instanceUrl: publicUrlOrOrigin(originFallback),
+    title: site.title ?? null,
+    tagline: site.tagline ?? null,
+    lang: site.lang ?? null,
+    logoUrl: await assetUrl(site.logo),
+    faviconUrl: await assetUrl(site.favicon),
+    cssUrl: css && css.css.trim() ? `/api/public/spaces/${encodeURIComponent(record.slug)}/site.css?v=${css.etag.slice(0, 12)}` : null,
+    canonicalBase: canonicalSiteBase(record, originFallback),
+    indexing: siteIndexable(record),
   };
 }
 
@@ -277,9 +357,19 @@ export async function getSpacePublicSettings(slug: string): Promise<SpacePublish
   const record = toPublicSpace(row);
   return {
     visibility: row.visibility,
-    settings: { subdomain: record.subdomain, domain: record.domain, allowDownload: record.allowDownload, allowAssistant: record.allowAssistant },
+    settings: {
+      subdomain: record.subdomain,
+      domain: record.domain,
+      allowDownload: record.allowDownload,
+      allowAssistant: record.allowAssistant,
+      indexing: record.indexing,
+      primaryHost: record.primaryHost,
+    },
   };
 }
+
+/** The settings as a caller may pass them: `indexing`/`primaryHost` (migration 040) keep their stored value when omitted. */
+export type SpacePublicSettingsInput = Omit<SpacePublicSettings, 'indexing' | 'primaryHost'> & Partial<Pick<SpacePublicSettings, 'indexing' | 'primaryHost'>>;
 
 /**
  * Stores the publish settings. 404 for an unknown space; 400 for a domain that
@@ -288,9 +378,14 @@ export async function getSpacePublicSettings(slug: string): Promise<SpacePublish
  * for a label that would shadow the main host; 409 when the subdomain or the
  * domain already belongs to another space.
  */
-export async function setSpacePublicSettings(slug: string, settings: SpacePublicSettings, originFallback = ''): Promise<SpacePublishState> {
+export async function setSpacePublicSettings(slug: string, input: SpacePublicSettingsInput, originFallback = ''): Promise<SpacePublishState> {
   const current = await getSpacePublicSettings(slug);
   if (!current) throw notFound('space');
+  const settings: SpacePublicSettings = {
+    ...input,
+    indexing: input.indexing ?? current.settings.indexing,
+    primaryHost: input.primaryHost ?? current.settings.primaryHost,
+  };
 
   const sites = sitesDomain();
   const main = mainHost(originFallback);
@@ -311,9 +406,10 @@ export async function setSpacePublicSettings(slug: string, settings: SpacePublic
   try {
     await query(
       `UPDATE spaces
-          SET public_subdomain = $2, public_domain = $3, public_allow_download = $4, public_allow_assistant = $5
+          SET public_subdomain = $2, public_domain = $3, public_allow_download = $4, public_allow_assistant = $5,
+              public_indexing = $6, public_primary_host = $7
         WHERE slug = $1`,
-      [slug, settings.subdomain, settings.domain, settings.allowDownload, settings.allowAssistant],
+      [slug, settings.subdomain, settings.domain, settings.allowDownload, settings.allowAssistant, settings.indexing, settings.primaryHost],
     );
   } catch (err) {
     const pg = err as { code?: string; constraint?: string };

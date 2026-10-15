@@ -821,3 +821,147 @@ html[data-theme='dark'] .folio-hint { background: #e7e5e4; color: #1c1917; }
 }
 .folio-markdown .folio-directive-fallback-block > *:first-of-type { margin-top: 0; }
 .folio-markdown .folio-directive-fallback-block > *:last-child { margin-bottom: 0; }
+
+/* Obsidian-flavoured markdown (shared/ofm, wave 2) ------------------------- */
+
+/* Callouts. A callout with a title or a fold sign has a real title row
+   (remarkOfm); the untitled ones keep the ::before label above, which has
+   nothing to say once the row is there. */
+.folio-markdown .md-alert:not([data-alert-label])::before { content: none; }
+.folio-markdown .md-alert-title {
+  display: block;
+  margin: 0 0 0.4em;
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--alert-accent);
+}
+.folio-markdown .md-alert > :last-child { margin-bottom: 0; }
+.folio-markdown details.md-alert > summary.md-alert-title {
+  cursor: pointer;
+  list-style: none;
+}
+.folio-markdown details.md-alert > summary.md-alert-title::-webkit-details-marker { display: none; }
+.folio-markdown details.md-alert > summary.md-alert-title::before {
+  content: '\25B8';
+  display: inline-block;
+  margin-right: 0.45em;
+  transition: transform 0.12s ease;
+}
+.folio-markdown details.md-alert[open] > summary.md-alert-title::before { transform: rotate(90deg); }
+.folio-markdown details.md-alert:not([open]) > summary.md-alert-title { margin-bottom: 0; }
+
+/* Wikilinks. A link to a page that does not exist is dashed and quiet; a click
+   offers to create it. Without an answer (a share link, a history preview) the
+   words are just words. */
+.folio-markdown a.folio-wikilink { color: var(--md-link); }
+.folio-markdown a.folio-wikilink.folio-wikilink--unresolved {
+  color: var(--md-fg-muted);
+  text-decoration: underline dashed;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.folio-markdown span.folio-wikilink--static { color: var(--md-link); }
+.folio-markdown a.folio-wikilink[data-wikilink-state='pending'] { cursor: default; }
+
+/* Tags. */
+.folio-markdown a.folio-tag,
+.folio-markdown span.folio-tag--static {
+  display: inline-block;
+  padding: 0 0.55em;
+  border: 1px solid var(--md-border);
+  border-radius: 999px;
+  background: var(--md-bg-subtle);
+  color: var(--md-fg-muted);
+  font-size: 0.85em;
+  line-height: 1.6;
+  text-decoration: none;
+}
+.folio-markdown a.folio-tag:hover { color: var(--md-link); opacity: 1; }
+
+/* Formulas. Until KaTeX has drawn one (or if it cannot), the TeX stays visible as written. */
+.folio-markdown .folio-math:not([data-math-done]) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  color: var(--md-fg-muted);
+}
+.folio-markdown div.folio-math-display {
+  margin: 1em 0;
+  overflow-x: auto;
+  text-align: center;
+}
+
+/* Embedded notes (`![[Note]]`): a quiet frame, a link back to the source, the
+   note itself read-only. Its own <Markdown> is drawn without the page padding. */
+.folio-markdown .folio-embed {
+  margin: 1.25em 0;
+  padding: 0.6em 1em;
+  border-left: 3px solid var(--md-border);
+  border-radius: 0 6px 6px 0;
+  background: var(--md-bg-subtle);
+}
+.folio-markdown .folio-embed--static,
+.folio-markdown .folio-embed--unresolved {
+  border-left-style: dashed;
+  color: var(--md-fg-muted);
+}
+.folio-markdown .folio-embed .folio-markdown {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.95em;
+}
+/* The embedded section opens with its own heading: no extra air above it inside the frame. */
+.folio-markdown .folio-embed .folio-md-segment:first-child > :first-child,
+.folio-markdown .folio-embed .folio-md-segment:first-child > .folio-collapsible:first-child > :first-child {
+  margin-top: 0;
+}
+.folio-markdown .folio-embed__title {
+  display: block;
+  margin-bottom: 0.4em;
+  color: var(--md-fg-muted);
+  font-size: 0.8em;
+  font-weight: 650;
+  text-decoration: none;
+}
+.folio-markdown .folio-embed__title:hover { color: var(--md-link); opacity: 1; }
+.folio-markdown .folio-embed__note {
+  margin: 0;
+  color: var(--md-fg-muted);
+  font-size: 0.9em;
+}
+.folio-markdown .folio-embed__note--problem { font-style: italic; }
+
+/* "Page “Note” does not exist" - create it? Same toast family as .folio-hint. */
+.folio-offer {
+  position: fixed;
+  left: 50%;
+  bottom: 2rem;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.75em;
+  max-width: calc(100vw - 2rem);
+  padding: 0.55em 0.75em 0.55em 1em;
+  border-radius: 8px;
+  background: #1c1917;
+  color: #f5f5f4;
+  font-size: 0.875rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  z-index: 60;
+}
+.folio-offer button {
+  padding: 0.25em 0.7em;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.folio-offer button:disabled { opacity: 0.6; cursor: default; }
+.folio-offer .folio-offer__close { padding: 0 0.4em; border-color: transparent; font-size: 1.1em; line-height: 1.4; }
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme='light']) .folio-offer { background: #e7e5e4; color: #1c1917; }
+}
+html[data-theme='dark'] .folio-offer { background: #e7e5e4; color: #1c1917; }

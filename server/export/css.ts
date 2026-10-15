@@ -2,6 +2,12 @@
  * Round 23 (EXPORT) — the space's own print stylesheet and running
  * headers/footers, read from its git repo.
  *
+ * Since 14.10.2026 they live in the space's `.folio/` folder (export.css,
+ * pdf-header.html, pdf-footer.html, images in .folio/assets/ — see
+ * server/spaceAppearance.ts); the legacy places (`<slug>.export.css`, the
+ * `export` section of `<slug>.folio`) are read per file when `.folio/` has no
+ * such file, until the first save of the PDF settings moves them.
+ *
  * DEV-PLAN, verbatim and non-negotiable: "Export CSS — `<slug>.export.css`
  * in the root of the space's repository, applied ONLY to the PDF/print
  * render. Security: strip @import and url() to external hosts (SSRF from a
@@ -32,9 +38,8 @@
  * itself blocks every non-`data:` request at the CDP level. Either layer
  * alone would do; both together mean a regex miss is not a breach.
  */
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import * as storage from '../storage.js';
+import { PDF_CHROME_MAX_BYTES, SITE_ASSETS_MAX_TOTAL_BYTES } from '../../shared/contracts.js';
+import { inlineAssetImages, inlineAssetUrlsInCss, readPdfChromeSource } from '../spaceAppearance.js';
 
 /** 256 KB. A print stylesheet an order of magnitude bigger than this is not a stylesheet. */
 export const MAX_EXPORT_CSS_BYTES = 256 * 1024;
@@ -117,7 +122,7 @@ export const MAX_HEADER_FOOTER_STORED_BYTES = 1024 * 1024;
  * anything could run) and a liability. Allowlist by removal: no elements
  * that fetch or execute, no inline event handlers, no non-`data:` `src`.
  */
-export function sanitizeHeaderFooterHtml(raw: string): string {
+export function sanitizeHeaderFooterHtml(raw: string, maxBytes: number = MAX_HEADER_FOOTER_STORED_BYTES): string {
   return raw
     .replace(/<\s*(script|iframe|object|embed|link|meta|base)\b[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
     .replace(/<\s*(script|iframe|object|embed|link|meta|base)\b[^>]*>/gi, '')
@@ -126,7 +131,7 @@ export function sanitizeHeaderFooterHtml(raw: string): string {
       const value = (dq ?? sq ?? bare ?? '').trim();
       return /^data:/i.test(value) ? whole : '';
     })
-    .slice(0, MAX_HEADER_FOOTER_STORED_BYTES);
+    .slice(0, maxBytes);
 }
 
 export interface HeaderFooterContext {
@@ -141,8 +146,8 @@ export interface HeaderFooterContext {
  * round chose CDP printing over CSS Paged Media, which Chrome does not
  * implement running headers for.
  */
-export function renderHeaderFooterTemplate(template: string, ctx: HeaderFooterContext): string {
-  return sanitizeHeaderFooterHtml(template)
+export function renderHeaderFooterTemplate(template: string, ctx: HeaderFooterContext, maxBytes: number = MAX_HEADER_FOOTER_STORED_BYTES): string {
+  return sanitizeHeaderFooterHtml(template, maxBytes)
     .replace(/\{\{\s*page\s*\}\}/g, '<span class="pageNumber"></span>')
     .replace(/\{\{\s*pages\s*\}\}/g, '<span class="totalPages"></span>')
     .replace(/\{\{\s*title\s*\}\}/g, escapeHtml(ctx.title))
@@ -158,52 +163,49 @@ export function escapeHtml(s: string): string {
 // reading them off disk
 // ---------------------------------------------------------------------------
 
+/**
+ * Cap for a `.folio/` template AFTER its `<img src="logo.png">` were inlined
+ * from .folio/assets/: the raw template (PDF_CHROME_MAX_BYTES) plus every
+ * asset base64-encoded. The legacy cap stays for legacy templates.
+ */
+export const MAX_FOLIO_TEMPLATE_RENDER_BYTES = PDF_CHROME_MAX_BYTES + Math.ceil((SITE_ASSETS_MAX_TOTAL_BYTES * 4) / 3) + 4096;
+
 export interface SpaceExportAssets {
   css: string;
   headerHtml?: string;
   footerHtml?: string;
   removed: SanitizedCss['removed'];
-}
-
-async function readIfPresent(file: string): Promise<string | undefined> {
-  try {
-    return await fs.readFile(file, 'utf8');
-  } catch {
-    return undefined;
-  }
+  /** The byte cap renderHeaderFooterTemplate applies to these templates. */
+  templateMaxBytes: number;
 }
 
 /**
- * `<slug>.export.css` at the space's REPO ROOT (where `<slug>.folio` lives —
- * see storage.ts's note on why repo root rather than content root), with the
- * content root checked as a fallback because that is where an author editing
- * through Folio actually sees their files. Header/footer templates come from
- * the `export` section of `<slug>.folio`, matching
- * `spaceExportSettingsSchema` in shared/contracts.ts.
+ * The print stylesheet and header/footer templates of `space`: per file,
+ * `.folio/` first (export.css, pdf-header.html, pdf-footer.html), then the
+ * legacy places — `<slug>.export.css` at the REPO ROOT (where `<slug>.folio`
+ * lives), the content root as a fallback, a generic `export.css` last; the
+ * templates from the `export` section of `<slug>.folio`.
+ *
+ * Images: a `.folio/` template's `<img src="logo.png">` and a `.folio/export.css`
+ * `url(logo.png)` name files of `.folio/assets/` and are inlined here as
+ * `data:` URIs read from disk — the renderer itself loads nothing. Legacy
+ * templates already carry `data:` URIs (embedded at save time,
+ * headerFooterImages.ts).
  */
 export async function readSpaceExportAssets(space: string): Promise<SpaceExportAssets> {
-  const repoDir = storage.getRepoDir(space);
-  const contentDir = storage.getSpaceDir(space);
+  const source = await readPdfChromeSource(space);
+  const { css: sanitized, removed } = sanitizeExportCss(source.css ?? '');
+  const css = source.cssSource === 'folio' ? await inlineAssetUrlsInCss(space, sanitized) : sanitized;
 
-  const rawCss =
-    (await readIfPresent(path.join(repoDir, `${space}.export.css`))) ??
-    (await readIfPresent(path.join(contentDir, `${space}.export.css`))) ??
-    (await readIfPresent(path.join(repoDir, 'export.css'))) ??
-    '';
-  const { css, removed } = sanitizeExportCss(rawCss);
-
-  let headerHtml: string | undefined;
-  let footerHtml: string | undefined;
-  const meta = await readIfPresent(await storage.folioMetaPath(space));
-  if (meta) {
-    try {
-      const parsed = JSON.parse(meta) as { export?: { headerHtml?: unknown; footerHtml?: unknown } };
-      if (typeof parsed.export?.headerHtml === 'string') headerHtml = parsed.export.headerHtml;
-      if (typeof parsed.export?.footerHtml === 'string') footerHtml = parsed.export.footerHtml;
-    } catch {
-      // corrupt/foreign file — treated exactly as absent, same as storage.ts's readFolioMeta
-    }
-  }
-
-  return { css, headerHtml, footerHtml, removed };
+  const fromFolio = async (html: string | undefined, origin: PdfSource): Promise<string | undefined> => {
+    if (html === undefined || !html.trim()) return undefined;
+    if (origin !== 'folio') return html;
+    return inlineAssetImages(space, html.slice(0, PDF_CHROME_MAX_BYTES));
+  };
+  const headerHtml = await fromFolio(source.headerHtml, source.headerSource);
+  const footerHtml = await fromFolio(source.footerHtml, source.footerSource);
+  const anyFolio = source.headerSource === 'folio' || source.footerSource === 'folio';
+  return { css, headerHtml, footerHtml, removed, templateMaxBytes: anyFolio ? MAX_FOLIO_TEMPLATE_RENDER_BYTES : MAX_HEADER_FOOTER_STORED_BYTES };
 }
+
+type PdfSource = 'folio' | 'legacy' | 'none';

@@ -203,7 +203,6 @@ export function registerAccessRoutes(app: FastifyInstance): void {
   });
 
   app.patch('/api/spaces/:space', async (request) => {
-    assertNotDemoAccount(request.authUser!, 'Changing space visibility');
     session.requireCookieAuth(request);
     session.requireWriteScope(request);
     const { space } = request.params as { space: string };

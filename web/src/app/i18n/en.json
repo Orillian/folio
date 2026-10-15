@@ -512,19 +512,7 @@
       "rows": "The document was truncated: a table had too many rows. Pages saved: {{pages}}.",
       "generic": "The document was truncated by the assembly limits. Pages saved: {{pages}}."
     },
-    "tableView": "Table view",
-    "settings": {
-      "title": "PDF header & footer",
-      "intro": "Running header and footer for the PDF export of every page in this space. HTML is allowed (no scripts); an empty field keeps the default footer with the page number.",
-      "headerLabel": "Header",
-      "footerLabel": "Footer",
-      "placeholdersHint": "Placeholders:",
-      "save": "Save",
-      "saving": "Saving…",
-      "cancel": "Cancel",
-      "loadFailed": "Could not load the settings",
-      "saveFailed": "Could not save the settings"
-    }
+    "tableView": "Table view"
   },
   "members": {
     "menuLabel": "Members",
@@ -772,6 +760,22 @@
     "syncFailed": "Could not sync the space",
     "fromTemplate": "From template: \"{{title}}\"",
     "spaceHome": "Space home",
+    "scanSettings": {
+      "title": "Indexing & files",
+      "ignoreLabel": "Do not index",
+      "ignoreHint": "Top-level files and folders Folio skips, one name per line. \"*\" matches any characters; a trailing \"/\" means folders only. Files on disk are never changed.",
+      "defaultsLabel": "Always skipped:",
+      "ignorePlaceholder": "Templates/\ndraft-*",
+      "invalid": "Not a valid entry: {{entry}}. Use the name of a top-level file or folder, without \"..\" or \"/\" inside.",
+      "tooMany": "At most {{max}} entries.",
+      "lightLabel": "Light footprint (no ids in files)",
+      "lightHint": "Only affects what Folio writes from now on; ids that files already carry stay.",
+      "lightAlways": "A space bound to a sub-folder of a repository is always light.",
+      "rescanNote": "The space is re-indexed when you save.",
+      "save": "Save",
+      "saving": "Saving…",
+      "saveFailed": "Could not save the settings"
+    },
     "imageStorage": {
       "title": "Image storage",
       "label": "Store images in the repository",
@@ -783,9 +787,10 @@
     "spaceMenu": {
       "label": "Space menu",
       "sync": "Sync",
-      "exportSettings": "PDF header & footer",
+      "siteSettings": "Site & PDF settings…",
       "assistantKey": "Folio AI key",
       "imageStorage": "Image storage",
+      "scanSettings": "Indexing & files…",
       "openRepo": "Open repository",
       "connectGit": "Connect git",
       "publish": "Publish as website"
@@ -901,6 +906,9 @@
       "enterManually": "Enter manually",
       "tokenPlaceholder": "for private https repositories",
       "multiSpaceHint": "Multiple spaces can point at the same repo with different roots.",
+      "vaultDetected": "Obsidian vault detected: Folio keeps ids out of your files and ignores .obsidian/ and .trash/",
+      "lightFootprint": "Light footprint (no ids in files)",
+      "lightFootprintHint": "Folio never adds an id to your files — page ids live in its own database. For an Obsidian vault or a docs folder inside a product repository.",
       "failed": "Could not create the space",
       "progress": {
         "preparing": "Preparing import…",
@@ -1595,6 +1603,15 @@
     }
   },
   "publish": {
+    "indexing": "Allow search engines to index this site",
+    "indexingHint": "When off, every page is marked noindex and robots.txt disallows the site.",
+    "primaryHost": "Primary address",
+    "primaryHostHint": "The canonical address that search engines are pointed to.",
+    "primaryHostAuto": "Automatic (custom domain, then subdomain, then the address on this Folio)",
+    "primaryHostPath": "Address on this Folio",
+    "primaryHostSubdomain": "Subdomain",
+    "primaryHostDomain": "Custom domain",
+    "appearanceLink": "Appearance, SEO and CSS of the site →",
     "title": "Publish “{{space}}” as a website",
     "save": "Save",
     "saved": "Site settings saved.",
@@ -1618,6 +1635,206 @@
       "domainHint": "Point a CNAME to {{mainHost}} and route the host to Folio in your reverse proxy",
       "allowDownload": "Allow visitors to download pages (Markdown, PDF, DOCX)",
       "allowAssistant": "Allow visitors to ask Folio AI about this space (uses the space or instance shared key)"
+    }
+  },
+  "spaceSettings": {
+    "title": "Site & PDF settings",
+    "noAccess": "Only space admins can change the site and PDF settings.",
+    "backToSpace": "Back to the space",
+    "loadFailed": "Could not load the settings",
+    "filesForbidden": "The files in the repository (SEO, CSS, PDF) can only be edited by space admins.",
+    "tabs": {
+      "site": "Site",
+      "appearance": "Site appearance",
+      "pdf": "PDF"
+    },
+    "unsaved": "Unsaved changes",
+    "save": "Save",
+    "saved": "Saved to {{paths}} · commit “{{message}}”",
+    "saveFailed": "Could not save the settings",
+    "repoFile": {
+      "open": "Open in repository",
+      "notCreated": "Not in the repository yet — created on save",
+      "legacy": "Legacy location, moves to .folio/ on save"
+    },
+    "conflict": {
+      "title": "Changed in the repository",
+      "body": "{{files}} was changed in the repository after you opened this page. Nothing was written; your draft is kept.",
+      "reload": "Reload",
+      "showDiff": "Show diff",
+      "hideDiff": "Hide diff",
+      "keepMine": "Keep mine",
+      "noDiff": "The repository version is not available here — use Reload.",
+      "diffLabel": "Differences",
+      "legend": "- in the repository   + in your draft",
+      "unchanged": "… {{count}} unchanged lines …"
+    },
+    "publication": {
+      "title": "Publication",
+      "storedInFolio": "Stored in Folio, not in git",
+      "change": "Change…",
+      "visibility": "Visibility",
+      "addresses": "Addresses",
+      "needsPublic": "Make the space public to turn the website on."
+    },
+    "seo": {
+      "title": "Search and sharing",
+      "intro": "How the home page of the site appears in search results and in link previews. Saved to .folio/site.json in the repository.",
+      "siteTitle": "Site title",
+      "tagline": "Tagline",
+      "description": "Description",
+      "descriptionCount": "{{count}} / {{limit}}",
+      "descriptionHint": "search engines show about 160 characters",
+      "lang": "Language",
+      "langDefault": "Instance default",
+      "langOther": "Other…",
+      "langCustom": "Language code",
+      "langInvalid": "Use a code like en, uk or en-GB.",
+      "ogImage": "Social image",
+      "favicon": "Favicon",
+      "logo": "Logo",
+      "noImage": "None",
+      "missingFile": "{{name}} (not in assets)",
+      "upload": "Upload…",
+      "remove": "Remove",
+      "invalidJson": "site.json is not valid JSON, so these fields are locked. Fix the file in the repository and reload the page.",
+      "invalidFields": "Some values are not valid: {{fields}}.",
+      "previewSearch": "In search results",
+      "previewSocial": "As a link card",
+      "previewNoDescription": "No description — search engines will show an excerpt of the page.",
+      "previewNoImage": "No image",
+      "pageDescriptionHint": "A page’s own description: set `description` in the front matter of that page."
+    },
+    "appearance": {
+      "title": "Site stylesheet",
+      "intro": "CSS applied to the public site only (never inside the app). Saved to .folio/site.css.",
+      "editorLabel": "Site stylesheet (CSS)",
+      "warnings": "These parts will not be applied as written:",
+      "hooks": "Stable selectors",
+      "hooksHint": "These hooks stay the same between Folio versions; other class names may change.",
+      "preview": "Preview",
+      "previewTitle": "Preview of the published site",
+      "previewHint": "Shows your draft as you type, without saving. The saved stylesheet is switched off in the preview.",
+      "previewNeedsPublic": "Publish the space to preview the site."
+    },
+    "assets": {
+      "title": "Assets",
+      "hint": "Files of .folio/assets/ are public while the space is public. Refer to them by name in the stylesheet (fonts, images) and in the PDF header.",
+      "empty": "No files yet.",
+      "upload": "Upload…",
+      "uploaded": "Uploaded {{name}}",
+      "uploadFailed": "Could not upload the file",
+      "tooBig": "The file is larger than 1 MB.",
+      "badName": "Use a png, jpg, webp, gif, svg, ico, woff or woff2 file with a simple name.",
+      "replaceTitle": "Replace {{name}}?",
+      "replaceBody": "A file with this name is already in the assets folder. Pages and styles that use it will show the new file.",
+      "replace": "Replace",
+      "deleteLabel": "Delete {{name}}",
+      "deleteTitle": "Delete {{name}}?",
+      "deleteBody": "The file is removed from the repository (one commit). Anything that still refers to it will lose it.",
+      "deleted": "Deleted {{name}}",
+      "deleteFailed": "Could not delete the file"
+    },
+    "pdf": {
+      "legacyBanner": "PDF settings will move into .folio/ on save.",
+      "separateDocs": "The header and footer are separate documents: only inline styles apply, the CSS below does not reach them. An empty field keeps the default footer with the page number.",
+      "header": "Header",
+      "footer": "Footer",
+      "placeholders": "{{field}}: placeholders",
+      "insert": "Insert:",
+      "uploadLogo": "Upload logo…",
+      "css": "Print stylesheet",
+      "cssHint": "CSS for the body of the pages in the PDF (export.css).",
+      "test": "Test PDF",
+      "noPages": "The space has no pages to print yet."
+    }
+  },
+  "properties": {
+    "label": "Page properties",
+    "title": "Properties ({{n}})",
+    "empty": "No properties yet.",
+    "add": "Add property",
+    "addAction": "Add",
+    "keyLabel": "Property name",
+    "keyPlaceholder": "Name",
+    "typeLabel": "Property type",
+    "typeFixed": "This key already has a type in the space",
+    "duplicateKey": "This page already has that property",
+    "knownKey": "{{type}}, pages: {{pages}}",
+    "saveType": "Save this type for the space",
+    "typeSaved": "Property type saved for the space",
+    "typeSaveFailed": "Could not save the property type",
+    "saveFailed": "Could not save the properties",
+    "conflict": "These properties changed elsewhere (in the repository or by someone else) while you were editing. Your change was not saved. Reload to see the current values.",
+    "reload": "Reload",
+    "remove": "Remove property {{name}}",
+    "removeChip": "Remove {{chip}}",
+    "addTagPlaceholder": "Add a tag…",
+    "addItemPlaceholder": "Add…",
+    "chipRejected": "Already there, or not a valid value here",
+    "foreign": "foreign value",
+    "foreignHint": "Written by another tool; Folio keeps it as is",
+    "types": {
+      "text": "Text",
+      "number": "Number",
+      "checkbox": "Checkbox",
+      "date": "Date",
+      "datetime": "Date and time",
+      "list": "List",
+      "tags": "Tags",
+      "aliases": "Aliases"
+    },
+    "status": {
+      "draft": "Draft",
+      "published": "Published",
+      "archived": "Archived"
+    }
+  },
+  "tags": {
+    "title": "Tags",
+    "search": "Search pages tagged #{{tag}}",
+    "menu": "Actions for #{{tag}}",
+    "expand": "Expand #{{tag}}",
+    "collapse": "Collapse #{{tag}}",
+    "rename": {
+      "menu": "Rename tag…",
+      "title": "Rename #{{tag}}",
+      "hint": "Renames #{{tag}} and its sub-tags (#{{tag}}/…) in page text and in front matter, in one commit. Pages you cannot edit are skipped.",
+      "label": "New name",
+      "invalid": "A tag has letters, digits, _ - and / only, and at least one letter.",
+      "action": "Rename",
+      "done": "Tag renamed. Pages changed: {{changed}}.",
+      "doneSkipped": "Tag renamed. Pages changed: {{changed}}, skipped (no edit access): {{skipped}}.",
+      "failed": "Could not rename the tag"
+    }
+  },
+  "search": {
+    "operators": {
+      "title": "Operators",
+      "label": "Search operators",
+      "tag": "Pages with a tag, sub-tags included: tag:project/alpha",
+      "kind": "Page kind: doc, table, board, form, pdf, office",
+      "status": "Status: draft, published, archived",
+      "in": "Inside a folder: in:guides/",
+      "prop": "Front matter property: prop:owner=anna, or prop:owner for any value",
+      "phrase": "Exact phrase: \"release notes\"",
+      "exclude": "Leave a word out: -draft"
+    },
+    "saved": {
+      "title": "Saved searches",
+      "save": "Save this search…",
+      "dialogTitle": "Save this search",
+      "nameLabel": "Name",
+      "onlyThisSpace": "Only in the space {{space}}",
+      "allSpaces": "All spaces",
+      "resetScope": "Search in this space only",
+      "saved": "Search saved",
+      "saveAction": "Save",
+      "saveFailed": "Could not save the search",
+      "delete": "Delete saved search {{name}}",
+      "deleteTitle": "Delete saved search?",
+      "deleteBody": "“{{name}}” will be removed from your saved searches. The pages it finds are not affected.",
+      "deleteFailed": "Could not delete the search"
     }
   }
 }

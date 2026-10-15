@@ -32,6 +32,8 @@ import * as session from './auth/session.js';
 import * as gitSync from './gitSync.js';
 import { translitSlug } from './translit.js';
 import * as links from './links.js';
+import * as pageIndex from './indexV2/store.js';
+import { dirOf as wikiDirOf } from './wikilinks.js';
 import * as shares from './shares.js';
 import { shareGrantsPage } from './export/shareScope.js';
 import { isPublicPage } from './publicSites.js';
@@ -347,7 +349,8 @@ export async function persistDoc(docName: string, ydoc: Y.Doc): Promise<boolean>
   try {
     const newBody = ydoc.getText('content').toString();
     if (!isDocSeeded(docName)) {
-      const onDisk = await storage.readFreshDocBody(docName).catch(() => '');
+      // Line endings aside: a room never holds "\r", the file of a CRLF (or mixed) page keeps them.
+      const onDisk = normalizeEol(await storage.readFreshDocBody(docName).catch(() => ''));
       if (newBody.length < onDisk.length) {
         // eslint-disable-next-line no-console
         console.error(
@@ -368,8 +371,11 @@ export async function persistDoc(docName: string, ydoc: Y.Doc): Promise<boolean>
     // write would look, to bindState, like the FILE needs to "catch up" to it —
     // silently regressing content that was really just never written.
     const titleBefore = current.title ?? null;
+    let written: boolean;
     try {
-      await storage.writeDocBody(docName, newBody);
+      // Nothing written when the text is what the file already says: that is a
+      // room closing on a page nobody edited (writeState flushes every room).
+      ({ written } = await storage.writeDocBodyIfChanged(docName, newBody));
     } catch (err) {
       // The file write failed: the room's text must not live only in this
       // process. Store the snapshot anyway, WITHOUT moving its file marker —
@@ -384,6 +390,7 @@ export async function persistDoc(docName: string, ydoc: Y.Doc): Promise<boolean>
       return false;
     }
     await storeSnapshot(docName, ydoc, storage.docFileBody(newBody)); // same cadence as the file write
+    if (!written) return true;
     gitSync.noteActivity(current.space); // starts/resets the ~90s quiet-period auto-commit
     // Title edited in the H1 (the usual way a new page gets its name): follow
     // with the slug while it is still the auto-derived one — see maybeAutoRenameSlug.
@@ -446,7 +453,8 @@ export function fileBodyHash(fileBody: string): string {
  * No marker (a snapshot from before 06.10.2026): the file wins, as it always did.
  */
 export function docFileWins(fileBody: string, marker: string | null | undefined): boolean {
-  return !marker || fileBodyHash(normalizeEol(fileBody)) !== marker;
+  // docFileBody: the marker is the hash of docFileBody(text written), and a file may lack the final newline.
+  return !marker || fileBodyHash(storage.docFileBody(normalizeEol(fileBody))) !== marker;
 }
 
 /** How many backups one page keeps, and for how long (page_text_backups). */
@@ -2265,8 +2273,8 @@ export async function bindState(docName: string, ydoc: Y.Doc): Promise<void> {
         return undefined;
       });
       const fileBody = rawFileBody === undefined ? undefined : normalizeEol(rawFileBody);
-      // Compared against what persisting this text WOULD write (docFileBody: the
-      // same text with a trailing newline guaranteed), not the raw Y.Text. A page
+      // Compared with the final newline aside on both sides (docFileBody), not as
+      // raw text: a file may lack it (Folio keeps that), and so may the Y.Text. A page
       // typed to the end without a final "\n" has a file that is "different" by
       // that one character on every resume; the whole-body replace below would
       // then delete and reinsert every character under new CRDT identity — and a
@@ -2274,13 +2282,14 @@ export async function bindState(docName: string, ydoc: Y.Doc): Promise<void> {
       // page connecting its own doc for the first time is exactly that) merges the
       // replacement in next to its edits: the doubling, from a difference that
       // was never real.
-      if (fileBody !== undefined && fileBody !== storage.docFileBody(ytext.toString()) && !docFileWins(fileBody, row?.fileBodySha256)) {
+      const fileMoved = fileBody !== undefined && storage.docFileBody(fileBody) !== storage.docFileBody(ytext.toString());
+      if (fileBody !== undefined && fileMoved && !docFileWins(fileBody, row?.fileBodySha256)) {
         // The snapshot is newer than the file (the file still holds exactly what
         // this room last wrote): keep it, and write it out as soon as the writer exists.
         // eslint-disable-next-line no-console
         console.warn(`[collab] ${docName}: stored room state is newer than its file; keeping it and rewriting the file`);
         snapshotAheadOfFile = true;
-      } else if (fileBody !== undefined && fileBody !== storage.docFileBody(ytext.toString())) {
+      } else if (fileBody !== undefined && fileMoved) {
         await backupRoomText(docName, 'file changed while the room was closed', ytext.toString());
         // The file changed while the server was down (external edit, git pull/merge
         // applied straight to disk while nothing was live to see it as a Yjs update).
@@ -2573,7 +2582,7 @@ export function reconcileLiveRoomAfterMerge(entry: storage.PageIndexEntry, raw: 
   } else if (entry.kind === 'doc') {
     const body = normalizeEol(storage.splitLeadingFrontmatter(raw).body);
     const text = fork.getText('content');
-    if (body === storage.docFileBody(text.toString())) return;
+    if (storage.docFileBody(body) === storage.docFileBody(text.toString())) return;
     fork.transact(() => setYText(text, body));
   } else {
     return;
@@ -2734,8 +2743,9 @@ export async function flushDoc(id: string): Promise<void> {
  * mechanical fs-rename + reindex (and captures every moved id's backlinks
  * BEFORE its own rename/rescan — see SlugRenameMove.backlinks's doc comment
  * for why that ordering matters); this layer additionally rewrites every
- * INCOMING relative (and `[[`-picked, which are the same thing on disk —
- * see links.rewriteRelativeLinks) link across the space that pointed at
+ * INCOMING relative markdown link — and every Obsidian wikilink a file
+ * written elsewhere carries (`[[old]]`; see links.rewriteRelativeLinks) —
+ * across the space that pointed at
  * whatever moved — the renamed page itself, and, when renaming a
  * directory-index, every page nested under it too, since the whole subtree
  * moves together. Lives here (not storage.ts) so it can route each rewrite
@@ -2784,6 +2794,8 @@ export async function rewriteLinksAfterMove(moved: storage.SlugRenameMove[]): Pr
 
   // Docs that merely MENTION a moved name but have no recorded backlink (index lag): every move is a candidate for them; rewriteRelativeLinks is a no-op where nothing resolves.
   const space = moved.length > 0 ? (await storage.getEntry(moved[0].id))?.space : undefined;
+  // A wikilink is resolved against the whole space, before and after the change.
+  const wiki = space ? await links.loadWikiMoveContext(space, new Map(moved.map((m) => [m.oldRelPath, m.newRelPath] as const))) : undefined;
   if (space) {
     const allTargets = moved.map((m) => ({ oldRelPath: m.oldRelPath, newRelPath: m.newRelPath }));
     for (const sourceId of await links.findDocsMentioning(space, moved.map((m) => m.oldRelPath))) {
@@ -2796,12 +2808,25 @@ export async function rewriteLinksAfterMove(moved: storage.SlugRenameMove[]): Pr
     if (!srcEntry || srcEntry.kind !== 'doc') continue; // boards never carry markdown links (see scanSpace)
     const currentBody = isDocLive(sourceId) ? (getLiveText(sourceId) ?? (await storage.readFreshDocBody(sourceId))) : await storage.readFreshDocBody(sourceId);
     let rewritten = currentBody;
-    for (const t of targets) rewritten = links.rewriteRelativeLinks(rewritten, srcEntry.dirPath, t.oldRelPath, t.newRelPath);
+    // The source may have moved with the rename (a directory rename carries its pages along): its old folder is where its wikilinks were written against.
+    const sourceWiki = wiki ? { ...wiki, sourceOldDir: wikiDirOf(wiki.oldPathOf(srcEntry.relPath)) } : undefined;
+    for (const t of targets) rewritten = links.rewriteRelativeLinks(rewritten, srcEntry.dirPath, t.oldRelPath, t.newRelPath, sourceWiki);
     if (rewritten !== currentBody) {
       await editDocBody(sourceId, rewritten);
       await flushDoc(sourceId);
     }
   }
+  // Index v2: the whole space's links resolved once more, now that every rewritten source is saved (each save
+  // resolved only its own links; a link the rename made point elsewhere is settled here).
+  if (space) await resolveSpaceLinksAfterMove(space);
+}
+
+/** Phase 2 of the page index for a whole space after a rename/move; a failure is logged, the move stands. */
+async function resolveSpaceLinksAfterMove(space: string): Promise<void> {
+  await pageIndex.resolveSpaceLinks(space).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error(`[index] failed to resolve the links of ${space} after a move:`, err);
+  });
 }
 
 /**
@@ -2826,6 +2851,8 @@ export async function movePage(id: string, toParentPath: string, author: GitIden
 
   const movedFiles = new Map(moved.map((m) => [m.oldRelPath, m.newRelPath] as const));
   const movedDirMap = new Map(movedDirs.map((d) => [d.from, d.to] as const));
+  // Wikilinks resolve against the whole space, before and after the move.
+  const wiki = await links.loadWikiMoveContext(meta.space, movedFiles, movedDirMap);
   // Directory a moved doc's body was written against (its OLD one); unmoved sources keep their current dir.
   const oldDirOfMoved = new Map(moved.map((m) => [m.id, m.oldRelPath.includes('/') ? m.oldRelPath.slice(0, m.oldRelPath.lastIndexOf('/')) : ''] as const));
   const sourceIds = new Set<string>([...oldDirOfMoved.keys(), ...assetLinkSources, ...moved.flatMap((m) => m.backlinks.map((b) => b.id))]);
@@ -2836,12 +2863,13 @@ export async function movePage(id: string, toParentPath: string, author: GitIden
     const srcEntry = await storage.getEntry(sourceId);
     if (!srcEntry || srcEntry.kind !== 'doc') continue;
     const currentBody = isDocLive(sourceId) ? (getLiveText(sourceId) ?? (await storage.readFreshDocBody(sourceId))) : await storage.readFreshDocBody(sourceId);
-    const rebased = links.rebaseRelativeLinks(currentBody, oldDirOfMoved.get(sourceId) ?? srcEntry.dirPath, srcEntry.dirPath, movedFiles, movedDirMap);
+    const rebased = links.rebaseRelativeLinks(currentBody, oldDirOfMoved.get(sourceId) ?? srcEntry.dirPath, srcEntry.dirPath, movedFiles, movedDirMap, wiki);
     if (rebased !== currentBody) {
       await editDocBody(sourceId, rebased);
       await flushDoc(sourceId);
     }
   }
+  await resolveSpaceLinksAfterMove(meta.space);
 
   const primary = moved[0];
   await gitSync.commitNow(meta.space, `docs: move ${primary.oldRelPath} -> ${primary.newRelPath}`, author);

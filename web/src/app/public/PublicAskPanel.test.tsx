@@ -29,6 +29,14 @@ const SITE: PublicSiteInfo = {
   mode: 'path',
   homePageId: 'p1',
   instanceUrl: 'https://folio.example.com',
+  title: null,
+  tagline: null,
+  lang: null,
+  logoUrl: null,
+  faviconUrl: null,
+  cssUrl: null,
+  canonicalBase: 'https://folio.example.com/public/docs',
+  indexing: true,
 };
 
 const STORAGE_KEY = 'folio:public-ask:docs';

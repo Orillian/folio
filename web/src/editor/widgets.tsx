@@ -6,17 +6,18 @@
  * a CRDT update — so widgets, source mode and remote peers can never disagree.
  */
 import { EditorView, WidgetType } from '@codemirror/view';
+import type { CalloutFold } from '@shared/ofm/callout';
 import { revealSource } from './editor-services';
 import { t } from './i18n';
 import { createIcon, type IconName } from './icons';
 import { taskToggleEdit, type CalloutType } from './live-decorations';
 // Round 22: the callout heading is the SAME string reading mode prints, so it
-// comes from the same dictionary — markdown/i18n's `alerts.*`, reached through
-// that zone's own non-React `t()`. Importing it also registers the bundle, so
-// this works even when a document is opened before anything in the reading
-// pipeline has been imported. Read-only use of another zone's namespace: no
-// second copy of the five words to drift out of sync.
-import { t as markdownT } from '../markdown/i18n/register';
+// comes from the same place — markdown/alerts.ts's `calloutDisplayName`, over
+// the markdown zone's `alerts.*` bundle and its own non-React `t()`. Importing
+// it also registers the bundle, so this works even when a document is opened
+// before anything in the reading pipeline has been imported. Read-only use of
+// another zone: no second copy of the words to drift out of sync.
+import { calloutDisplayName } from '../markdown/alerts';
 
 function onReveal(dom: HTMLElement, view: EditorView): void {
   dom.addEventListener('mousedown', (event) => {
@@ -92,19 +93,29 @@ const CALLOUT_ICONS: Record<CalloutType, IconName> = {
   caution: 'alert',
 };
 
-/** The visible name of a callout, in the interface language. */
-export function calloutLabel(type: CalloutType): string {
-  return markdownT(`alerts.${type}`);
+/**
+ * The visible name of a callout of this type, in the interface language: the
+ * translated name for a known type, the type as typed (capitalised) for any
+ * other — decided by markdown/alerts.ts, which the reading view heads its
+ * callouts with, so the two views cannot name one differently.
+ */
+export function calloutLabel(rawType: string): string {
+  return calloutDisplayName(rawType);
 }
 
 /**
- * The heading row of a GFM callout, shown in place of the literal `[!NOTE]`.
+ * The heading row of a callout, shown in place of the literal `[!info]-`: the
+ * icon of the callout's KIND (Obsidian's types are folded onto the five looks),
+ * its name unless the author gave it a title — then the title, which stays
+ * ordinary text after the label, is the heading — and, for a foldable callout
+ * (`+` / `-`), a small chevron. Nothing here folds anything: the body of a
+ * callout is always visible in the editor, the chevron only shows the state
+ * the reading view starts in.
  *
- * Round 22 translated it. Until then the name was the marker keyword verbatim
+ * Round 22 translated the name. Until then it was the marker keyword verbatim
  * ("note", capitalised by CSS), which is the one thing a Ukrainian or Russian
  * reader never sees anywhere else in the page; reading mode learned the same
- * five words in the same round (markdown/alerts.ts writes them into
- * `data-alert-label`), and both views read them from the same bundle so a
+ * words in the same round and both views read them from the same bundle so a
  * callout is named identically on either side of the mode switch.
  *
  * `lang` is not used to look the string up — i18next already knows the current
@@ -114,22 +125,40 @@ export function calloutLabel(type: CalloutType): string {
 export class CalloutLabelWidget extends WidgetType {
   constructor(
     readonly type: CalloutType,
+    readonly rawType: string,
+    readonly fold: CalloutFold | null,
+    readonly hasTitle: boolean,
     readonly lang: string,
   ) {
     super();
   }
 
   eq(other: CalloutLabelWidget): boolean {
-    return other.type === this.type && other.lang === this.lang;
+    return (
+      other.type === this.type &&
+      other.rawType === this.rawType &&
+      other.fold === this.fold &&
+      other.hasTitle === this.hasTitle &&
+      other.lang === this.lang
+    );
   }
 
   toDOM(): HTMLElement {
     const label = document.createElement('span');
     label.className = 'cm-md-callout__label';
     label.appendChild(createIcon(CALLOUT_ICONS[this.type]));
-    const name = document.createElement('span');
-    name.textContent = calloutLabel(this.type);
-    label.appendChild(name);
+    if (!this.hasTitle) {
+      const name = document.createElement('span');
+      name.textContent = calloutLabel(this.rawType);
+      label.appendChild(name);
+    }
+    if (this.fold) {
+      const chevron = document.createElement('span');
+      chevron.className = 'cm-md-callout__fold';
+      chevron.dataset.fold = this.fold;
+      chevron.setAttribute('aria-hidden', 'true');
+      label.appendChild(chevron);
+    }
     return label;
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dirOf, isExternalUrl, isMarkdownPath, resolveRelativePath, splitFragment } from './resolvePath';
+import { dirOf, isExternalUrl, isMarkdownPath, isPageLinkPath, resolveRelativePath, splitFragment } from './resolvePath';
 
 describe('dirOf', () => {
   it('returns "" for a root-level file', () => {
@@ -93,5 +93,22 @@ describe('isMarkdownPath', () => {
   it('rejects non-markdown paths', () => {
     expect(isMarkdownPath('a/b.png')).toBe(false);
     expect(isMarkdownPath('a/b.excalidraw.svg')).toBe(false);
+  });
+});
+
+describe('isPageLinkPath (links written for a git host or a site generator)', () => {
+  it('takes .md, percent-encoded .md and extensionless paths for page links', () => {
+    expect(isPageLinkPath('guide/Getting%20Started.md')).toBe(true);
+    expect(isPageLinkPath('../getting-started')).toBe(true);
+    expect(isPageLinkPath('./api')).toBe(true);
+    expect(isPageLinkPath('guide/')).toBe(true);
+  });
+
+  it('leaves files with an extension (and bare dot paths) to the /files route', () => {
+    expect(isPageLinkPath('assets/logo.png')).toBe(false);
+    expect(isPageLinkPath('export.zip')).toBe(false);
+    expect(isPageLinkPath('notes.v2.pdf')).toBe(false);
+    expect(isPageLinkPath('..')).toBe(false);
+    expect(isPageLinkPath('')).toBe(false);
   });
 });

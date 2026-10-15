@@ -12,7 +12,7 @@ import type { Parent, Paragraph, Root, RootContent, Text } from 'mdast';
  * plain `<abbr>` the way it works on any web page (see markdown.css for the
  * "not shown loudly" styling and pipeline.ts for where this sits in the
  * chain). This is a remark (mdast) plugin, not a rehype one, so it can use
- * `data.hName`/`data.hProperties` the same way alerts.ts does — mdast-util-
+ * `data.hName`/`data.hProperties` the same way remarkOfm does — mdast-util-
  * to-hast swaps the tag/attributes in when it builds the hast tree, so no
  * raw HTML is ever inserted (see that file's doc comment for the mechanism).
  *
@@ -84,7 +84,7 @@ function stripParagraphDeclarations(paragraph: Paragraph, terms: GlossaryTerm[])
  * can sit anywhere — inside a blockquote or list item too, not just at the
  * top level) and strips its declaration lines; a paragraph left with no
  * children (it WAS a declaration, alone) is removed from its parent so
- * nothing renders in its place — matching how alerts.ts's remarkAlerts
+ * nothing renders in its place — matching how remarkOfm (shared/ofm/remark.ts)
  * removes a fully-consumed marker paragraph from its blockquote.
  */
 function stripDeclarations(children: RootContent[], terms: GlossaryTerm[]): void {

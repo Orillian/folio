@@ -6,8 +6,10 @@
  * The view layer (live-preview.ts) maps these specs onto real Decorations.
  */
 import type { SyntaxNode, SyntaxNodeRef, Tree } from '@lezer/common';
+import { CALLOUT_KINDS, calloutKind, matchCalloutLine, type CalloutFold, type CalloutKind } from '@shared/ofm/callout';
 import { parseStatusAt, type StatusColor } from '@shared/status';
 import { isBgToken, isTableAttrLine } from '../markdown/tableSyntax';
+import { computeOfmSpecs, ofmOwns } from './ofm-live';
 
 /** Minimal slice of `@codemirror/state`'s Text that the computation needs. */
 export interface DocLine {
@@ -29,15 +31,23 @@ export interface Span {
   readonly to: number;
 }
 
-/** GFM alert kinds, lowercased exactly like `markdown/alerts.ts` writes them. */
-export const CALLOUT_TYPES = ['note', 'tip', 'important', 'warning', 'caution'] as const;
-export type CalloutType = (typeof CALLOUT_TYPES)[number];
+/**
+ * The five looks a callout can have (GitHub's alerts): `shared/ofm/callout.ts`
+ * folds every Obsidian type (`info`, `faq`, `danger`, a custom one ...) onto one
+ * of them. Kept under the old names for the code that draws and styles them.
+ */
+export const CALLOUT_TYPES = CALLOUT_KINDS;
+export type CalloutType = CalloutKind;
 
-/** Inline-level specs — none of these may cover a line break. */
+/**
+ * Inline-level specs. Anything that REPLACES text (`hide`, `bullet`, `task`,
+ * `callout`, `status`) never covers a line break; a `mark` only styles, and
+ * may (a block comment or a display formula spans lines).
+ */
 export type InlineSpec =
   /** Marker text folded away (replaced with nothing). */
   | { kind: 'hide'; from: number; to: number }
-  /** Styling only, text stays visible. */
+  /** Styling only, text stays visible. May span lines. */
   | { kind: 'mark'; from: number; to: number; cls: string }
   /** Whole-line styling; `pos` is always a line start. `style` is an inline style (list depth variable). */
   | { kind: 'line'; pos: number; cls: string; style?: string }
@@ -49,8 +59,21 @@ export type InlineSpec =
   | { kind: 'bullet'; from: number; to: number; level: number }
   /** `[ ]` / `[x]` replaced by a real checkbox. */
   | { kind: 'task'; from: number; to: number; checked: boolean }
-  /** `[!NOTE]` replaced by the alert's icon + name, the way reading mode heads it. */
-  | { kind: 'callout'; from: number; to: number; type: CalloutType }
+  /**
+   * `[!info]-` (the marker and its fold sign) replaced by the callout's icon,
+   * its name when it has no title of its own, and a fold chevron — the way
+   * reading mode heads it. `type` is the KIND (the look), `rawType` what the
+   * author wrote, lowercased.
+   */
+  | {
+      kind: 'callout';
+      from: number;
+      to: number;
+      type: CalloutType;
+      rawType: string;
+      fold: CalloutFold | null;
+      hasTitle: boolean;
+    }
   /** `:status[Text]{color=green}` replaced by its badge (status-widget.ts). `label` is unescaped. */
   | { kind: 'status'; from: number; to: number; label: string; color: StatusColor };
 
@@ -149,6 +172,14 @@ export function readHtmlTag(text: string, from: number, to: number): HtmlTagRef 
 
 export function computeInlineSpecs({ doc, tree, ranges, live }: ComputeOptions): InlineSpec[] {
   const specs: InlineSpec[] = [];
+  // Obsidian constructs (comments, wikilinks, tags, formulas, block ids) come
+  // from the shared scanner, once per call and not once per visible range:
+  // their pairing is decided by the whole document (ofm-live.ts).
+  const ofm = computeOfmSpecs({ doc, tree, ranges, live });
+  // Markdown nodes that belong to an OFM token: the `[Note]` Lezer finds inside
+  // `[[Note]]`, and any marker inside a comment or a formula, whose text must
+  // stay exactly as typed whatever the Markdown tree makes of its `*` and `_`.
+  const verbatim = (node: SyntaxNodeRef) => ofmOwns(ofm, node.from, node.to);
   // Collected during the walk, paired afterwards: an opening tag and its match
   // are siblings in the tree, not parent and child.
   const htmlTags: HtmlTagRef[] = [];
@@ -288,6 +319,7 @@ export function computeInlineSpecs({ doc, tree, ranges, live }: ComputeOptions):
           case 'StrikethroughMark':
           case 'HighlightMark':
           case 'UnderlineMark':
+            if (verbatim(node)) return false;
             addMark(node.from, node.to, 'cm-md-marker');
             foldMarker(node, node.node.parent);
             return false;
@@ -296,6 +328,7 @@ export function computeInlineSpecs({ doc, tree, ranges, live }: ComputeOptions):
           // between the marks gets the highlight class, coloured when a
           // `HighlightAttr` sibling sits flush against the node's end.
           case 'Highlight': {
+            if (verbatim(node)) return false;
             const marks = childrenNamed(node.node, 'HighlightMark');
             if (marks.length >= 2 && marks[1].from > marks[0].to) {
               const next = node.node.nextSibling;
@@ -310,6 +343,7 @@ export function computeInlineSpecs({ doc, tree, ranges, live }: ComputeOptions):
           // `++text++` (underline-syntax.ts): the text between the marks is
           // underlined; the marks fold like `**`/`~~` (the `UnderlineMark` case).
           case 'Underline': {
+            if (verbatim(node)) return false;
             const marks = childrenNamed(node.node, 'UnderlineMark');
             if (marks.length >= 2 && marks[1].from > marks[0].to) addMark(marks[0].to, marks[1].from, 'cm-md-ins');
             return true;
@@ -318,6 +352,7 @@ export function computeInlineSpecs({ doc, tree, ranges, live }: ComputeOptions):
           // `:status[Text]{color=green}` (status-syntax.ts): a badge widget in
           // live mode, the raw source (dimmed) in source mode.
           case 'StatusTag': {
+            if (verbatim(node)) return false;
             const tag = parseStatusAt(doc.sliceString(node.from, node.to));
             if (!tag || tag.length !== node.to - node.from) return false;
             if (live) add(`s${node.from}`, { kind: 'status', from: node.from, to: node.to, label: tag.label, color: tag.color });
@@ -326,6 +361,7 @@ export function computeInlineSpecs({ doc, tree, ranges, live }: ComputeOptions):
           }
 
           case 'HighlightAttr': {
+            if (verbatim(node)) return false;
             addMark(node.from, node.to, 'cm-md-marker');
             const prev = node.node.prevSibling;
             if (live && prev?.name === 'Highlight' && prev.to === node.from) hide(node.from, node.to);
@@ -356,12 +392,18 @@ export function computeInlineSpecs({ doc, tree, ranges, live }: ComputeOptions):
               if (n === firstLine) addLine(pos, 'cm-md-callout-first');
               if (n === lastLine) addLine(pos, 'cm-md-callout-last');
             }
+            // The title is ordinary text after the label; it is only dressed
+            // (source mode too, where there is no label to dress).
+            if (callout.titleFrom >= 0) addMark(callout.titleFrom, callout.titleTo, 'cm-md-callout-title');
             if (live) {
               add(`c${callout.markerFrom}`, {
                 kind: 'callout',
                 from: callout.markerFrom,
                 to: callout.markerTo,
                 type: callout.type,
+                rawType: callout.rawType,
+                fold: callout.fold,
+                hasTitle: callout.titleFrom >= 0,
               });
             }
             return true;
@@ -372,7 +414,16 @@ export function computeInlineSpecs({ doc, tree, ranges, live }: ComputeOptions):
             // that range belongs to the label widget, not to link styling —
             // and two replacements over one range is asking for it.
             const owner = calloutAt(node.from, node.to);
-            if (owner && node.from === owner.markerFrom && node.to === owner.markerTo) return false;
+            if (owner && node.from === owner.markerFrom) return false;
+            // `[[Note]]` parses as the shortcut-reference link `[Note]`; it is
+            // a wikilink (ofm-live.ts), drawn without folding its brackets.
+            if (verbatim(node)) return false;
+            // The marker of a callout NESTED in another quote (`> > [!tip]`): the live frame is drawn for top-level
+            // callouts only, so it stays as typed (dimmed) instead of losing its brackets to the generic link rule.
+            if (isNestedCalloutMarker(doc, node.node)) {
+              addMark(node.from, node.to, 'cm-md-marker');
+              return false;
+            }
             const marks = childrenNamed(node.node, 'LinkMark');
             if (marks.length < 2) return true;
             const labelFrom = marks[0].to;
@@ -428,6 +479,7 @@ export function computeInlineSpecs({ doc, tree, ranges, live }: ComputeOptions):
           }
 
           case 'HTMLTag': {
+            if (verbatim(node)) return false;
             const tag = readHtmlTag(doc.sliceString(node.from, node.to), node.from, node.to);
             if (tag) htmlTags.push(tag);
             return false;
@@ -505,6 +557,8 @@ export function computeInlineSpecs({ doc, tree, ranges, live }: ComputeOptions):
     hide(start.from, start.to);
     hide(tag.from, tag.to);
   }
+
+  for (const spec of ofm.specs) if (spec.kind === 'mark') addMark(spec.from, spec.to, spec.cls);
 
   return specs;
 }
@@ -936,29 +990,43 @@ function covered(spans: readonly Span[], from: number, to: number): boolean {
   return false;
 }
 
-/* --------------------------------------------------------- GFM callouts -- */
+/* ----------------------------------------------------------- callouts -- */
 
 /**
- * A `> [!NOTE]` blockquote: the marker line, plus the extent of the quote so the
- * frame can be drawn line by line.
+ * A `> [!type]` blockquote: the marker line, plus the extent of the quote so the
+ * frame can be drawn line by line. GitHub's five alerts and Obsidian's callouts
+ * (`> [!info]- Title`, `> [!my-custom]`) are the same thing here.
  */
 export interface Callout {
+  /** The look: one of the five kinds (an unknown type is a note). */
   type: CalloutType;
+  /** What the author wrote between `[!` and `]`, lowercased. */
+  rawType: string;
+  /** `+` / `-` after the marker: foldable, open / closed. */
+  fold: CalloutFold | null;
+  /** The title typed after the marker, '' when none. */
+  title: string;
   from: number;
   to: number;
-  /** The literal `[!NOTE]`, which live mode swaps for the alert's own heading. */
+  /** The literal `[!info]` and its fold sign, which live mode swaps for the callout's own heading. */
   markerFrom: number;
   markerTo: number;
+  /** The title text on the marker line, or -1 / -1 without one. */
+  titleFrom: number;
+  titleTo: number;
 }
 
-/**
- * Uppercase and bracketed, alone on the quote's first line — the same shape
- * `markdown/alerts.ts` accepts, so a block that reads as a callout here reads as
- * one in the reading view too. `> !NOTE` (no brackets, as an early importer
- * wrote it) is deliberately just a quote.
- */
-const CALLOUT_LINE = /^(>[ \t]?)(\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\])[ \t]*$/;
+/** The quote prefix in front of the marker: `>` and the blanks after it. */
+const QUOTE_PREFIX = /^>[ \t]*/;
 
+/**
+ * The marker grammar is `matchCalloutLine` (shared/ofm/callout.ts) — the very
+ * function the reading view's transform uses, so a block that reads as a
+ * callout here reads as one there too: any type word, any case, an optional
+ * fold sign and title. It must open the quote's first line, right after the
+ * `>`; `> !NOTE` (no brackets, as an early importer wrote it) and
+ * `> [!note]x` are just quotes.
+ */
 export function readCallout(doc: DocText, node: SyntaxNode): Callout | null {
   // Top level and unindented: a quote nested in a list shares its line with the
   // list marker, and a whole-line frame would be drawn around that too.
@@ -966,16 +1034,37 @@ export function readCallout(doc: DocText, node: SyntaxNode): Callout | null {
   const line = doc.lineAt(node.from);
   if (line.from !== node.from) return null;
 
-  const match = CALLOUT_LINE.exec(line.text);
-  if (!match) return null;
-  const markerFrom = line.from + match[1].length;
+  const prefix = QUOTE_PREFIX.exec(line.text);
+  if (!prefix) return null;
+  const marker = matchCalloutLine(line.text.slice(prefix[0].length));
+  if (!marker) return null;
+  const markerFrom = line.from + prefix[0].length;
+
+  // The marker has to open the quote's first paragraph, the way it does in the
+  // reading view's tree (an indented-code or heading first line is no callout).
+  let first = node.firstChild;
+  while (first && first.name === 'QuoteMark') first = first.nextSibling;
+  if (first?.name !== 'Paragraph' || first.from !== markerFrom) return null;
+
   return {
-    type: match[3].toLowerCase() as CalloutType,
+    type: calloutKind(marker.type),
+    rawType: marker.type,
+    fold: marker.fold,
+    title: marker.title,
     from: node.from,
     to: node.to,
     markerFrom,
-    markerTo: markerFrom + match[2].length,
+    markerTo: markerFrom + marker.length,
+    titleFrom: marker.titleFrom < 0 ? -1 : markerFrom + marker.titleFrom,
+    titleTo: marker.titleFrom < 0 ? -1 : markerFrom + marker.titleFrom + marker.title.length,
   };
+}
+
+/** `[!type]` opening a paragraph that is the first block of a quote - a callout marker, whether or not the live editor frames that quote. */
+function isNestedCalloutMarker(doc: DocText, link: SyntaxNode): boolean {
+  const paragraph = link.parent;
+  if (paragraph?.name !== 'Paragraph' || paragraph.parent?.name !== 'Blockquote' || link.from !== paragraph.from) return false;
+  return matchCalloutLine(doc.sliceString(link.from, doc.lineAt(link.from).to)) !== null;
 }
 
 /** Default / clamp range for the `::pagetree{depth=N}` directive. */

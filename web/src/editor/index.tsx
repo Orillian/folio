@@ -9,6 +9,7 @@ import { api } from '../app/api';
 import { useConnectivity } from '../app/offline/connectivity';
 import { usePagePresence, usePublishPagePresence } from '../app/presence';
 import { Markdown } from '../markdown';
+import { attachmentLookupFromLinks, cachedPageLinks, fetchPageLinks } from '../markdown/wikilinks';
 import {
   useCollabSession,
   useConnectionStatus,
@@ -74,6 +75,13 @@ export interface PageEditorProps {
   pagePath: string;
   /** Display title used to repair a legacy page whose structural H1 was erased. */
   title?: string;
+  /**
+   * The page lives in a light-footprint space (a repository's docs folder,
+   * PageDoc.lightFootprint): its file belongs to the repository, so the editor
+   * never inserts an H1 on open and never guards one — `# <file name>` used to
+   * land in every page whose title is front matter `title:` (Hugo, Jest, Obsidian).
+   */
+  lightFootprint?: boolean;
   /** Absolute ws URL base for collab, e.g. ws://localhost:4871/collab */
   collabUrl: string;
   /** Extra query parameters for the collab socket (share links: { share: token }). */
@@ -138,6 +146,7 @@ export function PageEditor({
   readOnly,
   defaultMode = 'reading',
   chromeStart,
+  lightFootprint = false,
 }: PageEditorProps) {
   const { t } = useTranslation(NS);
   const [chosenMode, setChosenMode] = useState<EditorMode>(defaultMode);
@@ -279,7 +288,15 @@ export function PageEditor({
         <div className="folio-editor__reading">
           <div className="folio-editor__prose">
             {synced || markdown ? (
-              <Markdown markdown={markdown} space={space} pagePath={pagePath} pageId={pageId} shareToken={shareToken} />
+              <Markdown
+                markdown={markdown}
+                space={space}
+                pagePath={pagePath}
+                pageId={pageId}
+                shareToken={shareToken}
+                canCreate={!readOnly && !shareToken}
+                onCreatePage={({ parentPath, title, fileStem }) => api.createPage({ space, parentPath, title, kind: 'doc', fileStem })}
+              />
             ) : (
               <p className="folio-editor__hint">{t(unavailableOffline ? 'unavailableOffline' : 'loadingPage')}</p>
             )}
@@ -299,7 +316,8 @@ export function PageEditor({
           pagePath={pagePath}
           pageId={pageId}
           title={title}
-          canRepairTitle={synced}
+          canRepairTitle={synced && !lightFootprint}
+          guardTitle={!lightFootprint}
           shareToken={shareToken}
           services={services}
           emojiFavourites={favorites}
@@ -595,6 +613,8 @@ interface HostProps {
   pageId: string;
   title?: string;
   canRepairTitle: boolean;
+  /** Include the H1 guard (protectPageTitle); off in a light-footprint space. */
+  guardTitle: boolean;
   shareToken?: string;
   services: EditorServices;
   emojiFavourites: readonly string[];
@@ -605,7 +625,7 @@ interface HostProps {
  * and page-context changes are applied by reconfiguring a compartment so the
  * caret and scroll position survive a source/live switch.
  */
-function CodeMirrorHost({ session, live, space, pagePath, pageId, title, canRepairTitle, shareToken, services, emojiFavourites }: HostProps) {
+function CodeMirrorHost({ session, live, space, pagePath, pageId, title, canRepairTitle, guardTitle, shareToken, services, emojiFavourites }: HostProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const modeCompartment = useMemo(() => new Compartment(), []);
@@ -631,7 +651,7 @@ function CodeMirrorHost({ session, live, space, pagePath, pageId, title, canRepa
           i18nReload,
           linkPreview(),
           mentions(),
-          protectPageTitle(),
+          guardTitle ? protectPageTitle() : [],
           selectTitleOnDoubleClick(),
           editorServicesFacet.of(services),
           // Reconfigured below whenever mode or page context changes.
@@ -658,7 +678,7 @@ function CodeMirrorHost({ session, live, space, pagePath, pageId, title, canRepa
       clearMountedEditorView(view);
       view.destroy();
     };
-  }, [session, services, modeCompartment, emojiCompartment]);
+  }, [session, services, modeCompartment, emojiCompartment, guardTitle]);
 
   const queryClient = useQueryClient();
   // The H1 IS the title: after the user edits it, the server re-indexes the
@@ -705,12 +725,32 @@ function CodeMirrorHost({ session, live, space, pagePath, pageId, title, canRepa
     });
   }, [emojiFavourites, emojiCompartment]);
 
+  // Images the index resolved by name (`![](x.png)` -> `Attachments/x.png`): the page's typed links, asked once per page
+  // (a share link asks its own route, which answers with file links only).
+  const [attachment, setAttachment] = useState<((src: string) => string | undefined) | undefined>(undefined);
+  useEffect(() => {
+    setAttachment(undefined);
+    if (!pageId) return;
+    let cancelled = false;
+    const known = cachedPageLinks(pageId, undefined, shareToken);
+    if (known) setAttachment(() => attachmentLookupFromLinks(known));
+    fetchPageLinks(pageId, undefined, shareToken).then(
+      (links) => {
+        if (!cancelled) setAttachment(() => attachmentLookupFromLinks(links));
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [pageId, shareToken]);
+
   useEffect(() => {
     viewRef.current?.dispatch({
-      effects: modeCompartment.reconfigure(livePreviewConfig(live, { space, pagePath, pageId, shareToken })),
+      effects: modeCompartment.reconfigure(livePreviewConfig(live, { space, pagePath, pageId, shareToken, attachment })),
     });
     // `session` is a dependency because a fresh view starts in source mode.
-  }, [session, live, space, pagePath, pageId, shareToken, modeCompartment]);
+  }, [session, live, space, pagePath, pageId, shareToken, attachment, modeCompartment]);
 
   return <div className="folio-editor__surface" ref={hostRef} />;
 }

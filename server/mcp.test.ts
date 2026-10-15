@@ -63,11 +63,11 @@ describe('server/mcp.ts — server identity', () => {
 describe('server/mcp.ts — tool annotations and instructions', () => {
   const actor: McpActor = { user: { id: 'nobody' } as User, scopes: ['read'], tokenId: 'test-annotations-token' };
 
-  it('annotates all 23 tools: a title, explicit booleans, and readOnlyHint or destructiveHint', async () => {
+  it('annotates all 26 tools: a title, explicit booleans, and readOnlyHint or destructiveHint', async () => {
     const { client, close } = await connectedClient(actor);
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(23);
+      expect(tools).toHaveLength(26);
       for (const tool of tools) {
         const a = tool.annotations;
         expect(a?.title ?? tool.title, `${tool.name} title`).toBeTruthy();
@@ -78,8 +78,9 @@ describe('server/mcp.ts — tool annotations and instructions', () => {
         if (a?.readOnlyHint) expect(a.destructiveHint).toBe(false);
       }
       const readOnly = tools.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name).sort();
-      expect(readOnly).toHaveLength(13);
+      expect(readOnly).toHaveLength(16);
       expect(readOnly).toContain('search_pages');
+      for (const name of ['get_page_metadata', 'list_unresolved_links', 'list_orphans']) expect(readOnly).toContain(name);
       // ChatGPT deep research needs these two exact names, and they must never count as writes.
       expect(readOnly).toContain('search');
       expect(readOnly).toContain('fetch');
@@ -643,6 +644,9 @@ describe('server/mcp.ts — search and fetch (ChatGPT deep research format; real
     expect(await check('read_page', { id: openDocId })).toMatchObject({ id: openDocId, markdown: expect.stringContaining(marker) });
     expect((await check('search_pages', { query: marker })).hits.map((x: { id: string }) => x.id)).toContain(openDocId);
     expect((await check('get_backlinks', { id: openDocId })).backlinks).toEqual([]);
+    expect(await check('get_page_metadata', { id: openDocId })).toMatchObject({ id: openDocId, headings: expect.any(Array), links: expect.any(Array), properties: expect.any(Object) });
+    expect(await check('list_unresolved_links', { space: ownSpace })).toMatchObject({ links: expect.any(Array), total: expect.any(Number) });
+    expect(await check('list_orphans', { space: ownSpace })).toMatchObject({ pages: expect.any(Array) });
     expect(await check('resolve_folio_url', { url: `/s/${ownSpace}/p/${openDocId}` })).toMatchObject({ id: openDocId, parentPathForChildren: expect.any(String) });
     expect((await check('folio_table_list', { space: ownSpace })).tables.map((x: { id: string }) => x.id)).toContain(tableId);
     expect(await check('folio_table_schema', { id: tableId })).toMatchObject({ rowCount: 0, columns: [expect.objectContaining({ id: 'species' })] });

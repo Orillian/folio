@@ -27,6 +27,19 @@ export const pageMetaOutput = z.looseObject({
 
 const pageList = (key: string, what: string) => ({ [key]: z.array(pageMetaOutput).describe(what) });
 
+const linkRefOutput = z.looseObject({
+  targetPath: z.string().describe('What the link points at, relative to the space root'),
+  targetPageId: z.string().nullable().describe('Id of the target page; null when it is not a page you can see'),
+  syntax: z.string().describe('md, wikilink, embed, image, html or reference'),
+  kind: z.string().describe('page, asset, external or unresolved'),
+  fragment: z.string().nullable().describe('#heading or #^block part, as written'),
+  fragmentKind: z.string().nullable().describe('heading or block'),
+  fragmentResolved: z.boolean().nullable().describe('Whether the heading/block exists on the target page'),
+  displayText: z.string().nullable().describe('Link text, alt text or wikilink alias'),
+  line: z.number().describe('Line in this page'),
+  context: z.string().describe('The source line, trimmed'),
+});
+
 const columnOutput = z.looseObject({
   id: z.string().describe('Column id — what the folio_table_* tools take as a key'),
   name: z.string().describe('Column title'),
@@ -81,9 +94,11 @@ export const outputSchemas = {
           path: z.string().describe('Path relative to the space root'),
           title: z.string().describe('Page title'),
           snippet: z.string().describe('Matching excerpt'),
+          kind: z.string().optional().describe('Page kind: doc, board, table, form, pdf or office'),
+          tags: z.array(z.string()).optional().describe('Normalized tags of the page (lowercase, hierarchy as a/b)'),
         }),
       )
-      .describe('Matching pages, best first'),
+      .describe('Matching pages, best first (operator-only queries: most recently changed first)'),
   },
   search: {
     results: z
@@ -102,7 +117,57 @@ export const outputSchemas = {
     parentPathForChildren: z.string().describe('Pass as parentPath to create_page to add a child under this page'),
     note: z.string().describe('Reminder to work within this page'),
   },
-  get_backlinks: pageList('backlinks', 'Pages that link to the given page'),
+  get_backlinks: {
+    backlinks: z
+      .array(
+        pageMetaOutput.extend({
+          syntax: z.string().optional().describe('How the link is written: md, wikilink, embed, image, html or reference'),
+          fragment: z.string().nullable().optional().describe('The #heading or #^block part of the link, as written'),
+          line: z.number().optional().describe('Line of the link in the source page'),
+          context: z.string().optional().describe('The source line, trimmed (at most 300 characters)'),
+        }),
+      )
+      .describe('Links into the given page, one entry per link, with the source page'),
+  },
+  get_page_metadata: {
+    id: z.string().describe('Page id'),
+    space: z.string().describe('Space slug'),
+    path: z.string().describe('Path relative to the space root'),
+    title: z.string().describe('Page title'),
+    headings: z
+      .array(z.looseObject({ level: z.number(), text: z.string(), slug: z.string().describe('Anchor of the heading (#slug)'), line: z.number() }))
+      .describe('Headings in document order'),
+    blocks: z.array(z.looseObject({ blockId: z.string().describe('The id after ^'), line: z.number() })).describe('Block ids (^id) of the page'),
+    tags: z
+      .array(z.looseObject({ tag: z.string(), source: z.string().describe('body (#tag) or frontmatter (tags/labels)'), line: z.number().nullable() }))
+      .describe('Tags, lowercased, without #'),
+    properties: z.record(z.string(), z.unknown()).describe('The whole front matter of the page'),
+    links: z.array(linkRefOutput).describe('Outgoing links in document order'),
+    backlinkCount: z.number().describe('Links into this page from pages the caller can see'),
+    metaVersion: z.number().describe('Version of the parser that indexed the page'),
+  },
+  list_unresolved_links: {
+    links: z
+      .array(
+        z.looseObject({
+          sourceId: z.string().describe('Id of the page holding the link'),
+          sourcePath: z.string(),
+          sourceTitle: z.string(),
+          targetPath: z.string().describe('What the link points at'),
+          syntax: z.string(),
+          fragment: z.string().nullable(),
+          line: z.number(),
+          context: z.string(),
+        }),
+      )
+      .describe('Unresolved links, sorted by target path, then source path'),
+    total: z.number().describe('Unresolved links in the space before limit/offset'),
+  },
+  list_orphans: {
+    pages: z
+      .array(z.looseObject({ id: z.string(), path: z.string(), title: z.string(), updatedAt: z.string() }))
+      .describe('Pages nothing the caller can see links to'),
+  },
   page_history: {
     revisions: z
       .array(

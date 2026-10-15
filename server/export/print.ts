@@ -34,7 +34,9 @@ import { unified } from 'unified';
 import * as storage from '../storage.js';
 import type { PageIndexEntry } from '../storage.js';
 import { rehypeHighlight } from '../../shared/highlight.js';
+import { remarkOfm } from '../../shared/ofm/remark.js';
 import { remarkUnderline } from '../../shared/underline.js';
+import { remarkImageSize } from './imageSize.js';
 import { STATUS_COLORS, STATUS_PALETTE, remarkStatusInText } from '../../shared/status.js';
 import { escapeHtml, readSpaceExportAssets, renderHeaderFooterTemplate } from './css.js';
 
@@ -47,9 +49,15 @@ const processor = unified()
   .use(remarkGfm)
   // `++underline++` -> <ins> (shared/underline.ts).
   .use(remarkUnderline)
+  // Obsidian-flavoured markdown (shared/ofm/remark.ts, export mode): `[[wikilink]]` -> its text, `![[Note]]` ->
+  // "[embedded: Note]", a callout -> a quote headed by its title, `%%comments%%` and `^block-ids` gone,
+  // `$tex$` -> the TeX in code. Plain mdast out, so nothing below needs to know Obsidian.
+  .use(remarkOfm, { mode: 'export' })
   // shared/status.ts: `:status[Text]{color=…}` -> a coloured `<span class="folio-status …">`
   // (this pipeline has no remark-directive, so the tag is still plain text here).
   .use(remarkStatusInText)
+  // `![alt|200](url)` / `|200x100` (Obsidian image size) -> an inline width/height on the <img>.
+  .use(remarkImageSize)
   .use(remarkRehype, { allowDangerousHtml: true })
   .use(rehypeRaw)
   // shared/highlight.ts: `==text==`/`==text=={.token}` -> `<mark
@@ -251,7 +259,7 @@ const HEADER_FOOTER_WRAPPER =
 const DEFAULT_FOOTER = '<span></span><span>{{page}} / {{pages}}</span>';
 
 export async function buildPrintDocument(opts: PrintDocumentOptions): Promise<PrintDocument> {
-  const { css, headerHtml, footerHtml } = await readSpaceExportAssets(opts.entry.space);
+  const { css, headerHtml, footerHtml, templateMaxBytes } = await readSpaceExportAssets(opts.entry.space);
   const spaceInfo = await storage.getSpaceInfo(opts.entry.space);
   const ctx = {
     title: opts.entry.title,
@@ -276,8 +284,8 @@ export async function buildPrintDocument(opts: PrintDocumentOptions): Promise<Pr
 
   return {
     html,
-    headerTemplate: wrap(headerHtml ? renderHeaderFooterTemplate(headerHtml, ctx) : ''),
-    footerTemplate: wrap(renderHeaderFooterTemplate(footerHtml ?? DEFAULT_FOOTER, ctx)),
+    headerTemplate: wrap(headerHtml ? renderHeaderFooterTemplate(headerHtml, ctx, templateMaxBytes) : ''),
+    footerTemplate: wrap(renderHeaderFooterTemplate(footerHtml ?? DEFAULT_FOOTER, ctx, templateMaxBytes)),
   };
 }
 

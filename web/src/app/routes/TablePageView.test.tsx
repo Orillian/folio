@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import i18next from 'i18next';
 import type { TableDoc, TableRow } from '@shared/contracts';
 import { makeMockTableDoc } from '../../tables';
+import { ToastProvider } from '../ui/Toast';
 import { PageContent } from './PageContent';
 import { SharedPageView } from '../share/SharedPageView';
 
@@ -86,11 +87,14 @@ function renderPage(url = '/s/sp/p/p1') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[url]}>
-        <Routes>
-          <Route path="/s/:space/p/:id" element={<PageContent id="p1" />} />
-        </Routes>
-      </MemoryRouter>
+      {/* The app always mounts a ToastProvider; a doc page's properties panel reports failed saves through it. */}
+      <ToastProvider>
+        <MemoryRouter initialEntries={[url]}>
+          <Routes>
+            <Route path="/s/:space/p/:id" element={<PageContent id="p1" />} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>,
   );
 }

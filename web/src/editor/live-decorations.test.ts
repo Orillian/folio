@@ -616,9 +616,21 @@ describe('callouts', () => {
   const src = 'intro\n\n> [!NOTE]\n> remember this\n';
   const marker = src.indexOf('[!NOTE]');
 
+  /** The one `callout` spec of `source`, or undefined. */
+  const callout = (source: string, cursor: number | Span = 0, live = true) =>
+    inline(source, cursor, live).find((spec): spec is Extract<InlineSpec, { kind: 'callout' }> => spec.kind === 'callout');
+
   it('replaces the marker with the alert label and frames every line', () => {
     const specs = inline(src);
-    expect(specs).toContainEqual({ kind: 'callout', from: marker, to: marker + 7, type: 'note' });
+    expect(specs).toContainEqual({
+      kind: 'callout',
+      from: marker,
+      to: marker + 7,
+      type: 'note',
+      rawType: 'note',
+      fold: null,
+      hasTitle: false,
+    });
     expect(specs).toContainEqual({ kind: 'line', pos: 7, cls: 'cm-md-callout cm-md-callout-note' });
     expect(specs).toContainEqual({ kind: 'line', pos: 7, cls: 'cm-md-callout-first' });
     expect(specs).toContainEqual({ kind: 'line', pos: 17, cls: 'cm-md-callout cm-md-callout-note' });
@@ -633,6 +645,8 @@ describe('callouts', () => {
 
   it('never lets the `[!NOTE]` link decoration fight the label for the same range', () => {
     expect(inline(src).some((spec) => spec.kind === 'mark' && spec.cls === 'cm-md-link')).toBe(false);
+    // Nor with a fold sign, whose character sits outside the Lezer link.
+    expect(inline('> [!faq]- x\n> body\n').some((spec) => spec.kind === 'mark' && spec.cls === 'cm-md-link')).toBe(false);
   });
 
   it('styles a bare URL pasted into the callout body the same as elsewhere', () => {
@@ -645,7 +659,7 @@ describe('callouts', () => {
   it('recognises every alert type the reading view does', () => {
     for (const type of CALLOUT_TYPES) {
       const doc = `intro\n\n> [!${type.toUpperCase()}]\n> body\n`;
-      expect(inline(doc).find((spec) => spec.kind === 'callout')).toMatchObject({ type });
+      expect(callout(doc)).toMatchObject({ type, rawType: type });
     }
   });
 
@@ -654,10 +668,67 @@ describe('callouts', () => {
     // the moment the caret leaves it.
     for (const type of ['NOTE', 'TIP', 'IMPORTANT', 'WARNING']) {
       const doc = `intro\n\n> [!${type}]\n> text\n`;
-      expect(inline(doc).find((spec) => spec.kind === 'callout')).toMatchObject({
-        type: type.toLowerCase(),
-      });
+      expect(callout(doc)).toMatchObject({ type: type.toLowerCase() });
     }
+  });
+
+  it('reads any type word, in any case, and folds it onto one of the five looks', () => {
+    const cases: [string, string, string][] = [
+      ['info', 'note', 'info'],
+      ['Info', 'note', 'info'],
+      ['FAQ', 'note', 'faq'],
+      ['tip', 'tip', 'tip'],
+      ['hint', 'tip', 'hint'],
+      ['Danger', 'caution', 'danger'],
+      ['attention', 'warning', 'attention'],
+      ['my-custom', 'note', 'my-custom'],
+      ['x_1', 'note', 'x_1'],
+    ];
+    for (const [written, kind, raw] of cases) {
+      const doc = `intro\n\n> [!${written}]\n> body\n`;
+      expect(callout(doc), written).toMatchObject({ type: kind, rawType: raw, fold: null, hasTitle: false });
+      // The frame carries the KIND's class, never the type word.
+      expect(inline(doc), written).toContainEqual({ kind: 'line', pos: 7, cls: `cm-md-callout cm-md-callout-${kind}` });
+    }
+  });
+
+  it('reads the fold sign as part of the marker the label replaces', () => {
+    const open = 'intro\n\n> [!info]+\n> body\n';
+    const from = open.indexOf('[!info]');
+    expect(callout(open)).toEqual({
+      kind: 'callout',
+      from,
+      to: from + '[!info]+'.length,
+      type: 'note',
+      rawType: 'info',
+      fold: '+',
+      hasTitle: false,
+    });
+    expect(callout('> [!tip]-\n> body\n')).toMatchObject({ type: 'tip', fold: '-', from: 2, to: 2 + '[!tip]-'.length });
+  });
+
+  it('reads a title after the marker and dresses it, source mode included', () => {
+    const doc = 'intro\n\n> [!Warning]- Careful  here  \n> body\n';
+    const from = doc.indexOf('[!Warning]-');
+    expect(callout(doc)).toEqual({
+      kind: 'callout',
+      from,
+      to: from + '[!Warning]-'.length,
+      type: 'warning',
+      rawType: 'warning',
+      fold: '-',
+      hasTitle: true,
+    });
+    // The title is trimmed, and only the marker line has one.
+    expect(markedText(inline(doc), doc, 'cm-md-callout-title')).toEqual(['Careful  here']);
+    expect(markedText(inline(doc, 0, false), doc, 'cm-md-callout-title')).toEqual(['Careful  here']);
+    // No title: no title mark.
+    expect(markedText(inline('> [!info]   \n> body\n'), '> [!info]   \n> body\n', 'cm-md-callout-title')).toEqual([]);
+  });
+
+  it('accepts the marker right after the `>`, with or without blanks', () => {
+    expect(callout('>[!faq]+ x\n> body\n')).toMatchObject({ rawType: 'faq', fold: '+', hasTitle: true, from: 1 });
+    expect(callout('>   [!faq] x\n> body\n')).toMatchObject({ rawType: 'faq', hasTitle: true });
   });
 
   it('leaves `> !NOTE` alone — a broken marker is a plain quote', () => {
@@ -669,20 +740,27 @@ describe('callouts', () => {
     expect(hidden(specs, broken)).toEqual([]);
   });
 
-  it('rejects a marker that is not alone, not uppercase or not a known type', () => {
-    for (const line of ['> [!NOTE] heading', '> [!note]', '> [!NOPE]', '> NOTE', '>[!NOTE] x']) {
-      expect(inline(`intro\n\n${line}\n> body\n`).some((spec) => spec.kind === 'callout')).toBe(false);
+  it('rejects a marker that is not a marker: no brackets, glued text, empty or spaced type, not first', () => {
+    for (const line of ['> NOTE', '> [!note]x', '> [!]', '> [!no pe]', '> [! note]', '> [note]', '> [!note]: x', '> text [!note]']) {
+      expect(callout(`intro\n\n${line}\n> body\n`), line).toBeUndefined();
     }
+    // Not on the quote's first line.
+    expect(callout('> intro\n> [!note]\n> body\n')).toBeUndefined();
+    // Four blanks after `>` make an indented code block, which a callout cannot start with.
+    expect(callout('>     [!note]\n> body\n')).toBeUndefined();
   });
 
   it('ignores a marker nested in a list', () => {
-    expect(inline('intro\n\n- > [!NOTE]\n  > body\n').some((spec) => spec.kind === 'callout')).toBe(false);
+    expect(callout('intro\n\n- > [!NOTE]\n  > body\n')).toBeUndefined();
+    expect(callout('intro\n\n- > [!info]- Title\n  > body\n')).toBeUndefined();
   });
 
-  it('keeps the label and quote prefixes folded while the caret is inside', () => {
-    const specs = inline(src, src.indexOf('remember'));
+  it('keeps the label, title and quote prefixes folded while the caret is inside', () => {
+    const titled = 'intro\n\n> [!info] Title\n> remember this\n';
+    const specs = inline(titled, titled.indexOf('remember'));
     expect(specs.some((spec) => spec.kind === 'callout')).toBe(true);
-    expect(hidden(specs, src)).toEqual(['> ', '> ']);
+    expect(markedText(specs, titled, 'cm-md-callout-title')).toEqual(['Title']);
+    expect(hidden(specs, titled)).toEqual(['> ', '> ']);
     // The frame stays as well.
     expect(specs).toContainEqual({ kind: 'line', pos: 7, cls: 'cm-md-callout-first' });
   });
@@ -692,6 +770,29 @@ describe('callouts', () => {
     expect(specs.some((spec) => spec.kind === 'callout')).toBe(false);
     expect(specs.some((spec) => spec.kind === 'hide')).toBe(false);
     expect(specs).toContainEqual({ kind: 'line', pos: 7, cls: 'cm-md-callout cm-md-callout-tip' });
+    // The same goes for Obsidian's shapes.
+    const obsidian = inline('> [!faq]- Title\n> body\n', 0, false);
+    expect(obsidian.some((spec) => spec.kind === 'callout' || spec.kind === 'hide')).toBe(false);
+    expect(obsidian).toContainEqual({ kind: 'line', pos: 0, cls: 'cm-md-callout cm-md-callout-note' });
+  });
+
+  it('decorates a wikilink in the title without folding its brackets', () => {
+    const doc = '> [!info] See [[Note]]\n> body\n';
+    const specs = inline(doc);
+    expect(markedText(specs, doc, 'cm-md-callout-title')).toEqual(['See [[Note]]']);
+    expect(markedText(specs, doc, 'cm-md-wikilink')).toEqual(['Note']);
+    expect(hidden(specs, doc)).toEqual(['> ', '> ']);
+  });
+});
+
+describe('callouts nested in a quote', () => {
+  it('keep their marker as typed (dimmed): the live frame is for top-level callouts, and the generic link rule must not eat the brackets', () => {
+    const doc = 'intro\n\n> > [!tip] Inner\n> > body\n';
+    const specs = inline(doc);
+    const marker = doc.indexOf('[!tip]');
+    expect(specs).toContainEqual({ kind: 'mark', from: marker, to: marker + '[!tip]'.length, cls: 'cm-md-marker' });
+    expect(hidden(specs, doc).filter((text) => text.includes('[') || text.includes(']'))).toEqual([]);
+    expect(specs.some((spec) => spec.kind === 'callout')).toBe(false);
   });
 });
 

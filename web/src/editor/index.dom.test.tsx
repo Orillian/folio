@@ -15,6 +15,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Awareness } from 'y-protocols/awareness';
+import * as Y from 'yjs';
 // Type-only: erased, so it does not pull the module in before i18next is ready.
 import type { EditorMode } from './index';
 
@@ -24,10 +26,11 @@ import type { EditorMode } from './index';
  * collab socket is doing — the connection dot has three states and they are the
  * whole point of the last describe block.
  */
-const collab = vi.hoisted(() => ({ status: 'connected', peers: 0 }));
+const collab = vi.hoisted(() => ({ status: 'connected', peers: 0, session: null as unknown }));
 
 vi.mock('./collab', () => ({
-  useCollabSession: () => null,
+  // null (still connecting) unless a test hands in a session over a real Y.Doc.
+  useCollabSession: () => collab.session,
   useConnectionStatus: () => collab.status,
   useSynced: () => true,
   usePeerCount: () => collab.peers,
@@ -96,9 +99,10 @@ afterEach(() => {
   localStorage.clear();
   collab.status = 'connected';
   collab.peers = 0;
+  collab.session = null;
 });
 
-function mount(props: { readOnly?: boolean; chromeStart?: boolean; mode?: EditorMode } = {}): HTMLElement {
+function mount(props: { readOnly?: boolean; chromeStart?: boolean; mode?: EditorMode; title?: string; lightFootprint?: boolean } = {}): HTMLElement {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -113,6 +117,8 @@ function mount(props: { readOnly?: boolean; chromeStart?: boolean; mode?: Editor
           pageId="PAGE1"
           space="eng"
           pagePath="a/b.md"
+          title={props.title}
+          lightFootprint={props.lightFootprint}
           collabUrl="ws://localhost/collab"
           readOnly={props.readOnly}
           defaultMode={props.mode}
@@ -135,6 +141,43 @@ const statusBadge = (container: HTMLElement): HTMLElement | null =>
 
 const activeMode = (container: HTMLElement): string | null =>
   modeButtons(container).find((button) => button.getAttribute('aria-pressed') === 'true')?.textContent ?? null;
+
+/**
+ * The on-open title repair (docs-as-code compatibility test, 14.10.2026): a
+ * page of a repository's docs folder whose title is front matter `title:` got
+ * `# <file name>` written into it as soon as it was opened for editing.
+ */
+describe('PageEditor title repair on open', () => {
+  function liveSession(text: string) {
+    const doc = new Y.Doc();
+    const ytext = doc.getText('content');
+    ytext.insert(0, text);
+    const user = { name: 'Tester', color: '#123456', colorLight: '#12345633' };
+    return { doc, ytext, provider: { awareness: new Awareness(doc) }, undoManager: new Y.UndoManager(ytext), user };
+  }
+
+  it('gives a page without an H1 its title back in an ordinary space', () => {
+    const session = liveSession('Body without a heading.\n');
+    collab.session = session;
+    mount({ mode: 'live', title: 'Page' });
+    expect(session.ytext.toString()).toBe('# Page\n\nBody without a heading.\n');
+  });
+
+  it('leaves an H1 below a blank line alone (no duplicate heading)', () => {
+    const session = liveSession('\n# Tabs\n\nBody.\n');
+    collab.session = session;
+    mount({ mode: 'live', title: 'Tabs' });
+    expect(session.ytext.toString()).toBe('\n# Tabs\n\nBody.\n');
+  });
+
+  it('inserts nothing in a light-footprint space', () => {
+    const session = liveSession('Body without a heading.\n');
+    collab.session = session;
+    const container = mount({ mode: 'live', title: 'Page', lightFootprint: true });
+    expect(container.querySelector('.cm-editor')).not.toBeNull();
+    expect(session.ytext.toString()).toBe('Body without a heading.\n');
+  });
+});
 
 describe('PageEditor mode', () => {
   it('opens a page in reading mode when the reader has never chosen', () => {

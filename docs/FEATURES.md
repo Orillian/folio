@@ -42,6 +42,39 @@ visual editor), an image, a link, a quote, **callouts** (`> [!NOTE]`, `tip`,
 `important`, `warning`), a collapsible details block, emoji, a divider, and
 `::pagetree` — a live tree of child pages right in the text.
 
+**Obsidian markup is read, not written.** A vault's notes look right in Folio:
+the files are never changed, Folio only draws what is already in the text, in
+Reading, Live and Source alike.
+
+- `[[Note]]`, `[[Note|alias]]`, `[[Note#Heading]]`, `[[Note#^block]]` and
+  `[[#Heading]]` are links to pages, resolved through the page index (the
+  "shortest path" rules of Obsidian, case-insensitive) with one request per
+  page, not per link. A click opens the page and scrolls to the heading or the
+  block. A link to a page that does not exist is dashed; an editor gets
+  "Create page “Note”" (a file `Note.md` in the current folder). The same on a
+  public site, without the create offer.
+- `![[photo.png|300]]` is an image with a width (`300x200` adds a height);
+  `![[report.pdf]]` is a link to the file; `![[Note]]`, `![[Note#Heading]]` and
+  `![[Note#^block]]` embed that note, section or block, read-only, under a link
+  to its source. The server checks the reader's rights for the embedded page
+  (`GET /api/pages/:id/embed`, with a public twin for public sites); embeds nest
+  up to 3 levels, and a cycle (a page embedding the page it is already shown
+  in) is cut with a note.
+- Callouts: `> [!type]`, `> [!type]+` / `-` (foldable, `+` starts open),
+  `> [!type] Title`, nested, any type in any case — an unknown type is drawn as a
+  note, and GitHub's five alerts are the same component (Obsidian's `info`,
+  `faq`, `danger` ... map onto the five looks).
+- `%%comments%%` (inline and block) are hidden in Reading and in PDF/DOCX
+  export, dimmed in Live, visible in Source, and left out of search. An unclosed
+  `%%` stays text. A comment is not a way to keep something secret: the text
+  stays in the file, in Git and in MCP.
+- A `^block-id` at the end of a paragraph is a hidden anchor; `#tag` and `#a/b`
+  are chips (a click opens Cmd+K with the query `tag:<tag>`; on a public site a tag is plain text); `$inline$` and `$$display$$` formulas are drawn with
+  KaTeX, loaded only on pages that have one (invalid TeX stays as text).
+- In PDF and DOCX a wikilink prints as its text, an embedded note as
+  "[embedded: Note]", an embedded image as the image, a callout as a quote with
+  its title, tags as `#tag`, and a formula as its TeX in code.
+
 **Text formatting** — toolbar buttons and hotkeys: `**bold**`, `*italic*`,
 `~~strike~~`, `==highlight==` (with a colour: `==text=={.green}`), `++underline++`.
 Underline is markdown rather than an HTML tag pair, so it nests with bold and
@@ -151,6 +184,43 @@ connection is back.
   a dotfile, `docs/.<slug>.folio`, which site generators ignore, not into the
   repository root. Spaces that already carry ids in their files keep working
   as they are.
+- **An Obsidian vault connects without changing a single file.** When the
+  repository (or the folder you pick) contains `.obsidian/`, the "new space"
+  dialog says so. A space made from a repository that already has files of its
+  own is created with a light footprint by default, with or without
+  `.obsidian/` (a gitignored `.obsidian`, a plain notes repo, a GitHub Wiki),
+  even if it is the whole repository; only an empty repository and one that
+  already was a Folio space (`<slug>.folio` at its root) get the native mode: no `id` is written into the files, the metadata file is
+  a dotfile (`.<slug>.folio`) at the root, and `git status` stays clean after
+  the scan. The "Light footprint (no ids in files)" checkbox can also be turned
+  on by hand, in that dialog and later in the space menu ("Indexing & files…");
+  a space bound to a sub-folder is always light. Existing spaces that carry ids
+  in their files are not changed.
+- **What the scan skips is set per space.** `.obsidian/`, `.trash/` and `.git/`
+  (like every other dotfile or dot-folder; `.agent` at the root is the one
+  exception) and the `assets` folder are always skipped. A space administrator
+  can add their own entries: names of **top-level** files and folders, `*` for
+  any characters, a trailing `/` for folders only (`Templates/`, `draft-*`),
+  up to 50, case-insensitive. Saving a changed list re-indexes the space — pages
+  under a newly skipped entry leave the index, pages under a released one enter
+  it — and never touches the files. Space menu → "Indexing & files…", or
+  `PATCH /api/spaces/:space/scan-settings`.
+- **Obsidian wikilinks are indexed and follow renames and moves.** `[[Note]]`,
+  `[[Note|alias]]`, `[[Note#Heading]]`, `[[Note#^block]]`, `![[Note]]` and
+  `![[image.png]]` (outside code blocks and inline code) count as links: they
+  appear in backlinks and in the unresolved-link list. They are resolved the way
+  Obsidian does ("shortest path when possible"): a name without an extension
+  means `name.md`; a path is tried from the page's folder, from the space root,
+  and as the tail of a longer path; a bare name finds the one page of that name
+  anywhere (with several, the one nearest to the page's folder); case does not
+  matter; `%20` is read both literally and decoded. When a page is renamed or
+  moved, the wikilinks that point at it are rewritten in the same form —
+  `[[Old|alias]]` becomes `[[New|alias]]`, `#heading`, `#^block` and the `!` of
+  an embed stay; a bare name is left alone when a move keeps it unambiguous, a
+  `[[folder/page]]` path follows the page, and an explicit `[[../page]]` also
+  follows a page that moved itself. Nothing else in the file changes. Folio
+  does not create wikilinks (the `[[` picker in the editor still inserts a
+  relative link), but it shows them (see section 2).
 - **Page history**: the list of commits and a view of any revision. For a
   PDF or Office page each version shows its file name and size, can be
   downloaded (a PDF can also be previewed), and can be restored.
@@ -228,12 +298,62 @@ it exactly as they read a space with `instance` visibility.
   editing, and there are no comments, history, backlinks or notifications on
   the site.
 - **Control.** Only administrators change visibility and publishing settings,
-  from the browser (an API token is refused, and so is the public demo). The
-  settings live in the database, not in Git; changes are written to the audit
-  log. Moving a space back to `instance` or `private` takes the site down
-  within seconds, and the settings are kept for the next publication.
-- **Not yet.** There is no `robots.txt` or sitemap, the site is indexable, and
-  rate limits are counted per server process.
+  from the browser (an API token is refused; the public demo allows it for the
+  Folio Handbook, without a subdomain or a custom domain). The
+  decisions about publication (who sees the site, its addresses, downloads,
+  Folio AI, indexing, the primary address) live in the database, not in Git;
+  changes are written to the audit log. Moving a space back to `instance` or
+  `private` takes the site down within seconds, and the settings are kept for
+  the next publication.
+- **Site & PDF settings and the `.folio/` folder.** How a space presents itself
+  outside the app lives in the repository, in a `.folio/` folder at the root of
+  the space's content (`docs/.folio/` for a space with a root path), and one
+  page edits it: space menu, **Site & PDF settings…**, at `/s/<space>/settings`
+  (space administrators). Tab **Site**: title, tagline, description (the
+  default meta description), language, social image, favicon and logo, with a
+  preview as a search result and as a link card, next to a summary of the
+  publication. Tab **Site appearance**: the site's stylesheet with a live
+  preview. Tab **PDF**: header, footer and print stylesheet, and a "Test PDF"
+  button. The files are `site.json`, `site.css`, `export.css`, `pdf-header.html`,
+  `pdf-footer.html` and `assets/` (png, jpg, webp, gif, svg, ico, woff, woff2;
+  up to 1 MB a file and 5 MB in total). Each file shows its path and an "Open
+  in repository" link. Every save is one commit, `settings: update
+  .folio/<files>`, with only those files in it, so unsaved page edits of other
+  people are not swept into it. Git is an equal editor: if a file changed in
+  the repository after the page was opened, the save is refused with a 409 and
+  the page shows the difference and offers the repository's version or yours.
+  PDF settings from before (the `export` section of `<slug>.folio` and
+  `<slug>.export.css`) are still read, and the first save of the PDF tab moves
+  them into `.folio/` in one commit. The "Powered by Folio" footer is not
+  configurable.
+- **Site stylesheet.** `.folio/site.css` applies to the public site only, never
+  inside the app. Before it is served, comments and `@import` are removed,
+  `url()` keeps only `data:` images and fonts and files from `.folio/assets/`
+  (anything else becomes `none`) and a file over 256 KB is not applied; the
+  editor shows the same warnings. Stable selectors are `.folio-site` and
+  `[data-folio-site-part="header|sidebar|main|footer|page"]`. No JavaScript and
+  no third-party snippets.
+- **SEO.** The server renders a `<head>` for every public page: title (page
+  title, then site title), description (the page's front matter `description`,
+  else the site's, else an excerpt), Open Graph (`og:site_name`, `og:url`,
+  `og:image` from the front matter `image` or `cover`, else the site's social
+  image), a canonical link, `lang`, the favicon, and `noindex` for a page with
+  `unlisted: true`. A page that is not on the site answers with a real 404.
+  `robots.txt` and `sitemap.xml` are served per host: a site's host gets its
+  own sitemap and keeps crawlers out of `/s/`, `/share/` and `/api/` (except
+  `/api/public/`); the main host keeps them out of the app, lists the sitemaps
+  of sites served at `/public/<space>` and serves each at
+  `/public/<space>/sitemap.xml`. A sitemap lists the public pages that are not
+  `unlisted`, with `lastmod`. The publishing dialog has an "Allow search engines
+  to index this site" switch (on by default; off means `noindex`, `Disallow: /`
+  and no sitemap) and a "Primary address" (automatic: custom domain, else
+  subdomain, else the address on this Folio; or one of them) that the canonical
+  links and the sitemap use. The site answers on every address; only the
+  canonical one is declared. In the public demo every site is `noindex`.
+- **Not yet.** There is no PDF preview before saving, no editor for the SEO
+  fields of a single page (they are front matter keys), no redirect from the
+  other addresses to the primary one, and no place for analytics snippets.
+  Rate limits are counted per server process.
 
 ## 8. Search and navigation
 
@@ -241,6 +361,26 @@ it exactly as they read a space with `instance` visibility.
 - **Cmd+K** — quick switch between pages.
 - The space switcher has search and scrolls long lists inside its menu.
 - Recent pages, favorites (a star on a space and on a page), **backlinks**.
+  The API returns one entry per link, with its syntax, anchor, line and the
+  line of text around it as context.
+- **A page index.** Every page is parsed once, with a real Markdown parser,
+  when it is scanned and when it is saved: headings (level, text and the same
+  anchor the outline uses), block ids (`^id`), tags (`#tag` and `#a/b` in the
+  text, outside code and links, plus `tags:` in the front matter (`labels:` is read as a synonym; Folio never removes or moves it)),
+  the whole front matter as properties, and links of every kind —
+  `[text](path)`, images, `[[…]]`, `![[…]]`, HTML `<a href>` / `<img src>` and
+  reference-style `[x]: path` — with their `#heading` / `#^block` anchor and
+  whether that anchor exists. Links are resolved in a second step for the
+  whole space, so a page created later picks up the links that were waiting
+  for it, and deleting a page turns the links to it into unresolved ones
+  instead of dropping them (restoring it from the trash resolves them again).
+  REST: `GET /api/pages/:id/meta`, `GET /api/spaces/:space/tags`,
+  `GET /api/spaces/:space/unresolved-links`, and `GET /api/spaces/:space/orphans`
+  (pages nothing links to); MCP: `get_page_metadata`, `list_unresolved_links`,
+  `list_orphans`. Access is applied inside the query, as in search: tag and
+  backlink counts never include pages you cannot open, and a link to such a
+  page looks like a link to nothing. The interface for all this comes in the
+  next waves.
 - A **tree** with drag and drop, a templates folder for creating "from a
   template", and the `.agent` folder (see section 11). The tree updates by
   itself.
@@ -262,6 +402,24 @@ it exactly as they read a space with `instance` visibility.
   `.agent` folder is never copied for someone who is not an administrator.
   The copy of a page that has its own access rules is private to the person
   who made it.
+
+### Properties, tags, search operators and space files
+
+- **Properties panel** (collapsed by default): the page's front matter keys with
+  types `text`, `number`, `checkbox`, `date`, `datetime`, `list`, `tags`,
+  `aliases`. Types come from `.folio/properties.json` in the repository, or from
+  `.obsidian/types.json` when that file is absent. Saving rewrites only the front
+  matter block; every other byte of the file stays. `id` cannot be changed, and a
+  Folio key holding a value Folio would not write itself (`status: deprecated`)
+  is shown as a foreign value and never overwritten.
+- **Tags:** a tag tree in the sidebar (`a/b` nests), a list of a tag's pages and a
+  **bulk rename** (`#tag` in the text and `tags:` in the front matter, only on
+  pages you can edit). `labels:` is a synonym of `tags:`: new tags are written as `tags:`, an existing `labels:` is only ever edited in place, never moved or removed.
+- **Search:** words, `"exact phrase"`, `-word`, `OR`, `tag:`, `path:`, `kind:`,
+  `status:`, `prop:key=value`, plus **saved searches** (up to 50 per person) in Cmd+K.
+- **Space files** are indexed as files: attachments and `assets/` are not in the
+  tree or in search, but links to them are resolved, counted in backlinks and
+  reported when missing.
 
 ## 9. Data tables
 
@@ -365,10 +523,12 @@ work continues; come back and read on from where it stopped.
 ## 12. Integration for external tools (MCP)
 
 The `/mcp` endpoint with a personal access token (`folio_pat_…`), scopes
-`read` and `write`. 23 tools: listing spaces and trees, reading a page,
-search (plus `search` and `fetch` for ChatGPT deep research), creating and updating pages, resolving a Folio link, backlinks,
-history and reading a page at a given commit, working with whiteboards, and a
-full set of operations on data tables. See [MCP.md](MCP.md).
+`read` and `write`. 26 tools: listing spaces and trees, reading a page,
+search (plus `search` and `fetch` for ChatGPT deep research), creating and updating pages, resolving a Folio link, backlinks
+with context, a page's metadata (outline, tags, properties, links), a space's
+unresolved links and orphan pages, history and reading a page at a given
+commit, working with whiteboards, and a full set of operations on data tables.
+See [MCP.md](MCP.md).
 
 ## 13. Import, export and the rest
 
@@ -400,7 +560,8 @@ See [INSTALL](INSTALL.md).
   version, and the history panel restores any older one.
 - **Export**: `md`, `pdf`, `docx`, `yaml`, print, and a zip of the whole
   space. Export with child pages and custom page headers and footers for a
-  space are supported. If an export had to be cut by size, the response
+  space are supported (set on the **PDF** tab of the space's Site & PDF
+  settings, see section 7). If an export had to be cut by size, the response
   headers say so.
 - **Trash** with restore. Deleting a page that has children takes them along,
   and restoring brings them back.

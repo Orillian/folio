@@ -10,6 +10,9 @@
  * post-filter, so an invisible space's rows are never even ranked, let alone
  * returned.
  *
+ * The ACL itself is accessSql.ts's visiblePagesSql (14.10.2026), shared with
+ * backlinks and the page index reads; the rules below are what it encodes.
+ *
  * Round 27 (access and rights): removed the old instance-admin bypass (this
  * used to be `$2::boolean OR EXISTS(...)`, with an `isInstanceAdmin` flag
  * short-circuiting the membership check entirely). Search now applies the
@@ -20,44 +23,179 @@
  * read it silently'"). Callers (server/routes.ts, server/mcp.ts) no
  * longer pass an admin flag at all.
  */
-import type { SearchHit } from '../shared/contracts.js';
+import type { PageKind, SearchHit, SearchQueryAst } from '../shared/contracts.js';
+import { isEmptySearchQuery, parseSearchQuery } from '../shared/searchQuery.js';
 import { query } from './db/pool.js';
+import { sqlParam, visiblePagesSql } from './accessSql.js';
+
+/**
+ * Wave 3 (search v2, Obsidian brief): `q` is parsed by shared/searchQuery.ts
+ * into words, "phrases", -exclusions and the filters tag:/kind:/status:/in:/prop:
+ * (grammar on SearchQueryAst in contracts.ts). All of it is one SQL statement:
+ *
+ *   words        plainto_tsquery('simple', unaccent(words)) — all words ANDed, exactly as before —
+ *                OR a trigram-similar title (the typo net), so a plain-word query behaves as it always did
+ *   "phrase"     phraseto_tsquery, ANDed with the words (the title net then only stands in for the words)
+ *   -word        NOT (tsv @@ the word / the phrase)
+ *   tag:a/b      EXISTS page_tags (tag = 'a/b' OR tag LIKE 'a/b/%'), one per tag, so tags AND
+ *   kind:/status: equality against a list (OR inside one operator); a page without `status` is 'published'
+ *   in:folder/   path LIKE 'folder/%' (several: OR)
+ *   prop:k=v     front matter: scalar text equality (case-insensitive), a list holding v, a number equal to v, a date
+ *                ('2026-10-14') on that day; prop:k — the key exists
+ *
+ * Operators AND together; a query with no words and no phrases is a filter listing, newest change first.
+ * The ACL fragment is the same one as before and is ANDed on top of everything.
+ */
 
 interface SearchRow {
   id: string;
   space: string;
   path: string;
   title: string;
+  kind: PageKind;
   snippet: string;
 }
 
-const RESULT_LIMIT = 50;
+/** The grammar in one paragraph, for the MCP tool descriptions (docs/AGENT-API.md has the table). */
+export const SEARCH_GRAMMAR_NOTE =
+  'The query takes words (all must match), "an exact phrase", -excluded words and these filters, ANDed together: tag:name (tag:a also matches a/b), kind:doc|table|board|form|pdf|office, status:draft|published|archived, in:folder/ (path prefix), prop:key=value or prop:key (front matter). A query of filters alone lists the matching pages, most recently changed first.';
 
-/** The columns of a hit; shared by every search entry point so the snippet shape cannot drift. */
-const HIT_COLUMNS = `p.id, p.space_slug AS space, p.path, p.title,
-            ts_headline(
-              'simple',
-              coalesce(NULLIF(p.plain_text, ''), p.title),
-              plainto_tsquery('simple', unaccent($1)),
-              'MaxWords=30, MinWords=10, ShortWord=3, HighlightAll=false'
-            ) AS snippet`;
-/** The text match itself: full-text on title+body, or a trigram-similar title. */
-const MATCH_CLAUSE = `(p.tsv @@ plainto_tsquery('simple', unaccent($1)) OR p.title % $1)`;
-const RANKING = `ORDER BY (ts_rank_cd(p.tsv, plainto_tsquery('simple', unaccent($1))) + similarity(p.title, $1)) DESC, p.title`;
+export const SEARCH_DEFAULT_LIMIT = 50;
+export const SEARCH_MAX_LIMIT = 100;
+
+/** `?limit=` -> 1..100, default 50. */
+export function clampSearchLimit(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return SEARCH_DEFAULT_LIMIT;
+  return Math.min(SEARCH_MAX_LIMIT, Math.max(1, Math.floor(n)));
+}
+
+/** `?offset=` -> a non-negative integer, default 0. */
+export function clampSearchOffset(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 1_000_000) : 0;
+}
+
+export interface SearchWindow {
+  limit?: number;
+  offset?: number;
+}
+
+const escapeLike = (s: string): string => s.replace(/[\\%_]/g, '\\$&');
+
+const HEADLINE_OPTIONS = `'MaxWords=30, MinWords=10, ShortWord=3, HighlightAll=false'`;
+
+interface BuiltSearch {
+  /** AND-ed conditions on `p` (everything but the ACL and the space). */
+  conditions: string[];
+  /** The ts_headline query: the positive (words + phrases) tsquery, or an empty one. */
+  headlineQuery: string;
+  orderBy: string;
+}
+
+/** `lower(...)` comparison helpers for `prop:` — `k` and `v` are `$n::text` placeholders. */
+function propCondition(prop: { key: string; value?: string }, params: unknown[]): string {
+  const k = `${sqlParam(params, prop.key)}::text`;
+  if (prop.value === undefined) return `p.frontmatter ? ${k}`;
+  const value = prop.value;
+  const v = `${sqlParam(params, value)}::text`;
+  const field = `(p.frontmatter -> ${k})`;
+  const alternatives = [
+    `lower(p.frontmatter ->> ${k}) = lower(${v})`,
+    `EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(${field}) = 'array' THEN ${field} ELSE '[]'::jsonb END) pe(val) WHERE lower(pe.val) = lower(${v}))`,
+  ];
+  if (/^-?\d{1,30}(?:\.\d{1,30})?$/.test(value)) alternatives.push(`(jsonb_typeof(${field}) = 'number' AND (p.frontmatter ->> ${k})::numeric = ${v}::numeric)`);
+  // The index stores a YAML date as an ISO timestamp.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) alternatives.push(`(jsonb_typeof(${field}) = 'string' AND (p.frontmatter ->> ${k}) LIKE ${v} || 'T%')`);
+  return `(${alternatives.join(' OR ')})`;
+}
+
+/**
+ * `publicReader`: the anonymous reader of a published site. It gets the text grammar and the filters that rest on
+ * what the site shows (`kind:`, `status:`, `in:`), and `tag:` over the tags written in the BODY only — the front
+ * matter is not published, so `prop:` is ignored and front matter tags are neither matched nor returned.
+ */
+function buildSearch(ast: SearchQueryAst, params: unknown[], publicReader: boolean): BuiltSearch {
+  const conditions: string[] = [];
+
+  const wordsText = ast.words.join(' ');
+  const wordsParam = ast.words.length > 0 ? sqlParam(params, wordsText) : null;
+  const tsWords = wordsParam ? `plainto_tsquery('simple', unaccent(${wordsParam}))` : null;
+  const tsPhrases = ast.phrases.length > 0 ? ast.phrases.map((ph) => `phraseto_tsquery('simple', unaccent(${sqlParam(params, ph)}))`).join(' && ') : null;
+  const positive = tsWords && tsPhrases ? `(${tsWords} && ${tsPhrases})` : (tsWords ?? (tsPhrases ? `(${tsPhrases})` : null));
+
+  if (positive) {
+    if (wordsParam && !tsPhrases) conditions.push(`(p.tsv @@ ${positive} OR p.title % ${wordsParam})`);
+    else if (wordsParam && tsPhrases) conditions.push(`(p.tsv @@ ${positive} OR (p.title % ${wordsParam} AND p.tsv @@ (${tsPhrases})))`);
+    else conditions.push(`p.tsv @@ ${positive}`);
+  }
+
+  if (ast.excluded.length > 0) {
+    const excluded = ast.excluded.map((e) => `${/\s/.test(e) ? 'phraseto_tsquery' : 'plainto_tsquery'}('simple', unaccent(${sqlParam(params, e)}))`);
+    conditions.push(`NOT coalesce(p.tsv @@ (${excluded.join(' || ')}), false)`);
+  }
+
+  for (const tag of ast.tags) {
+    const exact = sqlParam(params, tag);
+    const children = sqlParam(params, `${escapeLike(tag)}/%`);
+    conditions.push(
+      `EXISTS (SELECT 1 FROM page_tags pt WHERE pt.page_id = p.id AND (pt.tag = ${exact} OR pt.tag LIKE ${children})${publicReader ? " AND pt.source = 'body'" : ''})`,
+    );
+  }
+
+  if (ast.kinds.length > 0) conditions.push(`p.kind = ANY(${sqlParam(params, ast.kinds)}::text[])`);
+  if (ast.statuses.length > 0) conditions.push(`COALESCE(p.status, 'published') = ANY(${sqlParam(params, ast.statuses)}::text[])`);
+  if (ast.pathPrefixes.length > 0) conditions.push(`p.path LIKE ANY(${sqlParam(params, ast.pathPrefixes.map((prefix) => `${escapeLike(prefix)}%`))}::text[])`);
+  if (!publicReader) for (const prop of ast.props) conditions.push(propCondition(prop, params));
+
+  const rank = [positive ? `ts_rank_cd(p.tsv, ${positive})` : null, wordsParam ? `similarity(p.title, ${wordsParam})` : null].filter(Boolean).join(' + ');
+  return {
+    conditions,
+    headlineQuery: positive ?? `''::tsquery`,
+    orderBy: positive ? `ORDER BY (${rank}) DESC, p.title, p.id` : 'ORDER BY p.updated_at DESC, p.title, p.id',
+  };
+}
 
 // ts_headline's default StartSel/StopSel are <b>/</b> (its options string doesn't
 // accept an empty override in this PG version) — SearchHit.snippet is plain text.
-function toHits(rows: SearchRow[]): SearchHit[] {
+async function runSearch(ast: SearchQueryAst, window: SearchWindow, params: unknown[], publicReader: boolean, access: (params: unknown[]) => string): Promise<SearchHit[]> {
+  if (isEmptySearchQuery(ast)) return [];
+  const built = buildSearch(ast, params, publicReader);
+  const visible = access(params);
+  const limit = sqlParam(params, clampSearchLimit(window.limit));
+  const offset = sqlParam(params, clampSearchOffset(window.offset));
+  const rows = await query<SearchRow>(
+    `SELECT p.id, p.space_slug AS space, p.path, p.title, p.kind,
+            ts_headline('simple', coalesce(NULLIF(p.plain_text, ''), p.title), ${built.headlineQuery}, ${HEADLINE_OPTIONS}) AS snippet
+       FROM pages_index p
+      WHERE ${[...built.conditions, visible].join('\n        AND ')}
+      ${built.orderBy}
+      LIMIT ${limit} OFFSET ${offset}`,
+    params,
+  );
+  if (rows.length === 0) return [];
+
+  // The hits' tags in one more query (only for the page of results, not for every match).
+  const tagRows = await query<{ page_id: string; tags: string[] }>(
+    `SELECT page_id, array_agg(DISTINCT tag ORDER BY tag) AS tags
+       FROM page_tags
+      WHERE page_id = ANY($1::text[])${publicReader ? " AND source = 'body'" : ''}
+      GROUP BY page_id`,
+    [rows.map((r) => r.id)],
+  );
+  const tagsById = new Map(tagRows.map((r) => [r.page_id, r.tags]));
   return rows.map((r) => ({
     id: r.id,
     space: r.space,
     path: r.path,
     title: r.title,
     snippet: r.snippet.replace(/<\/?b>/g, '').trim(),
+    kind: r.kind,
+    tags: tagsById.get(r.id) ?? [],
   }));
 }
 
-export interface SearchOptions {
+export interface SearchOptions extends SearchWindow {
   userId: string;
   /** Restrict to one space; omit to search every space the caller can see. */
   space?: string;
@@ -71,61 +209,23 @@ export interface SearchOptions {
 }
 
 export async function searchPages(q: string, options: SearchOptions): Promise<SearchHit[]> {
-  const trimmed = q.trim();
-  if (!trimmed) return [];
-
-  const rows = await query<SearchRow>(
-    `SELECT ${HIT_COLUMNS}
-       FROM pages_index p
-      WHERE ${MATCH_CLAUSE}
-        AND (
-          EXISTS (SELECT 1 FROM space_members m WHERE m.space_slug = p.space_slug AND m.user_id = $2)
-          OR EXISTS (SELECT 1 FROM spaces sp WHERE sp.slug = p.space_slug AND sp.visibility IN ('instance', 'public'))
-        )
-        AND (
-          NOT EXISTS (SELECT 1 FROM page_access a WHERE a.page_id = p.id)
-          OR EXISTS (SELECT 1 FROM page_access a WHERE a.page_id = p.id AND a.owner_id = $2)
-          OR EXISTS (SELECT 1 FROM page_access_grants g WHERE g.page_id = p.id AND g.user_id = $2)
-        )
-        AND (
-          -- Mirrors agentPath.ts's isAgentPath (can't call it from SQL) — keep both in sync.
-          NOT (p.path = '.agent' OR p.path LIKE '.agent/%')
-          OR $4::boolean
-          OR EXISTS (SELECT 1 FROM space_members m2 WHERE m2.space_slug = p.space_slug AND m2.user_id = $2 AND m2.role = 'admin')
-        )
-        AND ($3::text IS NULL OR p.space_slug = $3)
-      ${RANKING}
-      LIMIT ${RESULT_LIMIT}`,
-    [trimmed, options.userId, options.space ?? null, options.isInstanceAdmin ?? false],
-  );
-
-  return toHits(rows);
+  const ast = parseSearchQuery(q);
+  const params: unknown[] = [];
+  return runSearch(ast, options, params, false, (p) => {
+    // Templates stay searchable for members (unchanged); only the index reads hide them.
+    const visible = visiblePagesSql('p', { kind: 'user', userId: options.userId, isInstanceAdmin: options.isInstanceAdmin ?? false }, p);
+    if (options.space === undefined) return visible;
+    return `${visible}\n        AND p.space_slug = ${sqlParam(p, options.space)}`;
+  });
 }
 
 /**
  * Search for the PUBLIC SITE of one space (anonymous visitors). Same matching
  * and ranking as `searchPages`, but the only access rule is the site's own:
  * the space is published, and the page is not restricted (no `page_access`
- * row), not `.agent/**` and not in `_templates/` — keep these in step with
- * publicSites.publicReadablePageIds. No user is involved.
+ * row), not `.agent/**` and not in `_templates/` — accessSql.ts's public
+ * reader, the same set as publicSites.publicReadablePageIds. No user is involved.
  */
-export async function searchPublicSpace(q: string, space: string): Promise<SearchHit[]> {
-  const trimmed = q.trim();
-  if (!trimmed) return [];
-
-  const rows = await query<SearchRow>(
-    `SELECT ${HIT_COLUMNS}
-       FROM pages_index p
-      WHERE ${MATCH_CLAUSE}
-        AND p.space_slug = $2
-        AND EXISTS (SELECT 1 FROM spaces sp WHERE sp.slug = p.space_slug AND sp.visibility = 'public')
-        AND NOT EXISTS (SELECT 1 FROM page_access a WHERE a.page_id = p.id)
-        -- Mirrors agentPath.ts's isAgentPath and storage.isUnderTemplates (can't call them from SQL) — keep in sync.
-        AND NOT (p.path = '.agent' OR substr(p.path, 1, 7) = '.agent/')
-        AND NOT (p.path = '_templates' OR substr(p.path, 1, 11) = '_templates/')
-      ${RANKING}
-      LIMIT ${RESULT_LIMIT}`,
-    [trimmed, space],
-  );
-  return toHits(rows);
+export async function searchPublicSpace(q: string, space: string, window: SearchWindow = {}): Promise<SearchHit[]> {
+  return runSearch(parseSearchQuery(q), window, [], true, (p) => visiblePagesSql('p', { kind: 'public', space }, p));
 }

@@ -243,7 +243,8 @@ describe('access/routes (round 27, real PG)', () => {
     const entry = await pollUntil(async () => (await getSpaceAccessLog(instanceAdmin, space.slug)).find((e) => e.action === 'space.public_settings'));
     expect(entry.actorId).toBe(instanceAdmin.id);
     expect(entry.target).toBe(space.slug);
-    expect(entry.meta).toEqual({ subdomain: null, domain: 'docs.example.com', allowDownload: true, allowAssistant: false });
+    // indexing / primaryHost (migration 040) keep their stored defaults when the caller leaves them out.
+    expect(entry.meta).toEqual({ subdomain: null, domain: 'docs.example.com', allowDownload: true, allowAssistant: false, indexing: true, primaryHost: 'auto' });
     expect((await getUserAccess(instanceAdmin, instanceAdmin.id)).log.some((e) => e.action === 'space.public_settings')).toBe(false);
 
     await deleteTestSpace(space.slug);

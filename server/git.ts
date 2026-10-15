@@ -109,6 +109,61 @@ export async function commitAll(dir: string, message: string, author: GitIdentit
 }
 
 /**
+ * Commits ONLY `relPaths` (repo-root-relative POSIX paths; files that exist are
+ * staged as they are on disk, missing ones as deletions when git knows them),
+ * whatever else is modified or even staged in the working tree. Used by
+ * explicit, self-contained commits (the space's `.folio/` settings: "settings:
+ * update .folio/site.css") that must never sweep other people's unsaved page
+ * edits into a commit with an unrelated message — those keep riding the
+ * debounced `folio:update` auto-commit.
+ *
+ * `git commit --only -- <paths>` builds the commit from HEAD plus exactly those
+ * paths, so anything else already staged stays staged and uncommitted. Paths
+ * are passed as `:(literal)` pathspecs (no glob magic from a file name).
+ * Like commitAll: the committer is Folio, `author` goes to --author, and the
+ * caller holds the space's lock. Returns whether a commit was made.
+ */
+export async function commitPaths(dir: string, relPaths: readonly string[], message: string, author: GitIdentity): Promise<boolean> {
+  const unique = [...new Set(relPaths.map((p) => p.replace(/^\/+/, '')).filter(Boolean))];
+  if (unique.length === 0) return false;
+  const literal = (p: string): string => `:(literal)${p}`;
+  const present: string[] = [];
+  const missing: string[] = [];
+  for (const rel of unique) {
+    try {
+      await stat(path.join(dir, rel));
+      present.push(rel);
+    } catch {
+      missing.push(rel);
+    }
+  }
+  if (present.length > 0) await execGit(dir, ['add', '-A', '--', ...present.map(literal)]);
+  if (missing.length > 0) await execGit(dir, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', ...missing.map(literal)]);
+
+  const { stdout } = await execGit(dir, ['diff', '--cached', '--name-only', '-z', '--no-renames', 'HEAD', '--', ...unique.map(literal)]).catch(
+    // A repository without a commit yet has no HEAD to diff against.
+    () => execGit(dir, ['diff', '--cached', '--name-only', '-z', '--no-renames', '--', ...unique.map(literal)]),
+  );
+  const changed = stdout.split('\0').filter(Boolean);
+  if (changed.length === 0) return false;
+  await execGit(dir, [
+    '-c',
+    `user.name=${FOLIO_COMMITTER.name}`,
+    '-c',
+    `user.email=${FOLIO_COMMITTER.email}`,
+    'commit',
+    '--author',
+    `${author.name} <${author.email}>`,
+    '-m',
+    message,
+    '--only',
+    '--',
+    ...changed.map(literal),
+  ]);
+  return true;
+}
+
+/**
  * URL hygiene for EVERY path that hands a user-supplied repository URL to
  * git (SSRF/RCE guards): only http(s)/ssh URLs or the scp-like git@host:path
  * form are accepted, everything else is rejected. What that allowlist keeps

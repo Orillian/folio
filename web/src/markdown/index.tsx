@@ -1,14 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
-import { useNavigate } from 'react-router';
+import { createPortal } from 'react-dom';
+import { useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import type { PageMeta } from '@shared/contracts';
 import { splitMermaidFences } from './mermaidSplit';
 import { splitPagetreeDirectives } from './pagetreeSplit';
 import { splitFormDirectives } from './formSplit';
 import { renderMarkdownToHtml } from './pipeline';
-import { extractHeadings } from './headings';
+import { extractHeadings, HEADING_ID_PREFIX } from './headings';
 import { createHeadingIdCursor } from './headingIds';
+import { EmbedView } from './EmbedView';
+import { renderMath } from './math';
+import { requestSearch } from './searchEvent';
+import {
+  cachedPageLinks,
+  fetchPageLinks,
+  WIKILINKS_PENDING,
+  WIKILINKS_UNAVAILABLE,
+  wikilinkContextFromLinks,
+  wikilinkCreateTarget,
+  type WikilinkContext,
+  type WikilinkCreateTarget,
+} from './wikilinks';
 import { applyCollapseState, readCollapsedSlugs, writeCollapsedSlugs } from './collapsible';
 import { createTableIndexCursor } from './tables';
 import { createNoteIdCursor } from './noteIds';
@@ -60,6 +74,8 @@ export interface MarkdownProps {
    * calling it.
    */
   shareToken?: string;
+  /** With `shareToken`: the shared page's id, to ask the share's own route for the page's file links (by-name images and files). Not a `pageId`: no backlinks or page tree for a guest. */
+  shareLinksPageId?: string;
   /**
    * Set by the public site (a published space read by anonymous visitors, app/public/).
    * Like `shareToken` it means "no session here": no mentionable fetch, no backlinks,
@@ -69,6 +85,77 @@ export interface MarkdownProps {
    * site's URLs — see publicSite.ts for the shape.
    */
   publicSite?: MarkdownPublicSite;
+  /**
+   * The reader may create pages (editor+ on this space): a click on a wikilink
+   * to a page that does not exist then offers "Create page “Note”" - which
+   * needs `onCreatePage`, the app's own create call (it also refreshes the
+   * sidebar; markdown/ does not import app/). Without both, the click only says
+   * the page does not exist.
+   */
+  canCreate?: boolean;
+  onCreatePage?: (input: { parentPath: string; title: string; fileStem: string }) => Promise<Pick<PageMeta, 'id' | 'space'>>;
+  /**
+   * Set by EmbedView when this is a note drawn inside another page
+   * (`![[Note]]`): `depth` is the nesting level, `chain` the ids of the pages it
+   * is nested in. An embedded note is read-only, keeps no per-page state
+   * (collapsed sections, table fit), shows no backlinks and leaves the host's
+   * heading and note numbering alone.
+   */
+  embedded?: { depth: number; chain: readonly string[] };
+}
+
+/** How many times a wikilink the index had no row for yet is asked about again (the page was edited a moment ago and indexing lags the save). */
+const WIKILINK_RETRIES = 2;
+const WIKILINK_RETRY_MS = 1500;
+
+/**
+ * The page's wikilinks, resolved through its metadata (wikilinks.ts). One
+ * request per page, and none for a page that has no `[[` or where no session
+ * exists (a share link, a history preview).
+ */
+function useWikilinkContext(pageId: string | undefined, publicSpace: string | undefined, shareToken: string | undefined, enabled: boolean, retry: number): WikilinkContext {
+  const active = enabled && Boolean(pageId);
+  const [links, setLinks] = useState(() => (active && pageId ? cachedPageLinks(pageId, publicSpace, shareToken) : undefined));
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!active || !pageId) return;
+    let cancelled = false;
+    setFailed(false);
+    setLinks(cachedPageLinks(pageId, publicSpace, shareToken));
+    fetchPageLinks(pageId, publicSpace, shareToken).then(
+      (next) => {
+        if (!cancelled) setLinks(next);
+      },
+      () => {
+        if (!cancelled) setFailed(true);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [active, pageId, publicSpace, shareToken, retry]);
+  return useMemo(() => {
+    if (!active || failed) return WIKILINKS_UNAVAILABLE;
+    return links ? wikilinkContextFromLinks(links) : WIKILINKS_PENDING;
+  }, [active, failed, links]);
+}
+
+/** The element a `#fragment` of this page points at: a heading by its slug, a block by its id (`^id`, any case). */
+function findAnchor(root: HTMLElement, hash: string): HTMLElement | null {
+  let fragment = hash.startsWith('#') ? hash.slice(1) : hash;
+  try {
+    fragment = decodeURIComponent(fragment);
+  } catch {
+    /* keep as written */
+  }
+  if (!fragment) return null;
+  const doc = root.ownerDocument;
+  if (!fragment.startsWith('^')) return doc.getElementById(HEADING_ID_PREFIX + fragment);
+  const wanted = (HEADING_ID_PREFIX + fragment).toLowerCase();
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('[id^="user-content-^"]'))) {
+    if (el.id.toLowerCase() === wanted) return el;
+  }
+  return null;
 }
 
 /**
@@ -77,20 +164,31 @@ export interface MarkdownProps {
  * alerts, sanitized raw HTML, and relative link/image resolution. Used both
  * for the page reading route and by the editor's "reading" mode.
  */
-export function Markdown({ markdown, space, pagePath, pageId, shareToken, publicSite }: MarkdownProps) {
+interface EmbedHost {
+  el: HTMLElement;
+  pageId: string;
+  fragment: string | null;
+  label: string;
+}
+
+export function Markdown({ markdown, space, pagePath, pageId, shareLinksPageId, shareToken, publicSite, canCreate, onCreatePage, embedded }: MarkdownProps) {
   const navigate = useNavigate();
+  const location = useLocation();
+  // What belongs to the page being SHOWN: its saved collapse/table state and its backlinks. A note drawn inside another page has neither.
+  const isEmbedded = embedded !== undefined;
+  const ownPageId = isEmbedded ? undefined : pageId;
   const { t, i18n } = useTranslation('markdown');
   const containerRef = useRef<HTMLDivElement>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<{ src: string; alt: string; zoom: number } | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const [collapsedSlugs, setCollapsedSlugs] = useState<Set<string>>(() => (pageId ? readCollapsedSlugs(pageId) : new Set()));
+  const [collapsedSlugs, setCollapsedSlugs] = useState<Set<string>>(() => (ownPageId ? readCollapsedSlugs(ownPageId) : new Set()));
   // Per-table override: indices (tables.ts's TableIndexCursor) for which the
   // reader explicitly chose scroll/natural width over the default fit — see
   // tableFit.ts's own doc comment for the two-pass measure/apply split this
   // feeds into below.
   const [tableScrollOverrides, setTableScrollOverrides] = useState<Set<number>>(() =>
-    pageId ? readTableScrollOverrides(pageId) : new Set(),
+    ownPageId ? readTableScrollOverrides(ownPageId) : new Set(),
   );
   // Round 15: bumped once this space's @mentionable list lands, purely to
   // invalidate the `rendered` memo below — mentionName() itself always reads
@@ -102,6 +200,15 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
   // synchronous `rendered` memo below), so this is what makes the SECOND
   // pass — the one that actually shows the resolved title — happen at all.
   const [linksVersion, setLinksVersion] = useState(0);
+  // Obsidian wikilinks: resolved through the page's metadata (wikilinks.ts); `wikilinkRetry` re-asks once or twice for a link the index had no row for yet.
+  const [wikilinkRetry, setWikilinkRetry] = useState(0);
+  // An image or file link can be resolved by name too (`![](x.png)` -> `Attachments/x.png`), so a page with one asks as well.
+  const hasWikilinks = useMemo(() => markdown.includes('[[') || markdown.includes('!['), [markdown]);
+  const wikilinks = useWikilinkContext(shareToken ? shareLinksPageId : pageId, publicSite?.space, shareToken, hasWikilinks, wikilinkRetry);
+  const [embedHosts, setEmbedHosts] = useState<EmbedHost[]>([]);
+  // A click on a link to a page that does not exist: what it would create.
+  const [offer, setOffer] = useState<{ name: string; target: WikilinkCreateTarget | null } | null>(null);
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => () => clearTimeout(hintTimer.current), []);
 
@@ -147,13 +254,13 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
   // over) whenever it changes, same reasoning as useLocalStorage's own
   // re-read-on-key-change in app/hooks.ts.
   useEffect(() => {
-    setCollapsedSlugs(pageId ? readCollapsedSlugs(pageId) : new Set());
-  }, [pageId]);
+    setCollapsedSlugs(ownPageId ? readCollapsedSlugs(ownPageId) : new Set());
+  }, [ownPageId]);
 
   // Same re-read-on-key-change reasoning as collapsedSlugs above.
   useEffect(() => {
-    setTableScrollOverrides(pageId ? readTableScrollOverrides(pageId) : new Set());
-  }, [pageId]);
+    setTableScrollOverrides(ownPageId ? readTableScrollOverrides(ownPageId) : new Set());
+  }, [ownPageId]);
 
   // Round 13: ::pagetree{depth=N} directives are pulled out the same way
   // ```mermaid fences already are (splitPagetreeDirectives runs on
@@ -165,7 +272,10 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
   );
   const headings = useMemo(() => extractHeadings(markdown), [markdown]);
   const rendered = useMemo(() => {
-    const cursor = createHeadingIdCursor(headings);
+    // A note embedded in another page keeps its heading ids to itself: the host's outline and `#heading` links look ids up by slug.
+    const cursor = createHeadingIdCursor(
+      isEmbedded && pageId ? headings.map((heading) => ({ ...heading, slug: `embed-${pageId}-${heading.slug}` })) : headings,
+    );
     // Same reasoning as `cursor` above, for the fit/scroll toggle's
     // per-table index instead of heading ids — see tables.ts's
     // TableIndexCursor doc comment.
@@ -187,7 +297,19 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
       if (segment.type === 'mermaid' || segment.type === 'pagetree' || segment.type === 'form-embed') return segment;
       const html = renderMarkdownToHtml(
         segment.value,
-        { space, pagePath, shareToken, mentionLookup, origin, publicSite },
+        {
+          space,
+          pagePath,
+          shareToken,
+          mentionLookup,
+          origin,
+          publicSite,
+          wikilinks,
+          pageUrl: publicSite?.pageUrl,
+          embedsEnabled: !shareToken,
+          tagsClickable: !shareToken && !publicSite,
+          embedded: isEmbedded,
+        },
         cursor,
         tableCursor,
         noteCursor,
@@ -235,7 +357,9 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
     // linksVersion, same reasoning as mentionsVersion above: rehypeFolioPageLinks
     // reads folioLinkIndex.ts's own module cache directly (resolvedFolioLink),
     // this is only here to force the SECOND pass that shows a title once it lands.
-  }, [segments, headings, space, pagePath, shareToken, publicSite, mentionsVersion, linksVersion, i18n.language]);
+    //
+    // wikilinks, same reasoning: the page's link answers arrive after the first render.
+  }, [segments, headings, space, pagePath, shareToken, publicSite, mentionsVersion, linksVersion, wikilinks, isEmbedded, pageId, i18n.language]);
 
   // The collapsible wrapper/body/stub structure is baked into `rendered`'s
   // HTML by the pipeline's rehypeCollapsibleSections — this only ever
@@ -252,6 +376,51 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
     if (!containerRef.current) return;
     return attachGlossaryTooltips(containerRef.current);
   }, [rendered]);
+
+  // Embedded notes (`![[Note]]`): rehypeOfmLinks leaves a placeholder per resolvable embed; each gets an <EmbedView> portal. Hosts that belong to a note embedded further down are theirs (that <Markdown> collects them), hence the closest() check.
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root) return;
+    const hosts: EmbedHost[] = [];
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('[data-folio-embed]'))) {
+      if (el.closest('.folio-markdown') !== root) continue;
+      hosts.push({
+        el,
+        pageId: el.dataset.folioEmbed ?? '',
+        fragment: el.dataset.embedFragment ?? null,
+        label: el.dataset.embedLabel ?? '',
+      });
+      el.textContent = ''; // the label was only for the moment before the note arrives
+    }
+    setEmbedHosts(hosts);
+  }, [rendered]);
+
+  // Formulas (`$x$`): KaTeX, loaded the first time a page has one (math.ts).
+  useEffect(() => {
+    if (containerRef.current) void renderMath(containerRef.current);
+  }, [rendered]);
+
+  // A wikilink the index has no row for yet (the page was edited a moment ago): ask again, a couple of times.
+  useEffect(() => {
+    if (wikilinks.status !== 'ready' || wikilinkRetry >= WIKILINK_RETRIES) return;
+    const root = containerRef.current;
+    if (!root || !root.querySelector('.folio-wikilink--static:not([data-wikilink=""]), .folio-embed--static[data-wikilink]')) return;
+    const timer = setTimeout(() => setWikilinkRetry((n) => n + 1), WIKILINK_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [rendered, wikilinks, wikilinkRetry]);
+
+  // `/s/<space>/p/<id>#heading` (a `[[Note#Heading]]` from another page, a copied link): scroll to the heading or block once it is drawn.
+  const scrolledFor = useRef('');
+  useEffect(() => {
+    const root = containerRef.current;
+    if (isEmbedded || !root || !location.hash) return;
+    const key = `${pageId ?? ''}${location.hash}`;
+    if (scrolledFor.current === key) return;
+    const target = findAnchor(root, location.hash);
+    if (!target) return;
+    scrolledFor.current = key;
+    target.scrollIntoView?.({ block: 'start' });
+  }, [rendered, location.hash, pageId, isEmbedded]);
 
   // Fit/scroll toggle (tableFit.ts): measure THEN apply, always together, in
   // ONE effect, even though `rendered`'s own `innerHtmlProp` fix (see that
@@ -298,7 +467,7 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
       const next = new Set(prev);
       if (next.has(slug)) next.delete(slug);
       else next.add(slug);
-      if (pageId) writeCollapsedSlugs(pageId, next);
+      if (ownPageId) writeCollapsedSlugs(ownPageId, next);
       return next;
     });
   }
@@ -308,13 +477,30 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
       const next = new Set(prev);
       if (next.has(index)) next.delete(index);
       else next.add(index);
-      if (pageId) writeTableScrollOverrides(pageId, next);
+      if (ownPageId) writeTableScrollOverrides(ownPageId, next);
       return next;
     });
   }
 
+  async function createFromOffer() {
+    if (!offer?.target || !onCreatePage) return;
+    setCreating(true);
+    try {
+      const created = await onCreatePage({ parentPath: offer.target.parentPath, title: offer.target.stem, fileStem: offer.target.stem });
+      setOffer(null);
+      navigate(`/s/${created.space}/p/${created.id}`);
+    } catch {
+      setOffer(null);
+      showHint(t('wikilink.createFailed'));
+    } finally {
+      setCreating(false);
+    }
+  }
+
   async function handleClick(event: MouseEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement;
+    // A click inside a note embedded further down belongs to that <Markdown> (React bubbles it to us through the portal too).
+    if (target.closest('.folio-markdown') !== event.currentTarget) return;
 
     const toggle = target.closest<HTMLButtonElement>('[data-collapse-toggle]');
     if (toggle) {
@@ -341,6 +527,31 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
     // title by rehypeFolioLinks.ts — the app route is baked into the
     // attribute itself (folioLinkNavPath), so unlike data-folio-link below
     // this needs no /api/resolve round-trip at click time at all.
+    // Obsidian constructs (shared/ofm): a `#tag` chip opens the search, `[[#Heading]]` scrolls here, a link to a page that
+    // does not exist offers to create it, one whose answer has not come yet does nothing.
+    const tagChip = target.closest<HTMLElement>('a[data-folio-tag]');
+    if (tagChip) {
+      event.preventDefault();
+      requestSearch(`tag:${tagChip.dataset.folioTag ?? ''}`);
+      return;
+    }
+    const selfLink = target.closest<HTMLElement>('a[data-wikilink-self]');
+    if (selfLink) {
+      event.preventDefault();
+      const el = containerRef.current ? findAnchor(containerRef.current, selfLink.dataset.wikilinkSelf ?? '') : null;
+      el?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    const wikilink = target.closest<HTMLElement>('a[data-wikilink-state="pending"], a[data-wikilink-state="unresolved"], div.folio-embed--unresolved');
+    if (wikilink) {
+      event.preventDefault();
+      if (wikilink.dataset.wikilinkState === 'unresolved') {
+        const name = wikilink.dataset.wikilink ?? '';
+        setOffer({ name, target: canCreate && onCreatePage ? wikilinkCreateTarget(pagePath, name) : null });
+      }
+      return;
+    }
+
     const navAnchor = target.closest<HTMLAnchorElement>('a[data-folio-nav]');
     if (navAnchor) {
       event.preventDefault();
@@ -350,8 +561,18 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
 
     const anchor = target.closest<HTMLAnchorElement>('a[data-folio-link]');
     if (!anchor) return;
+    // An extensionless link (`../getting-started`, `../LICENSE`) may name a page
+    // or a plain file: the page wins when one resolves, otherwise the raw-file
+    // link the anchor carries (relativeLinks.ts) opens exactly as it always did.
+    const fileFallback = anchor.hasAttribute('data-folio-file');
+    // A share guest cannot resolve pages at all: the file link, as before.
+    if (shareToken && fileFallback) return;
     event.preventDefault();
     const relPath = anchor.getAttribute('data-folio-link') ?? '';
+    const notFound = () => {
+      if (fileFallback) window.open(anchor.href, '_blank', 'noopener,noreferrer');
+      else showHint(t('link.notFound', { path: relPath }));
+    };
 
     // Public site: a relative page link resolves through the anonymous route
     // (the session-only /api/resolve below would 401) and lands on the site's URL
@@ -360,7 +581,7 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
       try {
         navigate(publicSite.pageUrl(await publicSite.resolvePath(relPath)));
       } catch {
-        showHint(t('link.notFound', { path: relPath }));
+        notFound();
       }
       return;
     }
@@ -381,7 +602,7 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
       const meta = (await res.json()) as PageMeta;
       navigate(`/s/${meta.space}/p/${meta.id}`);
     } catch {
-      showHint(t('link.notFound', { path: relPath }));
+      notFound();
     }
   }
 
@@ -399,7 +620,7 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
                 — see this prop's own doc comment) have no "whose subtree"
                 to fetch either. Shows the same empty-state copy rather than
                 attempting a fetch against a blank id. */}
-            {pageId ? <PageTree pageId={pageId} depth={segment.depth} /> : (
+            {pageId && !publicSite ? <PageTree pageId={pageId} depth={segment.depth} /> : (
               <p className="text-sm text-neutral-400 dark:text-neutral-500">{t('pagetree.empty')}</p>
             )}
           </div>
@@ -416,7 +637,34 @@ export function Markdown({ markdown, space, pagePath, pageId, shareToken, public
           <div className="folio-md-segment" key={index} dangerouslySetInnerHTML={segment.innerHtmlProp} />
         ),
       )}
-      {pageId && <Backlinks pageId={pageId} />}
+      {ownPageId && !publicSite && <Backlinks pageId={ownPageId} />}
+      {embedHosts.map((host, hostIndex) =>
+        createPortal(
+          <EmbedView
+            pageId={host.pageId}
+            fragment={host.fragment}
+            label={host.label}
+            depth={(embedded?.depth ?? 0) + 1}
+            chain={embedded ? embedded.chain : pageId ? [pageId] : []}
+            publicSite={publicSite}
+          />,
+          host.el,
+          `${hostIndex}|${host.pageId}|${host.fragment ?? ''}`,
+        ),
+      )}
+      {offer && (
+        <div className="folio-offer" role="status">
+          <span>{t('wikilink.notFound', { name: offer.name })}</span>
+          {offer.target && (
+            <button type="button" disabled={creating} onClick={() => void createFromOffer()}>
+              {creating ? t('wikilink.creating') : t('wikilink.create', { name: offer.target.stem })}
+            </button>
+          )}
+          <button type="button" className="folio-offer__close" aria-label={t('image.close')} onClick={() => setOffer(null)}>
+            ×
+          </button>
+        </div>
+      )}
       {hint && (
         <div className="folio-hint" role="status">
           {hint}

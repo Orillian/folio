@@ -9,6 +9,7 @@ import {
   createShareLinkBodySchema,
   updateShareLinkBodySchema,
   updateSpaceAssetModeBodySchema,
+  updateScanSettingsBodySchema,
   createSpaceGit,
   connectSpaceGitBodySchema,
   copyPageBodySchema,
@@ -25,6 +26,7 @@ import {
 import { isFormParseError, parseFormFile } from '../shared/forms/index.js';
 import type {
   AuthState,
+  EmbedPayload,
   FolioConfig,
   GitProviderRepos,
   GitRepoTreeResponse,
@@ -38,22 +40,31 @@ import type {
   SearchHit,
   ShareLinkInfo,
   SharedPagePayload,
+  PublicPageLinks,
+  PageLinkRef,
   SpaceInfo,
+  SpaceWithVaultNote,
   SpaceRole,
   UploadAssetResponse,
   SpaceVisibility,
   SpaceGitInfo,
   ResetToRemoteResponse,
   TreeNode,
+  PageMetadata,
+  SpaceTagsResponse,
+  UnresolvedLinksResponse,
+  OrphansResponse,
 } from '../shared/contracts.js';
 import * as storage from './storage.js';
 import * as collab from './collab.js';
 import { decodeScenePayload, extractScenePayload } from './confluenceWhiteboard.js';
 import * as tables from './tables/service.js';
 import * as forms from './forms/service.js';
-import { searchPages } from './search.js';
+import { clampSearchLimit, clampSearchOffset, searchPages } from './search.js';
 import { buildPageDoc } from './pageDoc.js';
-import * as links from './links.js';
+import { buildEmbed, parseEmbedDepth } from './embed.js';
+import * as indexRead from './indexV2/read.js';
+import { userViewer } from './accessSql.js';
 import * as assets from './assets.js';
 import * as git from './git.js';
 import * as gitSync from './gitSync.js';
@@ -63,6 +74,7 @@ import * as gitTree from './gitTree.js';
 import { GitTreePathNotFoundError } from './gitTree.js';
 import * as shares from './shares.js';
 import { resolveShareScope } from './export/shareScope.js';
+import { shareMayReadFile } from './fileAccess.js';
 import { subtreeFromCollected } from './export/collect.js';
 import * as invites from './invites.js';
 import * as confluenceImport from './confluenceImport.js';
@@ -353,7 +365,8 @@ export function registerRoutes(app: FastifyInstance): void {
 
     try {
       const dirs = await gitTree.listRepoTreeDirs(repoUrl, branch, path, token);
-      return { dirs };
+      // `.obsidian/` among the folders = this path is an Obsidian vault (the create-space dialog turns light footprint on for it).
+      return dirs.includes('.obsidian') ? { dirs, vault: true } : { dirs };
     } catch (err) {
       if (err instanceof GitTreePathNotFoundError) throw notFound('path');
       // Never echo git's own stderr (could reflect the url; never the token,
@@ -391,6 +404,8 @@ export function registerRoutes(app: FastifyInstance): void {
           myRole: myRoles[s.slug],
           git: s.git && s.git.status === 'conflict' ? { ...s.git, conflicts: await gitSync.getSpaceConflicts(s.slug) } : s.git,
         };
+        // The ignore list names folders of the repository: space admins only (the effective `lightFootprint` flag is not a secret).
+        if (!adminSlugs.has(s.slug)) delete info.scanIgnore;
         info.agentRules = buildAgentRulesInfo(agentCounts.get(s.slug) ?? 0, adminSlugs.has(s.slug));
         return info;
       }),
@@ -469,7 +484,7 @@ export function registerRoutes(app: FastifyInstance): void {
     const user = request.authUser!;
     const body = parseBody(createSpaceGit, request.body);
     // "Any authenticated user may create a space and becomes its admin" (DEV-PLAN round 2).
-    let space: SpaceInfo;
+    let space: SpaceWithVaultNote;
     if (body.repoUrl) {
       if (body.importId) importProgress.startSpaceImport(body.importId, user.id);
       // QA-3 P0: without this, "any authenticated user may create a space"
@@ -493,6 +508,7 @@ export function registerRoutes(app: FastifyInstance): void {
           rootPath: body.rootPath ?? '',
           createdBy: user.id,
           token,
+          lightFootprint: body.lightFootprint,
           onProgress: body.importId
             ? (progress) => importProgress.updateSpaceImport(body.importId!, progress)
             : undefined,
@@ -517,6 +533,31 @@ export function registerRoutes(app: FastifyInstance): void {
     const progress = importProgress.getSpaceImport(id, request.authUser!.id);
     if (!progress) throw notFound('space import');
     return progress;
+  });
+
+  // Index v2 (Obsidian brief wave 1b): space-wide reads of the page index, viewer+, filtered in SQL to the pages
+  // the caller may read (accessSql.ts) — counts and lists never include a closed page.
+  app.get('/api/spaces/:space/tags', async (request) => {
+    const { space } = request.params as { space: string };
+    await session.requireSpaceRole(request, space, 'viewer');
+    const response: SpaceTagsResponse = { tags: await indexRead.listSpaceTags(space, userViewer(request.authUser!)) };
+    return response;
+  });
+
+  app.get('/api/spaces/:space/unresolved-links', async (request) => {
+    const { space } = request.params as { space: string };
+    await session.requireSpaceRole(request, space, 'viewer');
+    const limit = indexRead.clampUnresolvedLimit(queryString(request.query, 'limit'));
+    const offset = indexRead.clampOffset(queryString(request.query, 'offset'));
+    const response: UnresolvedLinksResponse = await indexRead.listUnresolvedLinks(space, userViewer(request.authUser!), { limit, offset });
+    return response;
+  });
+
+  app.get('/api/spaces/:space/orphans', async (request) => {
+    const { space } = request.params as { space: string };
+    await session.requireSpaceRole(request, space, 'viewer');
+    const response: OrphansResponse = { pages: await indexRead.listOrphans(space, userViewer(request.authUser!)) };
+    return response;
   });
 
   app.get('/api/spaces/:space/tree', async (request) => {
@@ -648,6 +689,23 @@ export function registerRoutes(app: FastifyInstance): void {
     await storage.setSpaceAssetMode(space, body.assetMode);
     recordAudit(request.authUser!.id, 'space.asset_mode', space, { assetMode: body.assetMode });
     return { slug: space, assetMode: body.assetMode };
+  });
+
+  /**
+   * Scan settings (Obsidian vault compatibility): the space's extra ignore
+   * list and its light-footprint flag. Space admin, like asset-mode — both
+   * decide what Folio indexes / writes in the repository. A changed ignore
+   * list rescans the space before this answers (storage.setSpaceScanSettings).
+   */
+  app.patch('/api/spaces/:space/scan-settings', async (request) => {
+    assertNotDemo('Changing which files a space indexes');
+    const { space } = request.params as { space: string };
+    await session.requireSpaceRole(request, space, 'admin');
+    session.requireWriteScope(request);
+    const body = parseBody(updateScanSettingsBodySchema, request.body);
+    const info = await storage.setSpaceScanSettings(space, body);
+    recordAudit(request.authUser!.id, 'space.scan_settings', space, { scanIgnore: body.scanIgnore, lightFootprint: body.lightFootprint });
+    return { slug: space, pageCount: info.pageCount, scanIgnore: info.scanIgnore ?? [], lightFootprint: info.lightFootprint === true };
   });
 
   app.post('/api/spaces/:space/assets', async (request, reply): Promise<UploadAssetResponse> => {
@@ -1187,18 +1245,32 @@ export function registerRoutes(app: FastifyInstance): void {
 
   app.get('/api/pages/:id/backlinks', async (request) => {
     const { id } = request.params as { id: string };
-    const user = request.authUser!;
-    // viewer+ on the TARGET's own space; each backlink's own space visibility is
-    // enforced separately below so a source page in a space the caller can't see
-    // never leaks its title/existence.
+    // viewer+ on the TARGET; the SOURCES are filtered in SQL (accessSql.ts, search's rules) so a source page the
+    // caller can't read never leaks its title/existence. One entry per link, with its syntax/fragment/line/context.
     await session.requirePageRole(request, id, 'viewer');
-    const all = await links.getBacklinks(id);
-    const backlinks: typeof all = [];
-    for (const backlink of all) {
-      const source = await storage.getEntry(backlink.id);
-      if (source && (await session.effectivePageRole(user, source))) backlinks.push(backlink);
-    }
+    const backlinks = await indexRead.getVisibleBacklinks(id, userViewer(request.authUser!));
     return { backlinks };
+  });
+
+  /** Index v2: the page's headings, ^blocks, tags, front matter, typed links and visible backlink count (PageMetadata). */
+  app.get('/api/pages/:id/meta', async (request) => {
+    const { id } = request.params as { id: string };
+    const entry = await session.requirePageRole(request, id, 'viewer');
+    const meta: PageMetadata = await indexRead.getPageMetadata(entry, userViewer(request.authUser!));
+    return meta;
+  });
+
+  /**
+   * Wave 2 (Obsidian): an embedded note for the reading view's `![[Note#Heading]]` — the whole page, a heading
+   * section or a `^block`, as markdown (server/embed.ts). viewer+ on the EMBEDDED page, exactly like reading it
+   * (requirePageRole: `.agent` for admins only, a restricted page for its granted people). 400 for a non-document
+   * or a `depth` outside 1..EMBED_MAX_DEPTH, 404 `fragment not found`.
+   */
+  app.get('/api/pages/:id/embed', async (request): Promise<EmbedPayload> => {
+    const { id } = request.params as { id: string };
+    const entry = await session.requirePageRole(request, id, 'viewer');
+    parseEmbedDepth(queryString(request.query, 'depth'));
+    return buildEmbed(entry, queryString(request.query, 'fragment') || null);
   });
 
   /**
@@ -1501,6 +1573,8 @@ export function registerRoutes(app: FastifyInstance): void {
       userId: user.id,
       space: spaceParam || undefined,
       isInstanceAdmin: user.isAdmin,
+      limit: clampSearchLimit(queryString(request.query, 'limit')),
+      offset: clampSearchOffset(queryString(request.query, 'offset')),
     });
     return { hits };
   });
@@ -1584,6 +1658,31 @@ export function registerPublicShareRoutes(app: FastifyInstance): void {
       payload.rootPageId = scope.root.id;
     }
     return payload;
+  });
+
+  /**
+   * The FILE links of a shared page (`![[diagram.png]]` found in `attachments/`, `![[spec.pdf]]`), for the reading view
+   * and the live editor of a guest: what was written -> where the file is. Nothing else leaves: no page link, no id, no
+   * line context, and only a file the share itself may read (the same decision as GET /files/...?share=), so a by-name
+   * target outside the share's scope stays as written (and 403s as before). The page is the token's own or, with
+   * includeChildren, a member of its collected set - any other id is the same 404 as an unknown token.
+   */
+  app.get('/api/share/:token/links', async (request, reply): Promise<PublicPageLinks> => {
+    const { token } = request.params as { token: string };
+    const scope = await resolveShareScope(token);
+    if (!scope) throw notFound('share link');
+    reply.header('X-Robots-Tag', 'noindex');
+    const pageId = queryString(request.query, 'page') || scope.root.id;
+    if (!scope.collected.ids.has(pageId)) throw notFound('share link');
+    const all = await indexRead.getPageLinks(pageId, { kind: 'user', userId: '00000000-0000-0000-0000-000000000000', isInstanceAdmin: true });
+    const links: PageLinkRef[] = [];
+    for (const link of all) {
+      const isFile = link.kind === 'asset' || (link.kind === 'page' && !/\.md$/i.test(link.targetPath) && /\.[a-z0-9]+$/i.test(link.targetPath));
+      if (!isFile || !link.targetPath) continue;
+      if (!(await shareMayReadFile(scope, scope.root.space, link.targetPath))) continue;
+      links.push({ ...link, kind: 'asset', targetPageId: null, fragment: null, fragmentKind: null, fragmentResolved: null, displayText: null, context: '' });
+    }
+    return { links };
   });
 
   // Round 29: boards ARE now Yjs-collaborative — an edit-mode share guest's

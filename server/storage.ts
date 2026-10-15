@@ -24,12 +24,14 @@ import type { PoolClient } from 'pg';
 import * as matterNS from 'gray-matter';
 import { ulid } from 'ulidx';
 import type { CreatePageBody, FormDoc, PageKind, PageMeta, PageStatus, SpaceAssetMode, SpaceGitStatus, SpaceInfo, SpaceVisibility, TableColumn, TableDoc, TableView, TreeNode } from '../shared/contracts.js';
-import { officeFormat } from '../shared/contracts.js';
+import { INDEX_META_VERSION, officeFormat } from '../shared/contracts.js';
+import { compileScanIgnore } from './scanIgnore.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
 import { translitSlug } from './translit.js';
 import { query, queryOne, withTransaction } from './db/pool.js';
 import { withSpaceLock } from './db/redis.js';
 import * as links from './links.js';
+import * as pageIndex from './indexV2/store.js';
 import * as git from './git.js';
 import { setSpaceToken, removeSpaceToken, ensureAskpassScript } from './gitCredentials.js';
 import { encodeCell, isTableParseError, parseTableFile, serializeTableFile } from '../shared/tables/index.js';
@@ -37,9 +39,10 @@ import { deriveFieldsFromColumns, isFormParseError, parseFormFile, serializeForm
 import { decodeScenePayload, extractScenePayload } from './confluenceWhiteboard.js';
 import { AGENT_FOLDER } from './agentPath.js';
 import { serverText } from './serverText.js';
-import { stripStatusDirectives } from '../shared/status.js';
+import { docIndexText } from './indexText.js';
 import { inlineMarkdownToPlainText } from '../shared/inlineText.js';
 import { mergeFrontmatter, type FolioFrontmatter } from './frontmatter.js';
+import * as spaceFiles from './spaceFiles.js';
 
 // gray-matter is CJS (`export =`). `import * as matterNS` typechecks and runs fine
 // under tsx/Node, but under Vite/Vitest's esbuild-based CJS interop the callable
@@ -84,6 +87,12 @@ export interface PageIndexEntry {
    * surrounding head/tail prose. Boards never populate this.
    */
   body?: string;
+  /**
+   * A document's whole front matter as parsed — set only by indexDocFile during
+   * a scan, for the page index (indexV2, `pages_index.frontmatter`). Never read
+   * back from the database into an entry.
+   */
+  frontmatter?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +102,19 @@ export interface PageIndexEntry {
 // ---------------------------------------------------------------------------
 
 const rootPathCache = new Map<string, string>();
+/** Slugs whose `spaces.light_footprint` is set (migration 041): a space whose content root is the repository root that is still "light" — an Obsidian vault. Kept beside rootPathCache, same lifecycle. */
+const lightFootprintCache = new Set<string>();
+
+function rememberSpaceCaches(space: string, rootPath: string, lightFootprint: boolean): void {
+  rootPathCache.set(space, rootPath);
+  if (lightFootprint) lightFootprintCache.add(space);
+  else lightFootprintCache.delete(space);
+}
+
+function forgetSpaceCaches(space: string): void {
+  rootPathCache.delete(space);
+  lightFootprintCache.delete(space);
+}
 
 function repoDir(space: string): string {
   if (!space || space.includes('/') || space.includes('\\') || space === '.' || space === '..' || space.includes('\0')) {
@@ -108,21 +130,34 @@ function spaceDir(space: string): string {
 }
 
 /**
- * "Light footprint" (docs-as-code): a space bound to a sub-folder of a
- * repository (non-empty rootPath) is typically the `docs/` of a product repo,
- * so Folio keeps out of the way there: it never ADDS an `id` to a doc's front
- * matter (the id lives in pages_index only, see "Index-only page ids"; an id a
- * file already carries is still used and kept), and its `.folio` metadata is a
- * dotfile inside the content root (folioMetaPath). rootPath '' spaces are
- * unchanged.
+ * "Light footprint" (docs-as-code, Obsidian vaults): a space bound to a
+ * sub-folder of a repository (non-empty rootPath) is typically the `docs/` of a
+ * product repo, and a space whose repository root IS a vault belongs to the
+ * vault's owner, so Folio keeps out of the way there: it never ADDS an `id` to a
+ * doc's front matter (the id lives in pages_index only, see "Index-only page
+ * ids"; an id a file already carries is still used and kept), and its `.folio`
+ * metadata is a dotfile inside the content root (folioMetaPath). A rootPath
+ * space is light by construction; a rootPath '' space only when
+ * `spaces.light_footprint` was set (an admin's choice, or by default on
+ * creation from a repository whose files Folio did not create: a vault, a
+ * notes repo, a wiki — createSpaceFromRepo). Native spaces are unchanged.
  */
 export function isLightFootprintSpace(space: string): boolean {
-  return (rootPathCache.get(space) ?? '') !== '';
+  return (rootPathCache.get(space) ?? '') !== '' || lightFootprintCache.has(space);
 }
 
-/** The `id` handed to persistDocFrontmatter for a doc of `space`: undefined (the file's own key, if any, is left alone) in a light-footprint space. */
+/** The shape of an index-only doc id (pathIdFor('doc', ...)): never written into a file. */
+const INDEX_ONLY_DOC_ID_RE = /^doc-[0-9a-f]{24}$/;
+
+/**
+ * The `id` handed to persistDocFrontmatter for a doc of `space`: undefined (the
+ * file's own key, if any, is left alone) in a light-footprint space, and for a
+ * page whose id lives in pages_index only — a file whose `id:` another page
+ * already holds (fileIdIsOwn) keeps that foreign value instead of having it
+ * overwritten.
+ */
 function docFileId(space: string, id: string): string | undefined {
-  return isLightFootprintSpace(space) ? undefined : id;
+  return isLightFootprintSpace(space) || INDEX_ONLY_DOC_ID_RE.test(id) ? undefined : id;
 }
 
 function posixParent(p: string): string {
@@ -201,7 +236,10 @@ function sanitizeAssetFilename(original: string): string {
   return `${stem || 'asset'}${ext}`;
 }
 
-const H1_RE = /^#[ \t]+(.+?)[ \t]*#*[ \t]*$/;
+// `\r?`: a CRLF file's lines keep their "\r" here (bodies are split on "\n"),
+// and `# Title\r` read as no heading at all — the page was titled by its file
+// name until an open normalized the text, and the "new" H1 then auto-renamed the file.
+const H1_RE = /^#[ \t]+(.+?)[ \t]*#*[ \t]*\r?$/;
 const FENCE_RE = /^(```+|~~~+)/;
 
 /** Line index of the first true ATX H1 (single '#'), skipping fenced code blocks. -1 if none. */
@@ -310,17 +348,24 @@ function validStringField(v: unknown): string | undefined {
 
 
 /**
- * What `matter(file).content` reads back after `persistDocFrontmatter` wrote
- * `body`: the same text with a trailing newline guaranteed. A collab room's
- * Y.Text has no such guarantee (a user who typed at the end of the page leaves
- * it without one), so bindState compares the FILE against this — not against
- * the raw Y.Text — when it decides whether the file "moved on" while the room
- * was away. Without it a page whose text merely lacks the final "\n" looked
- * changed on every resume and got its whole body replaced (delete + reinsert),
- * which a client holding edits on top of the old text merges as a doubling.
+ * A doc body in the form two bodies are compared in: a trailing newline
+ * guaranteed. A collab room's Y.Text has no such guarantee (a user who typed at
+ * the end of the page leaves it without one), and neither has a file — Folio
+ * keeps a file's missing final newline (mergeFrontmatter) — so bindState
+ * compares docFileBody(FILE) with docFileBody(Y.Text) when it decides whether
+ * the file "moved on" while the room was away. Without it a page whose text
+ * merely lacks the final "\n" looked changed on every resume and got its whole
+ * body replaced (delete + reinsert), which a client holding edits on top of the
+ * old text merges as a doubling.
  */
 export function docFileBody(body: string): string {
   return body.endsWith('\n') ? body : `${body}\n`;
+}
+
+/** Same file text, as far as a reader can tell: line endings and the final newline aside. */
+function sameDocText(a: string, b: string): boolean {
+  const lf = (s: string) => (s.includes('\r') ? s.replace(/\r\n?/g, '\n') : s);
+  return docFileBody(lf(a)) === docFileBody(lf(b));
 }
 
 /**
@@ -366,8 +411,15 @@ export async function writeFileAtomic(abs: string, content: string | Buffer): Pr
   const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`);
   // git.ts excludes this shape from every `git add -A` (ATOMIC_TEMP_PATHSPEC).
   try {
+    // The replaced file keeps its mode: a doc committed as 100755 used to come
+    // back 100644 from any write, a diff in git for nothing anyone did.
+    const mode = await fs.stat(abs).then(
+      (s) => s.mode & 0o7777,
+      () => undefined,
+    );
     if (typeof content === 'string') await fs.writeFile(tmp, content, 'utf8');
     else await fs.writeFile(tmp, content); // bytes of a pdf/office file: no encoding
+    if (mode !== undefined) await fs.chmod(tmp, mode);
     await fs.rename(tmp, abs);
   } catch (err) {
     await fs.rm(tmp, { force: true }).catch(() => undefined);
@@ -630,9 +682,15 @@ async function upsertPagesIndexRow(entry: PageIndexEntry, fileMtime: Date, fileS
   // Round FORMS: a form's body is its title/description/field labels (indexFormFile) —
   // small, but enough that a form shows up for its own field names in search.
   // A document's `:status[Done]{color=green}` tags are indexed (and shown in
-  // snippets) as their text: the attributes are not words anyone searches for.
+  // snippets) as their text: the attributes are not words anyone searches for;
+  // a `%%comment%%` is not content at all (indexText.ts).
   const plainText =
-    entry.kind === 'doc' ? stripStatusDirectives(entry.body ?? '') : entry.kind === 'table' || entry.kind === 'form' ? (entry.body ?? '') : null;
+    entry.kind === 'doc' ? docIndexText(entry.body ?? '') : entry.kind === 'table' || entry.kind === 'form' ? (entry.body ?? '') : null;
+  // The row of an id never silently moves to ANOTHER space ($16 false): two
+  // connected folders whose files carry the same `id:` used to hand the row back
+  // and forth on every scan, and a write through it landed in the other space's
+  // file. Moving across spaces is allowed only once the holder's file is gone
+  // (adoptAcrossSpaces below) — a file carried from one space to the other.
   const sql = `INSERT INTO pages_index (id, space_slug, path, kind, title, sort_order, status, icon, cover, updated_at, plain_text, is_index, file_mtime, file_size, tsv)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
        setweight(to_tsvector('simple', unaccent($5)), 'A') ||
@@ -642,7 +700,9 @@ async function upsertPagesIndexRow(entry: PageIndexEntry, fileMtime: Date, fileS
        title = EXCLUDED.title, sort_order = EXCLUDED.sort_order, status = EXCLUDED.status,
        icon = EXCLUDED.icon, cover = EXCLUDED.cover,
        updated_at = EXCLUDED.updated_at, plain_text = EXCLUDED.plain_text, is_index = EXCLUDED.is_index,
-       file_mtime = EXCLUDED.file_mtime, file_size = EXCLUDED.file_size, tsv = EXCLUDED.tsv`;
+       file_mtime = EXCLUDED.file_mtime, file_size = EXCLUDED.file_size, tsv = EXCLUDED.tsv
+     WHERE pages_index.space_slug = EXCLUDED.space_slug OR $16::boolean
+     RETURNING id`;
   const params = [
     entry.id,
     entry.space,
@@ -659,18 +719,34 @@ async function upsertPagesIndexRow(entry: PageIndexEntry, fileMtime: Date, fileS
     fileMtime,
     fileSize,
     plainText === null ? null : capForTsvector(plainText),
+    false,
   ];
+  const upsert = async (exec: (values: unknown[]) => Promise<unknown[]>): Promise<void> => {
+    if ((await exec(params)).length > 0) return;
+    // Nothing written: the id belongs to a page of another space.
+    if (!(await adoptAcrossSpaces(entry.id))) {
+      throw new Error(`page id ${entry.id} is already used by a page of another space`);
+    }
+    params[15] = true;
+    await exec(params);
+  };
   if (!restoredRule) {
-    await query(sql, params);
+    await upsert((values) => query(sql, values));
     return;
   }
   // A page coming back from the trash gets its access rule in the SAME
   // transaction as its index row: the row is not visible to anybody before the
   // rule is, so there is no moment at which a restored private page is open.
   await withTransaction(async (client) => {
-    await client.query(sql, params);
+    await upsert(async (values) => (await client.query(sql, values)).rows);
     await insertPageAccess(client, entry.id, restoredRule);
   });
+}
+
+/** True when the page holding `id` (in whatever space) has no file on disk any more — its id may follow the file that carries it now. */
+async function adoptAcrossSpaces(id: string): Promise<boolean> {
+  const holder = await queryOne<{ space_slug: string; path: string }>('SELECT space_slug, path FROM pages_index WHERE id = $1', [id]);
+  return !holder || !(await pathExists(path.join(spaceDir(holder.space_slug), holder.path)));
 }
 
 /**
@@ -753,19 +829,40 @@ async function registerReposOnBoot(): Promise<void> {
     if (exists?.exists) continue;
     const dir = path.join(REPOS_DIR, slug);
     const name = (await peekTitleFromRoot(dir)) ?? humanize(slug);
+    // A folder dropped in with an `.obsidian/` inside is a vault: register it light, so the first scan writes nothing into it.
+    const vault = await isObsidianVault(dir);
     await query(
-      `INSERT INTO spaces (slug, name, repo_url, branch, root_path, status) VALUES ($1, $2, NULL, 'main', '', 'local') ON CONFLICT (slug) DO NOTHING`,
-      [slug, name],
+      `INSERT INTO spaces (slug, name, repo_url, branch, root_path, status, light_footprint) VALUES ($1, $2, NULL, 'main', '', 'local', $3) ON CONFLICT (slug) DO NOTHING`,
+      [slug, name, vault],
     );
     // eslint-disable-next-line no-console
-    console.log(`[boot] registered pre-existing repo as space "${slug}"`);
+    console.log(`[boot] registered pre-existing repo as space "${slug}"${vault ? ' (Obsidian vault: light footprint)' : ''}`);
   }
 }
 
 async function refreshRootPathCache(): Promise<void> {
-  const rows = await query<{ slug: string; root_path: string }>('SELECT slug, root_path FROM spaces');
+  const rows = await query<{ slug: string; root_path: string; light_footprint: boolean }>('SELECT slug, root_path, light_footprint FROM spaces');
   rootPathCache.clear();
-  for (const row of rows) rootPathCache.set(row.slug, row.root_path ?? '');
+  lightFootprintCache.clear();
+  for (const row of rows) rememberSpaceCaches(row.slug, row.root_path ?? '', row.light_footprint === true);
+}
+
+/** A native Folio space's metadata file (`<slug>.folio`, not the light dotfile `.<slug>.folio`) sits at `dirAbs`: the repository was a Folio space before. */
+async function holdsNativeFolioMeta(dirAbs: string): Promise<boolean> {
+  try {
+    return (await fs.readdir(dirAbs, { withFileTypes: true })).some((e) => e.isFile() && !e.name.startsWith('.') && e.name.endsWith('.folio'));
+  } catch {
+    return false;
+  }
+}
+
+/** An Obsidian vault keeps its settings in `.obsidian/` at its root. */
+async function isObsidianVault(dirAbs: string): Promise<boolean> {
+  try {
+    return (await fs.stat(path.join(dirAbs, '.obsidian'))).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -777,6 +874,29 @@ async function refreshRootPathCache(): Promise<void> {
 /** Stable id for a doc whose frontmatter can't be parsed (see indexDocFile) — derived, never written into the file. */
 function unparseableDocId(space: string, relPath: string): string {
   return `unparsed-${createHash('sha1').update(`${space}\0${relPath}`).digest('hex').slice(0, 20)}`;
+}
+
+/**
+ * Whether a doc file's own front matter `id` can be its page id. Another tool's
+ * `id:` (Docusaurus/Jest `id: intro`) is unique neither across folders nor
+ * across spaces: two connected docs folders carrying `id: intro` fought over one
+ * pages_index row, each scan moving it (and every later write through it) to the
+ * space scanned last — an edit in one space landed in the other space's file.
+ * The file's id is NOT used when
+ *  - another page whose file still exists already holds it (a copy, the same id
+ *    in another folder or another space). A rename or move — Folio's or a `git
+ *    mv` — leaves the old row pointing at a file that is gone, so the id follows
+ *    the file exactly as before;
+ *  - this path already has a row under a different id (given by an earlier
+ *    collision): adopting the file's id now would collide with that row on
+ *    (space_slug, path) and the file could never be indexed again.
+ * Such a doc gets an index-only id (resolveIndexOnlyId), and its file is left
+ * as it is (docFileId).
+ */
+async function fileIdIsOwn(fileId: string, space: string, relPath: string): Promise<boolean> {
+  const atPath = await getEntryIdByExactPath(space, relPath);
+  if (atPath) return atPath === fileId;
+  return adoptAcrossSpaces(fileId);
 }
 
 async function indexDocFile(space: string, relPath: string, abs: string, mtime: Date, isIndex: boolean, size: number): Promise<PageIndexEntry | null> {
@@ -825,19 +945,23 @@ async function indexDocFile(space: string, relPath: string, abs: string, mtime: 
       cover: undefined,
       updatedAt: mtime.toISOString(),
       body: raw,
+      frontmatter: {},
     };
   }
-  let id = typeof parsed.data.id === 'string' && parsed.data.id ? (parsed.data.id as string) : null;
+  const fileId = typeof parsed.data.id === 'string' && parsed.data.id ? (parsed.data.id as string) : null;
+  let id: string;
   const body = parsed.content;
   const explicitOrder = numericOrder(parsed.data.order);
   const explicitStatus = validStatus(parsed.data.status);
   const icon = validStringField(parsed.data.icon);
   const cover = validStringField(parsed.data.cover);
-  if (id) {
+  if (fileId && (await fileIdIsOwn(fileId, space, relPath))) {
     // The file's own id wins; a claim for this path (if any) is spent anyway.
     takeIdClaim(abs);
-  } else if (isLightFootprintSpace(space)) {
+    id = fileId;
+  } else if (fileId || isLightFootprintSpace(space)) {
     // Light footprint: the id lives in pages_index only, never in the file.
+    // So does the id of a file whose `id:` another page holds (fileIdIsOwn).
     id = await resolveIndexOnlyId('doc', space, relPath, abs, size);
   } else {
     id = takeIdClaim(abs) ?? ulid();
@@ -851,7 +975,7 @@ async function indexDocFile(space: string, relPath: string, abs: string, mtime: 
     kind: 'doc',
     isIndex,
     dirPath: posixParent(relPath),
-    title: extractH1(body) ?? titleFallback(relPath, 'doc'),
+    title: extractH1(body) ?? validStringField(parsed.data.title) ?? titleFallback(relPath, 'doc'),
     order: explicitOrder ?? ORDER_SENTINEL,
     explicitOrder,
     status: explicitStatus ?? 'published',
@@ -860,6 +984,7 @@ async function indexDocFile(space: string, relPath: string, abs: string, mtime: 
     cover,
     updatedAt: mtime.toISOString(),
     body,
+    frontmatter: parsed.data as Record<string, unknown>,
   };
 }
 
@@ -1244,7 +1369,20 @@ async function indexFormFile(space: string, relPath: string, abs: string, mtime:
 export interface ScanStats {
   filesRead: number;
   filesSkipped: number;
+  /**
+   * Markdown-like files Folio does not index (`.mdx`, `.markdown`). A
+   * Docusaurus `docs/` written in MDX connected as a space of zero pages with
+   * no word about why (docs-as-code test, 14.10.2026); the scan logs this count.
+   */
+  skippedUnsupported: number;
+  /** Non-page files the space holds after the scan (`space_files`, wave 3: `assets/`, attachments, any other file). */
+  indexedFiles: number;
   durationMs: number;
+}
+
+/** Markdown dialects a folder may hold that Folio does not open as pages — counted, never indexed. */
+function isUnsupportedMarkdown(lowerName: string): boolean {
+  return lowerName.endsWith('.mdx') || lowerName.endsWith('.markdown');
 }
 
 export interface ScanProgress {
@@ -1267,21 +1405,35 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   const appliedRules = new Set<PageAccessRule>();
   const root = spaceDir(space);
   indexOnlyOrphanClaims.delete(space);
+  // The space's own ignore list (+ the defaults), read per scan so a PATCH on any instance is honoured by the next one.
+  const scanIgnoreRow = await queryOne<{ scan_ignore: string[] | null }>('SELECT scan_ignore FROM spaces WHERE slug = $1', [space]);
+  const ignoredAtRoot = compileScanIgnore(scanIgnoreRow?.scan_ignore);
 
-  const existingRows = await query<{ path: string; file_mtime: string | null; file_size: string | null; kind: string; title: string }>(
-    'SELECT path, file_mtime, file_size, kind, title FROM pages_index WHERE space_slug = $1',
+  const existingRows = await query<{ path: string; file_mtime: string | null; file_size: string | null; kind: string; title: string; meta_version: number }>(
+    'SELECT path, file_mtime, file_size, kind, title, meta_version FROM pages_index WHERE space_slug = $1',
     [space],
   );
   const existingByPath = new Map(existingRows.map((r) => [r.path, r]));
   const stillPresent = new Set<string>();
-  // Docs whose links get indexed once the walk is done: classifying a link needs every page's row to exist, and the walk upserts them one by one (a link to a page that sorts later would otherwise be recorded 'broken').
-  const pendingLinks: Array<{ id: string; space: string; relPath: string; body: string }> = [];
+  // Docs whose page index (indexV2: headings, blocks, tags, links) is rebuilt once the walk is done — after the
+  // stale rows are gone, so the resolution phase below sees the space as it is now.
+  const pendingMeta: Array<{ id: string; relPath: string; body: string; frontmatter: Record<string, unknown> | undefined }> = [];
+  // Paths whose page appeared, changed or was re-read (any kind): links that could mean them are re-resolved.
+  const readPaths: string[] = [];
   let filesRead = 0;
   let filesSkipped = 0;
+  let skippedUnsupported = 0;
   let failedFiles = 0;
   let lastFailure: unknown = null;
   let processedFiles = 0;
   let totalFiles = 0;
+  // Wave 3: every non-page file the walk meets, for the files index (spaceFiles.ts) — mirrored after the walk.
+  const scannedFiles: spaceFiles.ScannedFile[] = [];
+  const noteFile = async (abs: string, relPath: string): Promise<void> => {
+    if (spaceFiles.isUnlistedFilePath(relPath)) return;
+    const st = await fs.lstat(abs).catch(() => null);
+    if (st?.isFile()) scannedFiles.push({ path: relPath, size: st.size, mtime: st.mtime });
+  };
 
   if (onProgress) {
     async function count(absDir: string, isRoot: boolean): Promise<void> {
@@ -1291,6 +1443,7 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
         // (owner spec, 21.09.2026) — see the matching comment in walk() below.
         const isAgentRoot = isRoot && dirent.name === AGENT_FOLDER;
         if (!isAgentRoot && (dirent.name.startsWith('.') || dirent.name === 'assets')) continue;
+        if (isRoot && ignoredAtRoot(dirent.name, dirent.isDirectory())) continue;
         const abs = path.join(absDir, dirent.name);
         if (dirent.isDirectory()) await count(abs, false);
         else if (dirent.isFile()) {
@@ -1303,7 +1456,13 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
     onProgress({ processedFiles, totalFiles });
   }
 
-  async function walk(absDir: string, relDir: string): Promise<void> {
+  /**
+   * `mode`: 'pages' — the usual walk (pages indexed, every other file noted for
+   * the files index); 'files' — inside an `assets/` folder: nothing is a page
+   * there (as before), every file is a file; 'agent' — inside `.agent/`: pages
+   * only, nothing under a dot folder is ever listed as a file.
+   */
+  async function walk(absDir: string, relDir: string, mode: 'pages' | 'files' | 'agent' = 'pages'): Promise<void> {
     let dirents;
     try {
       dirents = await fs.readdir(absDir, { withFileTypes: true });
@@ -1315,26 +1474,36 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
 
     for (const dirent of dirents) {
       const name = dirent.name;
-      // "assets/" holds uploaded attachments, not pages; dotfiles are never
-      // pages — EXCEPT `.agent/` at the space's own content root (relDir ===
-      // '', i.e. this walk call is rooted at `root` itself): admin-only rules
-      // pages for the AI assistant (owner spec, 21.09.2026), indexed like any
-      // other page. A NESTED `.agent` (someone's `notes/.agent/x.md`) is not
-      // this folder and stays skipped, same as every other dotfile.
+      // Dotfiles are never pages (nor files of the files index) — EXCEPT
+      // `.agent/` at the space's own content root (relDir === '', i.e. this
+      // walk call is rooted at `root` itself): admin-only rules pages for the
+      // AI assistant (owner spec, 21.09.2026), indexed like any other page. A
+      // NESTED `.agent` (someone's `notes/.agent/x.md`) is not this folder and
+      // stays skipped, same as every other dotfile.
       const isAgentRoot = relDir === '' && name === AGENT_FOLDER;
       if (dirent.isFile() && isAtomicTempName(name)) {
         // A writeFileAtomic temp file its process never renamed (crash, kill).
         await removeOrphanTempFile(path.join(absDir, name));
         continue;
       }
-      if (!isAgentRoot && (name.startsWith('.') || name === 'assets')) continue;
+      if (!isAgentRoot && name.startsWith('.')) continue;
+      // The space's scan-ignore list (default `.obsidian/ .trash/ .git/`, which the dot rule above already covers) names TOP-LEVEL entries only.
+      if (relDir === '' && ignoredAtRoot(name, dirent.isDirectory())) continue;
       const abs = path.join(absDir, name);
       const relPath = relDir ? `${relDir}/${name}` : name;
       if (dirent.isDirectory()) {
-        await walk(abs, relPath);
+        // "assets/" (any depth) holds uploaded attachments, not pages: walked for the files index only (wave 3) —
+        // except under `.agent/`, where nothing is a file of the index and `assets/` holds no pages either.
+        if (name === 'assets' && mode === 'agent') continue;
+        const childMode = mode === 'agent' || isAgentRoot ? 'agent' : mode === 'files' || name === 'assets' ? 'files' : 'pages';
+        await walk(abs, relPath, childMode);
         continue;
       }
       if (!dirent.isFile()) continue;
+      if (mode === 'files' || (mode === 'pages' && name === 'assets')) {
+        await noteFile(abs, relPath);
+        continue;
+      }
       const lower = name.toLowerCase();
       // Round 26: `.table.md` MUST be checked BEFORE plain `.md` — a table file also
       // ends in `.md`, so `isMd` is deliberately defined to EXCLUDE anything `isTable`
@@ -1356,7 +1525,12 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
       const isOffice = officeFormat(lower) !== undefined;
       // Anything else — including a `.folio` metadata file (round 22) — is never a page:
       // skipped here, so it can never enter pages_index/the tree/search in the first place.
-      if (!isMd && !isBoard && !isTable && !isForm && !isPdf && !isOffice) continue;
+      if (!isMd && !isBoard && !isTable && !isForm && !isPdf && !isOffice) {
+        if (isUnsupportedMarkdown(lower)) skippedUnsupported++;
+        // Not a page: a file of the space (wave 3) — never one under `.agent/`, never a `*.folio` metadata file.
+        if (mode === 'pages') await noteFile(abs, relPath);
+        continue;
+      }
 
       const reportProcessed = () => {
         processedFiles++;
@@ -1378,13 +1552,17 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
       // from INSIDE the file (doc's H1, board's header) titleFallback is only
       // a fallback, so they are deliberately left to the bytes check alone.
       const derivedTitle = isPdf || isOffice ? titleFallback(relPath, isPdf ? 'pdf' : 'office') : undefined;
+      // Index v2: a document indexed by an older parser (meta_version below INDEX_META_VERSION — every row right
+      // after migration 042) is read again even though its bytes did not change, so new metadata reaches old rows.
+      const metaStale = isMd && existing !== undefined && Number(existing.meta_version) < INDEX_META_VERSION;
       const unchanged =
         existing &&
         existing.file_mtime &&
         existing.file_size !== null &&
         new Date(existing.file_mtime).getTime() === stat.mtime.getTime() &&
         Number(existing.file_size) === stat.size &&
-        (derivedTitle === undefined || existing.title === derivedTitle);
+        (derivedTitle === undefined || existing.title === derivedTitle) &&
+        !metaStale;
       if (unchanged) {
         filesSkipped++;
         reportProcessed();
@@ -1433,7 +1611,8 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
         continue;
       }
       if (!entry) continue;
-      if (entry.kind === 'doc') pendingLinks.push({ id: entry.id, space: entry.space, relPath: entry.relPath, body: entry.body ?? '' });
+      readPaths.push(entry.relPath);
+      if (entry.kind === 'doc') pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: entry.body ?? '', frontmatter: entry.frontmatter });
       reportProcessed();
     }
   }
@@ -1451,35 +1630,56 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   // A restored page whose file the loop above skipped as unchanged (somebody else's scan indexed it first) still gets its rule.
   if (restoredAccess) await reconcileRestoredAccess(space, restoredAccess, appliedRules);
 
+  // Paths whose page went away (or moved: its row now carries the new path): links that meant them are re-resolved.
+  const removedPaths = existingRows.map((r) => r.path).filter((p) => !stillPresent.has(p));
   if (stillPresent.size > 0) {
     await query('DELETE FROM pages_index WHERE space_slug = $1 AND NOT (path = ANY($2::text[]))', [space, [...stillPresent]]);
   } else {
     await query('DELETE FROM pages_index WHERE space_slug = $1', [space]);
   }
 
-  const reindexLinks = (id: string, relPath: string, body: string) =>
-    links.reindexPageLinks(id, space, relPath, body).catch((err) => {
-      // eslint-disable-next-line no-console
-      console.error(`[links] failed to index ${space}/${relPath}:`, err);
-    });
-  for (const p of pendingLinks) await reindexLinks(p.id, p.relPath, p.body);
-  // A source skipped as unchanged may still hold a 'broken' link whose target only appeared in THIS scan: re-run just those docs (only when the scan read something, so an idle rescan stays free).
-  if (filesRead > 0) {
-    const justIndexed = new Set(pendingLinks.map((p) => p.id));
-    const stale = await query<{ id: string; path: string }>(
-      `SELECT DISTINCT p.id, p.path FROM links l JOIN pages_index p ON p.id = l.source_page_id WHERE p.space_slug = $1 AND p.kind = 'doc' AND l.kind = 'broken'`,
-      [space],
-    );
-    for (const row of stale) {
-      if (justIndexed.has(row.id)) continue;
-      const body = await fs.readFile(path.join(root, row.path), 'utf8').then((raw) => matter(raw).content, () => null);
-      if (body !== null) await reindexLinks(row.id, row.path, body);
-    }
+  // The files index (wave 3), before the resolution below: a file that appeared resolves the links waiting for it,
+  // one that went away turns its links unresolved.
+  let filePaths: string[] = [];
+  let indexedFiles = 0;
+  try {
+    const synced = await spaceFiles.syncScannedFiles(space, scannedFiles);
+    filePaths = [...synced.added, ...synced.removed];
+    indexedFiles = synced.total;
+  } catch (err) {
+    if (isConnectionFailure(err)) throw err;
+    // eslint-disable-next-line no-console
+    console.error(`[scan] ${space}: could not update the files index:`, err);
   }
 
-  const stats: ScanStats = { filesRead, filesSkipped, durationMs: Date.now() - startedAt };
+  // Index v2, phase 1: the documents read in this scan (their links raw, unresolved).
+  for (const p of pendingMeta) {
+    await pageIndex.indexPageMeta({ id: p.id, space, relPath: p.relPath }, p.body, p.frontmatter).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error(`[index] failed to index ${space}/${p.relPath}:`, err);
+    });
+  }
+  // Phase 2: resolve against the pages as they are now. Only when something changed, so an idle rescan stays free;
+  // a small change resolves just the links it can affect, a big one (a first scan, a pull) the whole space.
+  if (readPaths.length > 0 || removedPaths.length > 0 || filePaths.length > 0) {
+    const changedPaths = [...readPaths, ...removedPaths, ...filePaths];
+    const scope: pageIndex.ResolveScope =
+      changedPaths.length > pageIndex.SCOPED_RESOLVE_MAX_PATHS
+        ? 'all'
+        : { sourceIds: pendingMeta.map((p) => p.id), changedPaths, targetIds: pendingMeta.map((p) => p.id) };
+    await pageIndex.resolveLinks(space, scope).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error(`[index] failed to resolve the links of ${space}:`, err);
+    });
+  }
+
+  const stats: ScanStats = { filesRead, filesSkipped, skippedUnsupported, indexedFiles, durationMs: Date.now() - startedAt };
   // eslint-disable-next-line no-console
   console.log(`[scan] ${space}: ${filesRead} read, ${filesSkipped} unchanged, ${stats.durationMs}ms`);
+  if (skippedUnsupported > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(`[scan] ${space}: ${skippedUnsupported} .mdx/.markdown file(s) skipped — only .md files become pages`);
+  }
   return stats;
 }
 
@@ -1650,6 +1850,9 @@ interface SpaceRow {
   asset_mode: SpaceAssetMode;
   /** Round 27 (access and rights): 'private' (default) or 'instance' — see docs/spec-access.md §3. Not exercised by this module's own access checks (that's server/auth/session.ts's effectiveRole/membershipsFor); carried through purely so SpaceInfo can report it. */
   visibility: SpaceVisibility;
+  /** Migration 041: the space's own extra scan-ignore entries, and the explicit light-footprint flag. */
+  scan_ignore: string[] | null;
+  light_footprint: boolean;
 }
 
 function rowToSpaceInfo(r: SpaceRow): SpaceInfo {
@@ -1662,6 +1865,8 @@ function rowToSpaceInfo(r: SpaceRow): SpaceInfo {
     pageCount: Number(r.page_count),
     assetMode: r.asset_mode,
     visibility: r.visibility,
+    ...(r.light_footprint || r.root_path !== '' ? { lightFootprint: true as const } : {}),
+    scanIgnore: r.scan_ignore ?? [],
     git: {
       repoUrl: r.repo_url,
       branch: r.branch,
@@ -1677,12 +1882,12 @@ function rowToSpaceInfo(r: SpaceRow): SpaceInfo {
   };
 }
 
-const SPACE_SELECT_BASE = `SELECT s.slug, s.name, s.repo_url, s.branch, s.root_path, s.status, s.last_sync_at, s.last_sync_by_name, s.last_sync_by_email, s.last_error, s.asset_mode, s.visibility,
+const SPACE_SELECT_BASE = `SELECT s.slug, s.name, s.repo_url, s.branch, s.root_path, s.status, s.last_sync_at, s.last_sync_by_name, s.last_sync_by_email, s.last_error, s.asset_mode, s.visibility, s.scan_ignore, s.light_footprint,
           (SELECT p.title FROM pages_index p WHERE p.space_slug = s.slug AND p.is_index AND p.path NOT LIKE '%/%') AS root_title,
           COUNT(p2.id) AS page_count
      FROM spaces s
      LEFT JOIN pages_index p2 ON p2.space_slug = s.slug`;
-const SPACE_GROUP_BY = `GROUP BY s.slug, s.name, s.repo_url, s.branch, s.root_path, s.status, s.last_sync_at, s.last_sync_by_name, s.last_sync_by_email, s.last_error, s.asset_mode, s.visibility`;
+const SPACE_GROUP_BY = `GROUP BY s.slug, s.name, s.repo_url, s.branch, s.root_path, s.status, s.last_sync_at, s.last_sync_by_name, s.last_sync_by_email, s.last_error, s.asset_mode, s.visibility, s.scan_ignore, s.light_footprint`;
 
 export async function listSpaces(): Promise<SpaceInfo[]> {
   const rows = await query<SpaceRow>(`${SPACE_SELECT_BASE} ${SPACE_GROUP_BY} ORDER BY s.name`);
@@ -2017,6 +2222,29 @@ async function uniqueRelPath(space: string, parentPath: string, stem: string, ex
   }
 }
 
+/** Characters a wikilink target (or a file name inside one) cannot carry: path separators, `#` `|` `^` (link syntax), `:`, `[` `]`, `%` and control characters. */
+const FILE_STEM_FORBIDDEN_RE = /[/\\#|^:[\]%\u0000-\u001f\u007f]/;
+/** Longest file name (bytes) most filesystems take is 255; room is left for `-12` and `.md`. */
+const FILE_STEM_MAX_BYTES = 240;
+
+/**
+ * `fileStem` of POST /api/pages (wave 2, Obsidian): the exact file name of a new doc without `.md`, so that
+ * `[[Note]]` resolves to the file "Create page “Note”" just made. Trimmed, a trailing `.md` dropped; refused
+ * when it is empty, starts with a dot, holds a character a link cannot carry, or would make the scan take the
+ * file for a data table / form (`x.table.md`, `x.form.md`).
+ */
+export function normalizeFileStem(raw: string): string {
+  let stem = raw.trim();
+  if (!stem) throw badRequest('fileStem must not be empty');
+  if (stem.startsWith('.')) throw badRequest('fileStem must not start with a dot');
+  stem = stem.replace(/\.md$/i, '').trim();
+  if (!stem) throw badRequest('fileStem must not be empty');
+  if (FILE_STEM_FORBIDDEN_RE.test(stem)) throw badRequest('fileStem must not contain / \\ # | ^ : [ ] % or control characters');
+  if (/\.(table|form)$/i.test(stem)) throw badRequest('fileStem must not end with .table or .form');
+  if (Buffer.byteLength(stem, 'utf8') > FILE_STEM_MAX_BYTES) throw badRequest('fileStem is too long');
+  return stem;
+}
+
 /**
  * Initial content for `createPage` — what the CLIENT already wrote into its
  * local Y.Doc while offline (see `decodeClientState` in collab.ts, the only
@@ -2047,6 +2275,8 @@ export async function createPage(body: CreatePageBody, initial?: CreatePageIniti
   // or a scan finding one already in the repo — never from this generic
   // "blank starter page" endpoint, which has no file bytes to create it with.
   if (body.kind === 'pdf' || body.kind === 'office') throw badRequest('pdf/office pages are created by uploading a file, not by this endpoint');
+  // Wave 2: an explicit file name for a DOC (ignored for every other kind); refused before anything is created.
+  const fileStem = body.kind === 'doc' && body.fileStem !== undefined ? normalizeFileStem(body.fileStem) : undefined;
   if (!(await spaceExists(body.space))) throw notFound('space');
 
   return withSpaceLock(body.space, async () => {
@@ -2161,7 +2391,7 @@ export async function createPage(body: CreatePageBody, initial?: CreatePageIniti
       };
       await fs.writeFile(path.join(spaceDir(body.space), relPath), serializeFormFile(formDoc), 'utf8');
     } else {
-      relPath = await uniqueRelPath(body.space, parentPath, translitSlug(title), '.md');
+      relPath = await uniqueRelPath(body.space, parentPath, fileStem ?? translitSlug(title), '.md');
       const abs = path.join(spaceDir(body.space), relPath);
       if (isLightFootprintSpace(body.space)) {
         // No front matter at all: the id rides a claim into the scan below — the
@@ -2260,17 +2490,21 @@ export async function changeFilePageExtension(id: string, newExt: string): Promi
   });
 }
 
-async function insertSpaceRow(slug: string, name: string, opts: { repoUrl?: string | null; branch?: string; rootPath?: string; status: string; createdBy: string | null }): Promise<void> {
+async function insertSpaceRow(
+  slug: string,
+  name: string,
+  opts: { repoUrl?: string | null; branch?: string; rootPath?: string; status: string; createdBy: string | null; lightFootprint?: boolean },
+): Promise<void> {
   try {
     await query(
-      `INSERT INTO spaces (slug, name, repo_url, branch, root_path, status, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [slug, name, opts.repoUrl ?? null, opts.branch ?? 'main', opts.rootPath ?? '', opts.status, opts.createdBy],
+      `INSERT INTO spaces (slug, name, repo_url, branch, root_path, status, created_by, light_footprint) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [slug, name, opts.repoUrl ?? null, opts.branch ?? 'main', opts.rootPath ?? '', opts.status, opts.createdBy, opts.lightFootprint === true],
     );
   } catch (err) {
     if (isUniqueViolation(err)) throw conflict('a space with this slug already exists (try again)');
     throw err;
   }
-  rootPathCache.set(slug, opts.rootPath ?? '');
+  rememberSpaceCaches(slug, opts.rootPath ?? '', opts.lightFootprint === true);
   // The personal "Undo" history (page_change_history) is keyed by slug and has no
   // foreign key, on purpose. Deleting a space leaves its rows alone — the space sits
   // in the trash and a restore puts it back under the same slug, where they are valid
@@ -2320,21 +2554,24 @@ async function uniqueSpaceSlug(name: string): Promise<string> {
 // to the product's root (dotfiles are skipped by Docusaurus/MkDocs/Jekyll, by
 // scanSpace and by fileAccess.ts). A legacy `<slug>.folio` that already sits
 // at the repo root keeps being read and written where it is (no migration).
+// A vault space (rootPath '' plus the light_footprint flag) gets the same
+// dotfile, `.<slug>.folio` at the repository root, so Obsidian's file list and
+// the vault owner's `git status` stay clean.
 // folioMetaPath is the one place that decides; every reader goes through it.
 // ---------------------------------------------------------------------------
 
 const FOLIO_META_EXT = '.folio';
 
 /** Where `slug`'s `.folio` lives in the repository at `repoDirAbs` with content root `rootPath` — see the section comment above. */
-export async function resolveFolioMetaPath(repoDirAbs: string, slug: string, rootPath: string): Promise<string> {
+export async function resolveFolioMetaPath(repoDirAbs: string, slug: string, rootPath: string, lightFootprint = false): Promise<string> {
   const legacy = path.join(repoDirAbs, `${slug}${FOLIO_META_EXT}`);
-  if (!rootPath || (await pathExists(legacy))) return legacy;
+  if ((!rootPath && !lightFootprint) || (await pathExists(legacy))) return legacy;
   return path.join(repoDirAbs, rootPath, `.${slug}${FOLIO_META_EXT}`);
 }
 
 /** The absolute path of this space's `.folio` metadata file (it may not exist yet). */
 export function folioMetaPath(space: string): Promise<string> {
-  return resolveFolioMetaPath(repoDir(space), space, rootPathCache.get(space) ?? '');
+  return resolveFolioMetaPath(repoDir(space), space, rootPathCache.get(space) ?? '', lightFootprintCache.has(space));
 }
 
 /**
@@ -2432,8 +2669,10 @@ export async function createSpaceFromRepo(opts: {
   createdBy: string | null;
   /** Https token, if any. Stored under the final slug BEFORE cloning (the askpass helper looks it up by slug), removed again if the clone/validation fails. */
   token?: string;
+  /** Light footprint (no ids in files) for a rootPath '' space. Undefined = on unless the repository was empty or already is a Folio space (a `<slug>.folio` at its root); a vault is always light by default. A non-empty rootPath is light whatever this says. */
+  lightFootprint?: boolean;
   onProgress?: (progress: { phase?: 'cloning' | 'scanning' | 'finalizing'; percent?: number; processedFiles?: number; totalFiles?: number }) => void;
-}): Promise<SpaceInfo> {
+}): Promise<SpaceInfo & { vaultDetected?: boolean }> {
   const trimmed = opts.name.trim();
   if (!trimmed) throw badRequest('space name is required');
   const rootPath = normalizeDirParam(opts.rootPath ?? '');
@@ -2446,12 +2685,14 @@ export async function createSpaceFromRepo(opts: {
     askpassScript = await ensureAskpassScript();
   }
 
+  let emptyRemote = false;
   try {
     // A brand-new instance repo (e.g. this instance's default content repo before
     // its first space) clones fine but has no branches at all — a --branch-scoped
     // clone fails outright against that. Detect it first via ls-remote (cheap,
     // version-independent) and bootstrap main + a root README instead of failing.
-    if (await git.isEmptyRemote(opts.repoUrl, askpassScript, slug)) {
+    emptyRemote = await git.isEmptyRemote(opts.repoUrl, askpassScript, slug);
+    if (emptyRemote) {
       opts.onProgress?.({ phase: 'cloning', percent: 10 });
       await git.cloneEmptyAndBootstrap(opts.repoUrl, dir, opts.branch, '# Folio content repo\n', askpassScript, slug);
     } else {
@@ -2491,10 +2732,20 @@ export async function createSpaceFromRepo(opts: {
   // previous space's name (for example `healthcheck` appeared as "BO Space").
   const effectiveName = trimmed;
 
+  // An Obsidian vault is recognised by its `.obsidian/` folder — at the content root, or at the repository root when the space is a folder inside it.
+  const vaultDetected = (await isObsidianVault(contentRoot)) || (rootPath !== '' && (await isObsidianVault(dir)));
+  // Light by default whenever the repository brings files Folio did not create: a vault, but just as well a
+  // vault whose `.obsidian/` is gitignored, a plain notes repo or a GitHub Wiki — the scan below must not add
+  // an `id` to any of them (the ids live in pages_index, see "Index-only page ids"). Native footprint stays
+  // for a repository that was empty (Folio bootstraps it and creates every page) and for one that already is
+  // a Folio space (a `<slug>.folio` at its root: its files carry Folio's ids already).
+  const lightFootprint = opts.lightFootprint ?? (vaultDetected || (!emptyRemote && !(await holdsNativeFolioMeta(contentRoot))));
+
   opts.onProgress?.({ phase: 'finalizing', percent: 56 });
-  await insertSpaceRow(slug, effectiveName, { repoUrl: opts.repoUrl, branch: opts.branch, rootPath, status: 'clean', createdBy: opts.createdBy });
+  await insertSpaceRow(slug, effectiveName, { repoUrl: opts.repoUrl, branch: opts.branch, rootPath, status: 'clean', createdBy: opts.createdBy, lightFootprint });
   try {
-    return await finishSpaceFromRepo(slug, dir, effectiveName, opts, askpassScript);
+    const info = await finishSpaceFromRepo(slug, dir, effectiveName, opts, askpassScript);
+    return vaultDetected ? { ...info, vaultDetected: true } : info;
   } catch (err) {
     // Anything that fails AFTER the row exists used to leave it behind: the
     // caller never reached setMembership, so the half-made space had no member
@@ -2503,7 +2754,7 @@ export async function createSpaceFromRepo(opts: {
     // Undo the whole attempt instead: the row (pages_index/ydoc rows go with it
     // by ON DELETE CASCADE), the clone, the stored token.
     await query('DELETE FROM spaces WHERE slug = $1', [slug]).catch(() => {});
-    rootPathCache.delete(slug);
+    forgetSpaceCaches(slug);
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
     if (opts.token) await removeSpaceToken(slug).catch(() => {});
     throw err;
@@ -2576,7 +2827,7 @@ export async function connectSpaceToRepo(
     /** Https token, if any — stored under the space's slug BEFORE the emptiness check (the askpass helper looks it up by slug), removed again if the connect doesn't go through for ANY reason (already connected, non-empty remote, or a git failure). */
     token?: string;
   },
-): Promise<SpaceInfo> {
+): Promise<SpaceInfo & { vaultDetected?: boolean }> {
   const repoUrl = opts.repoUrl.trim();
   if (!repoUrl) throw badRequest('repository URL is required');
   const branch = opts.branch.trim() || 'main';
@@ -2637,7 +2888,8 @@ export async function connectSpaceToRepo(
       await scanSpace(space);
       const updated = await getSpaceInfo(space);
       if (!updated) throw new Error('internal: space connected but not indexed');
-      return updated;
+      // Informational only: connecting changes nothing about the footprint (a vault registered from data/repos is already light).
+      return (await isObsidianVault(spaceDir(space))) ? { ...updated, vaultDetected: true } : updated;
     });
     connected = true;
     return info;
@@ -2659,23 +2911,38 @@ export async function connectSpaceToRepo(
  * comment for why getting this wrong is the easy way to misname a table).
  */
 export async function patchEntryContent(entry: PageIndexEntry, newBody: string): Promise<PageMeta> {
-  const title = extractH1(newBody) ?? titleFallback(entry.relPath, entry.kind);
+  // A doc's front matter lives in the file only (never in the body or the CRDT): read once, for the title
+  // fallback and for the page index.
+  const frontmatter = entry.kind === 'doc' ? await readFrontmatterData(entry.absPath) : undefined;
+  const title = extractH1(newBody) ?? validStringField(frontmatter?.title) ?? titleFallback(entry.relPath, entry.kind);
   const updatedAt = new Date().toISOString();
   await query(
     `UPDATE pages_index SET
        title = $2, updated_at = $3, plain_text = $4,
        tsv = setweight(to_tsvector('simple', unaccent($2)), 'A') || setweight(to_tsvector('simple', unaccent(coalesce($4, ''))), 'B')
      WHERE id = $1`,
-    [entry.id, title, updatedAt, entry.kind === 'doc' ? stripStatusDirectives(newBody) : newBody],
+    [entry.id, title, updatedAt, entry.kind === 'doc' ? docIndexText(newBody) : newBody],
   );
   entry.body = newBody;
   entry.title = title;
   entry.updatedAt = updatedAt;
-  await links.reindexPageLinks(entry.id, entry.space, entry.relPath, newBody).catch((err) => {
-    // eslint-disable-next-line no-console
-    console.error(`[links] failed to index ${entry.space}/${entry.relPath}:`, err);
-  });
+  // Index v2: headings, blocks, tags and links of a document, its own links resolved (tables/forms carry none).
+  if (entry.kind === 'doc') await pageIndex.reindexSavedPage({ id: entry.id, space: entry.space, relPath: entry.relPath }, newBody, frontmatter);
   return toPageMeta(entry);
+}
+
+/**
+ * A doc file's front matter data — its `title:` is the title when the body has
+ * no H1 (Hugo, Jest/Docusaurus and Jekyll keep the title there; indexDocFile
+ * reads it the same way), and the whole block feeds the page index. Never
+ * throws: an unreadable file or block just has none ({}).
+ */
+async function readFrontmatterData(abs: string): Promise<Record<string, unknown>> {
+  try {
+    return matter(await fs.readFile(abs, 'utf8')).data as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 /** Direct (non-collab) write of a doc's body. Also used by collab.ts's debounced/flush write-back. `overrideIcon`/`overrideCover` come from a defensively-parsed frontmatter block in the submitted markdown (splitLeadingFrontmatter) — undefined means "keep whatever was already there". */
@@ -2692,17 +2959,119 @@ export function resolveIconCoverOverride(override: string | null | undefined, cu
 }
 
 export async function writeDocBody(id: string, markdown: string, overrideIcon?: string | null, overrideCover?: string | null): Promise<PageMeta> {
-  const entry = await requireEntry(id);
-  if (entry.kind !== 'doc') throw badRequest('page is not a document');
-  const icon = resolveIconCoverOverride(overrideIcon, entry.icon);
-  const cover = resolveIconCoverOverride(overrideCover, entry.cover);
-  await persistDocFrontmatter(entry.absPath, { id: docFileId(entry.space, entry.id), order: entry.explicitOrder, status: entry.explicitStatus, icon, cover }, markdown);
-  if (icon !== entry.icon || cover !== entry.cover) {
-    await query('UPDATE pages_index SET icon = $2, cover = $3 WHERE id = $1', [id, icon ?? null, cover ?? null]);
+  return (await writeDocBodyIfChanged(id, markdown, overrideIcon, overrideCover)).meta;
+}
+
+/** Tail of the queue of file writers per document id (withDocFileLock). */
+const docFileLocks = new Map<string, Promise<void>>();
+
+/**
+ * Runs `fn` while no other read-modify-write of the same document's FILE runs
+ * in this process. A collab write-back (writeDocBodyIfChanged), an icon/cover
+ * or order change (setDocIconCover, setDocOrder), a title rename
+ * (renameDocDirect) and a properties save (rewriteDocFrontmatter) each read the
+ * file, merge, and write it back: interleaved, the later write put back the
+ * block — or the body — the earlier one had just replaced. Collab rooms and the
+ * REST API live in the same process, so an in-process queue per page is the
+ * whole guarantee (withSpaceLock is best effort and not re-entrant: a git sync
+ * holding it flushes rooms). Not re-entrant either — never call one of the
+ * functions above from inside another.
+ */
+export async function withDocFileLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const previous = docFileLocks.get(id) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => (release = resolve));
+  const tail = previous.then(() => mine);
+  docFileLocks.set(id, tail);
+  try {
+    await previous;
+    return await fn();
+  } finally {
+    release();
+    if (docFileLocks.get(id) === tail) docFileLocks.delete(id);
+  }
+}
+
+/**
+ * The front matter block of a document, outside the collaborative body
+ * (PUT /api/pages/:id/properties, server/properties.ts). Under
+ * withDocFileLock: `rewrite` gets the file as it is on disk NOW and returns
+ * the new file text, or null to write nothing (it may throw, e.g. a 409 —
+ * nothing is written then). It changes only the block; the body bytes are
+ * its business to keep.
+ *
+ * After a write the index row follows the file — Folio's keys (order, status,
+ * icon, cover) by the same validation a scan applies, so a foreign
+ * `status: deprecated` leaves the row without a status exactly as indexDocFile
+ * would; the title (`title:` counts when the body has no H1); search text; the
+ * page index (tags from `tags:`/`labels:`, `pages_index.frontmatter`). That row
+ * is what the next collab write-back merges into the block it finds on disk
+ * (writeDocBodyIfChanged), so an open room's flush keeps every key written
+ * here: foreign keys are never touched by that merge, and Folio's keys come
+ * back exactly as this left them. Not committed here: the caller nudges the
+ * debounced auto-commit, like a page save.
+ */
+export async function rewriteDocFrontmatter(
+  id: string,
+  rewrite: (raw: string, entry: PageIndexEntry) => string | null | Promise<string | null>,
+): Promise<{ entry: PageIndexEntry; written: boolean }> {
+  return withDocFileLock(id, async () => {
+    const entry = await requireEntry(id);
+    if (entry.kind !== 'doc') throw badRequest('page is not a document');
+    const raw = await fs.readFile(entry.absPath, 'utf8');
+    const next = await rewrite(raw, entry);
+    if (next === null || next === raw) return { entry, written: false };
+    await writeFileAtomic(entry.absPath, next);
+    // Options bypass gray-matter's per-input cache (and its half-parsed entry when YAML throws).
+    const parsed = matter(next, {});
+    const data = parsed.data as Record<string, unknown>;
+    const order = numericOrder(data.order);
+    const status = validStatus(data.status);
+    const icon = validStringField(data.icon);
+    const cover = validStringField(data.cover);
+    await query('UPDATE pages_index SET sort_order = $2, status = $3, icon = $4, cover = $5 WHERE id = $1', [id, order ?? null, status ?? null, icon ?? null, cover ?? null]);
+    entry.explicitOrder = order;
+    entry.order = order ?? ORDER_SENTINEL;
+    entry.explicitStatus = status;
+    entry.status = status ?? 'published';
     entry.icon = icon;
     entry.cover = cover;
-  }
-  return patchEntryContent(entry, markdown);
+    await patchEntryContent(entry, parsed.content);
+    return { entry, written: true };
+  });
+}
+
+/**
+ * writeDocBody, telling whether the file was written. A body that is already
+ * what the file says (line endings and the final newline aside) with no Folio
+ * key to change writes nothing at all — and leaves the index row as it is.
+ * That is every collab room closing on a page nobody edited: y-websocket
+ * flushes the room's writer when its last tab leaves (collab.ts writeState),
+ * and merely opening a page used to rewrite its file and commit it.
+ */
+export async function writeDocBodyIfChanged(
+  id: string,
+  markdown: string,
+  overrideIcon?: string | null,
+  overrideCover?: string | null,
+): Promise<{ meta: PageMeta; written: boolean }> {
+  // The entry is read INSIDE the lock: Folio's keys merged below are the row as the last writer of this file left it.
+  return withDocFileLock(id, async () => {
+    const entry = await requireEntry(id);
+    if (entry.kind !== 'doc') throw badRequest('page is not a document');
+    const icon = resolveIconCoverOverride(overrideIcon, entry.icon);
+    const cover = resolveIconCoverOverride(overrideCover, entry.cover);
+    const raw = await fs.readFile(entry.absPath, 'utf8').catch(() => undefined);
+    const next = mergeFrontmatter(raw, { id: docFileId(entry.space, entry.id), order: entry.explicitOrder, status: entry.explicitStatus, icon, cover }, markdown);
+    if (raw !== undefined && sameDocText(next, raw)) return { meta: toPageMeta(entry), written: false };
+    await writeFileAtomic(entry.absPath, next);
+    if (icon !== entry.icon || cover !== entry.cover) {
+      await query('UPDATE pages_index SET icon = $2, cover = $3 WHERE id = $1', [id, icon ?? null, cover ?? null]);
+      entry.icon = icon;
+      entry.cover = cover;
+    }
+    return { meta: await patchEntryContent(entry, markdown), written: true };
+  });
 }
 
 /**
@@ -2722,9 +3091,13 @@ export async function setDocIconCover(
   cover: string | undefined,
   currentBody: string,
 ): Promise<void> {
-  if (icon === entry.icon && cover === entry.cover) return;
-  await persistDocFrontmatter(entry.absPath, { id: docFileId(entry.space, entry.id), order: entry.explicitOrder, status: entry.explicitStatus, icon, cover }, currentBody);
-  await query('UPDATE pages_index SET icon = $2, cover = $3 WHERE id = $1', [entry.id, icon ?? null, cover ?? null]);
+  await withDocFileLock(entry.id, async () => {
+    // Order/status as the row says NOW (a properties save may have changed them since the caller read `entry`).
+    const fresh = (await getEntry(entry.id)) ?? entry;
+    if (icon === fresh.icon && cover === fresh.cover) return;
+    await persistDocFrontmatter(fresh.absPath, { id: docFileId(fresh.space, fresh.id), order: fresh.explicitOrder, status: fresh.explicitStatus, icon, cover }, currentBody);
+    await query('UPDATE pages_index SET icon = $2, cover = $3 WHERE id = $1', [entry.id, icon ?? null, cover ?? null]);
+  });
   entry.icon = icon;
   entry.cover = cover;
 }
@@ -2740,9 +3113,13 @@ export async function setDocIconCover(
  * actually has room for.
  */
 export async function setDocOrder(entry: PageIndexEntry, order: number, currentBody: string): Promise<void> {
-  if (order === entry.explicitOrder) return;
-  await persistDocFrontmatter(entry.absPath, { id: docFileId(entry.space, entry.id), order, status: entry.explicitStatus, icon: entry.icon, cover: entry.cover }, currentBody);
-  await query('UPDATE pages_index SET sort_order = $2 WHERE id = $1', [entry.id, order]);
+  await withDocFileLock(entry.id, async () => {
+    // Status/icon/cover as the row says NOW (see setDocIconCover).
+    const fresh = (await getEntry(entry.id)) ?? entry;
+    if (order === fresh.explicitOrder) return;
+    await persistDocFrontmatter(fresh.absPath, { id: docFileId(fresh.space, fresh.id), order, status: fresh.explicitStatus, icon: fresh.icon, cover: fresh.cover }, currentBody);
+    await query('UPDATE pages_index SET sort_order = $2 WHERE id = $1', [entry.id, order]);
+  });
   entry.order = order;
   entry.explicitOrder = order;
 }
@@ -2968,11 +3345,14 @@ export async function writeTableDoc(id: string, doc: TableDoc): Promise<PageMeta
 }
 
 export async function renameDocDirect(id: string, title: string): Promise<PageMeta> {
-  const entry = await requireEntry(id);
-  if (entry.kind !== 'doc') throw badRequest('page is not a document');
-  const current = entry.body ?? (await readFreshDocBody(id));
-  const updated = replaceFirstH1(current, title);
-  await persistDocFrontmatter(entry.absPath, { id: docFileId(entry.space, entry.id), order: entry.explicitOrder, status: entry.explicitStatus, icon: entry.icon, cover: entry.cover }, updated);
+  const { entry, updated } = await withDocFileLock(id, async () => {
+    const entry = await requireEntry(id);
+    if (entry.kind !== 'doc') throw badRequest('page is not a document');
+    const current = entry.body ?? (await readFreshDocBody(id));
+    const updated = replaceFirstH1(current, title);
+    await persistDocFrontmatter(entry.absPath, { id: docFileId(entry.space, entry.id), order: entry.explicitOrder, status: entry.explicitStatus, icon: entry.icon, cover: entry.cover }, updated);
+    return { entry, updated };
+  });
   // round 22: renaming the SPACE ROOT's title is, today, the only existing way a space's
   // effective display name changes post-creation — see noteSpaceNameChange's doc comment.
   if (entry.isIndex && entry.dirPath === '') {
@@ -3690,8 +4070,8 @@ export interface SlugRenameMove {
    * (mtime, size) happens to already be stale (e.g. a body write that never
    * itself triggered a rescan) can land, in the SAME scan pass, after this
    * page's own row has already been updated to its NEW path — at which
-   * point classify() can no longer resolve the OLD path and would silently
-   * reclassify that link 'broken' before anyone gets a chance to read it as
+   * point the link resolution (indexV2) can no longer resolve the OLD path and would
+   * mark that link 'unresolved' before anyone gets a chance to read it as
    * a backlink. Reading backlinks up front, before either rename or scan,
    * sidesteps that ordering race entirely.
    */
@@ -3877,8 +4257,18 @@ export interface TrashSpaceSnapshot extends TrashPagePayload {
   rootPath: string;
   visibility: string;
   assetMode: string;
-  /** Public-site publish settings (migration 038); absent in snapshots taken before it. */
-  publicSettings?: { subdomain: string | null; domain: string | null; allowDownload: boolean; allowAssistant: boolean };
+  /** Migration 041; absent in snapshots taken before it. */
+  scanIgnore?: string[];
+  lightFootprint?: boolean;
+  /** Public-site publish settings (migration 038; indexing/primaryHost: migration 040); absent in snapshots taken before it. */
+  publicSettings?: {
+    subdomain: string | null;
+    domain: string | null;
+    allowDownload: boolean;
+    allowAssistant: boolean;
+    indexing?: boolean;
+    primaryHost?: string;
+  };
   members: Array<{ userId: string; role: string }>;
   /** New admin-space deletion moves the complete repo (incl. .git), not only rootPath. */
   fullRepo?: boolean;
@@ -4000,12 +4390,16 @@ async function buildSpaceSnapshot(space: string): Promise<TrashSpaceSnapshot | n
     root_path: string;
     visibility: string;
     asset_mode: string;
+    scan_ignore: string[] | null;
+    light_footprint: boolean;
     public_subdomain: string | null;
     public_domain: string | null;
     public_allow_download: boolean;
     public_allow_assistant: boolean;
+    public_indexing: boolean;
+    public_primary_host: string;
   }>(
-    'SELECT name, repo_url, branch, root_path, visibility, asset_mode, public_subdomain, public_domain, public_allow_download, public_allow_assistant FROM spaces WHERE slug = $1',
+    'SELECT name, repo_url, branch, root_path, visibility, asset_mode, scan_ignore, light_footprint, public_subdomain, public_domain, public_allow_download, public_allow_assistant, public_indexing, public_primary_host FROM spaces WHERE slug = $1',
     [space],
   );
   if (!row) return null;
@@ -4023,11 +4417,15 @@ async function buildSpaceSnapshot(space: string): Promise<TrashSpaceSnapshot | n
     rootPath: row.root_path ?? '',
     visibility: row.visibility ?? 'private',
     assetMode: row.asset_mode ?? 'store',
+    scanIgnore: row.scan_ignore ?? [],
+    lightFootprint: row.light_footprint === true,
     publicSettings: {
       subdomain: row.public_subdomain,
       domain: row.public_domain,
       allowDownload: row.public_allow_download,
       allowAssistant: row.public_allow_assistant,
+      indexing: row.public_indexing,
+      primaryHost: row.public_primary_host,
     },
     members: members.map((m) => ({ userId: m.user_id, role: m.role })),
   };
@@ -4146,7 +4544,7 @@ export async function deletePage(id: string, deletedBy: string | null = null): P
       // Whole space deleted (its root index.md was targeted): dropping the spaces row
       // cascades to space_members, pages_index, and links (all FK ON DELETE CASCADE).
       await query('DELETE FROM spaces WHERE slug = $1', [space]);
-      rootPathCache.delete(space);
+      forgetSpaceCaches(space);
     } else {
       await scanSpace(space);
     }
@@ -4190,13 +4588,27 @@ export async function deleteSpace(space: string, deletedBy: string | null = null
       console.error(`[trash] failed to record ${record.trashPath} in trash_items (files are in data/.trash; the boot backfill will pick them up):`, err);
     });
     await query('DELETE FROM spaces WHERE slug = $1', [space]);
-    rootPathCache.delete(space);
+    forgetSpaceCaches(space);
   });
 }
 
 export async function resolve(space: string, rawPath: string): Promise<PageMeta> {
   if (!(await spaceExists(space))) throw notFound('space');
   const normalized = normalizeResolvePath(rawPath);
+  const found = await resolveNormalized(space, normalized);
+  if (found) return found;
+  // Tolerant fallbacks for links written for a git host or a site generator
+  // (docs-as-code test, 14.10.2026): a percent-encoded path
+  // (`Getting%20Started.md`, what `<Getting Started.md>` renders to) and a
+  // link without the extension (`getting-started`).
+  for (const candidate of links.tolerantLinkPaths(normalized)) {
+    const hit = await resolveNormalized(space, candidate);
+    if (hit) return hit;
+  }
+  throw notFound('page');
+}
+
+async function resolveNormalized(space: string, normalized: string): Promise<PageMeta | undefined> {
   const direct = await queryOne<PagesIndexRow>('SELECT * FROM pages_index WHERE space_slug = $1 AND path = $2', [space, normalized]);
   if (direct) return toPageMeta(rowToEntry(direct));
   const indexPath = normalized ? `${normalized}/index.md` : 'index.md';
@@ -4230,7 +4642,7 @@ export async function resolve(space: string, rawPath: string): Promise<PageMeta>
     );
     if (asSiblingReadme) return toPageMeta(rowToEntry(asSiblingReadme));
   }
-  throw notFound('page');
+  return undefined;
 }
 
 /**
@@ -4239,7 +4651,8 @@ export async function resolve(space: string, rawPath: string): Promise<PageMeta>
  * `docs/assets/`). Returns the Folio URL AND `path`, the file's path relative to
  * the content root — the editor turns the latter into a page-relative Markdown
  * link (`../assets/x.png`) so the image renders on the git host too. scanSpace
- * skips `assets` directories, so these files are never indexed as pages.
+ * never indexes anything under `assets` as a page; the file is indexed as a
+ * FILE (space_files, wave 3) here and by every scan.
  */
 export async function saveAssetIntoRepo(space: string, originalName: string, data: Buffer): Promise<{ url: string; path: string }> {
   if (!(await spaceExists(space))) throw notFound('space');
@@ -4254,6 +4667,8 @@ export async function saveAssetIntoRepo(space: string, originalName: string, dat
   while (await pathExists(path.join(assetsDir, finalName))) finalName = `${stem}-${n++}${ext}`;
 
   await fs.writeFile(path.join(assetsDir, finalName), data);
+  // Indexed as a file right away (wave 3): the embed the editor inserts next resolves to it without waiting for a scan.
+  await spaceFiles.recordFile(space, `assets/${finalName}`, path.join(assetsDir, finalName));
   return { url: `/files/${space}/assets/${finalName}`, path: `assets/${finalName}` };
 }
 
@@ -4261,6 +4676,33 @@ export async function saveAssetIntoRepo(space: string, originalName: string, dat
 export async function setSpaceAssetMode(space: string, assetMode: SpaceAssetMode): Promise<void> {
   const rows = await query<{ slug: string }>('UPDATE spaces SET asset_mode = $2 WHERE slug = $1 RETURNING slug', [space, assetMode]);
   if (rows.length === 0) throw notFound('space');
+}
+
+/**
+ * Space-admin scan settings (migration 041): the extra ignore list and the
+ * explicit light-footprint flag. A changed ignore list rescans the space under
+ * its lock, so the index matches the new list when this returns: pages under a
+ * newly ignored top-level entry leave it, pages under a released one enter it
+ * (ids of released pages are assigned like any scanned file — none are written
+ * into a light-footprint space). Files on disk are never touched.
+ */
+export async function setSpaceScanSettings(space: string, change: { scanIgnore?: string[]; lightFootprint?: boolean }): Promise<SpaceInfo> {
+  return withSpaceLock(space, async () => {
+    const before = await queryOne<{ scan_ignore: string[] | null; light_footprint: boolean; root_path: string }>(
+      'SELECT scan_ignore, light_footprint, root_path FROM spaces WHERE slug = $1',
+      [space],
+    );
+    if (!before) throw notFound('space');
+    const scanIgnore = change.scanIgnore ?? before.scan_ignore ?? [];
+    const lightFootprint = change.lightFootprint ?? before.light_footprint;
+    await query('UPDATE spaces SET scan_ignore = $2, light_footprint = $3 WHERE slug = $1', [space, scanIgnore, lightFootprint]);
+    rememberSpaceCaches(space, before.root_path ?? '', lightFootprint);
+    const listChanged = JSON.stringify(scanIgnore) !== JSON.stringify(before.scan_ignore ?? []);
+    if (listChanged) await scanSpace(space);
+    const info = await getSpaceInfo(space);
+    if (!info) throw notFound('space');
+    return info;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -4276,8 +4718,8 @@ export function getSpaceDir(space: string): string {
 export function getRootPath(space: string): string {
   return rootPathCache.get(space) ?? '';
 }
-export async function setSpaceRootPathCache(space: string, rootPath: string): Promise<void> {
-  rootPathCache.set(space, rootPath);
+export async function setSpaceRootPathCache(space: string, rootPath: string, lightFootprint = false): Promise<void> {
+  rememberSpaceCaches(space, rootPath, lightFootprint);
 }
 
 function isUniqueViolation(err: unknown): boolean {

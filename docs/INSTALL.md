@@ -247,8 +247,9 @@ the proxy's address and therefore one budget.
   restrictions, the `.agent` folder and templates. A restriction is **not
   inherited** by child pages, so look at the whole tree and lock each page that
   must stay closed.
-- Folio does not generate `robots.txt` or a sitemap for these sites yet, and
-  does not mark them `noindex`: search engines may index them.
+- Search engines may index a public site unless an administrator switches
+  "Allow search engines to index this site" off in the publishing dialog. The
+  public demo is never indexed.
 - A reader on a subdomain or custom domain is always anonymous, even if signed
   in on the main address (the session cookie belongs to one host). "Sign in" on
   the site leads to the main address.
@@ -259,7 +260,22 @@ the proxy's address and therefore one budget.
   the space, else of the instance, else `CURSOR_API_KEY`; the owner of that key
   pays for visitors' questions. Without any of them the site says that Folio AI
   is not set up.
-- The public demo cannot publish.
+- In the public demo the Folio Handbook is published at
+  <https://demo.foliowiki.online/public/folio-handbook>; you can try the dialog
+  there (no subdomain, custom domain or Ask), and everything resets daily.
+
+**Public sites: SEO files in the repository.** Folio answers `robots.txt` and
+`sitemap.xml` itself, per host, so there is nothing to place on disk and no new
+environment variable. The look of a site (title, description, language,
+favicon, logo, social image, stylesheet) and the PDF header and footer are
+files in a `.folio/` folder in the repository, at the root of the space's
+content (`docs/.folio/` for a space with a root path). Administrators edit
+them on the space's **Site & PDF settings** page; each save is a commit that
+the usual sync pushes like any page edit, so the files are ordinary repository
+content to back up and review. If your reverse proxy answers `/robots.txt` or
+`/sitemap.xml` itself, let the hosts of public sites reach Folio instead, and
+keep the original `Host` header: the canonical links and the sitemap are built
+from the primary address chosen in the publishing dialog.
 
 ## Updating
 

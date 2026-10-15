@@ -13,9 +13,10 @@ import { useDocumentTitle } from '../hooks';
 import { useSetHeaderInfo } from '../Shell';
 import { useRecordRecentVisit } from '../recents';
 import { useSpaceRole } from '../auth/AuthProvider';
-import { canEditContent } from '../auth/roles';
+import { canEditContent, canManageMembers } from '../auth/roles';
 import { OutlinePanel } from '../outline/OutlinePanel';
 import { PageChrome } from '../page-meta/PageChrome';
+import { PropertiesPanel } from '../properties/PropertiesPanel';
 import { PageConflictBanner } from '../git/PageConflictBanner';
 import { AgentDemoNote } from '../AgentDemoNote';
 import { trackPageOpen, type PageKind } from '../../analytics';
@@ -344,12 +345,17 @@ export function PageContent({ id }: PageContentProps) {
           {data.cover && (
             <PageChrome pageId={data.id} space={data.space} icon={data.icon} cover={data.cover} canEdit={chromeEditable} />
           )}
+          {/* Obsidian wave 3: the page's front matter, collapsed to one line by default. Not for a page that exists only on this device (the server has no file to read yet). */}
+          {!isLocalPage && (
+            <PropertiesPanel pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} />
+          )}
           <div className="ph-mask min-h-0 flex-1">
             <PageEditor
               pageId={data.id}
               space={data.space}
               pagePath={data.path}
               title={data.title}
+              lightFootprint={data.lightFootprint === true}
               collabUrl={collabUrl}
               readOnly={!editable}
               defaultMode={startEditing ? 'live' : 'reading'}

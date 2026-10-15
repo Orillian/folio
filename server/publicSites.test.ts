@@ -499,7 +499,7 @@ describe('public sites (real PG)', () => {
 
   it('PUT public-settings: an editor is refused, a space admin and an instance admin are not; duplicates and reserved hosts are rejected', async () => {
     const origin = 'https://folio.example.com';
-    const body = { subdomain: 'other-docs', domain: 'docs.other.org', allowDownload: false, allowAssistant: true };
+    const body = { subdomain: 'other-docs', domain: 'docs.other.org', allowDownload: false, allowAssistant: true, indexing: true, primaryHost: 'auto' as const };
 
     await expect(updatePublicSettings(editor, other, body, origin)).rejects.toMatchObject({ status: 403 });
     await expect(getPublicSettings(editor, other, origin)).rejects.toMatchObject({ status: 403 });
@@ -529,7 +529,7 @@ describe('public sites (real PG)', () => {
     const slug = (await storage.createSpace(`Pub Trash ${Date.now()}`, spaceAdmin.id)).slug;
     await authStore.setMembership(slug, instanceAdmin.id, 'admin');
     await authStore.setSpaceVisibility(slug, 'public');
-    const settings = { subdomain: 'trashed', domain: 'trashed.customer.org', allowDownload: true, allowAssistant: true };
+    const settings = { subdomain: 'trashed', domain: 'trashed.customer.org', allowDownload: true, allowAssistant: true, indexing: false, primaryHost: 'subdomain' as const };
     await updatePublicSettings(instanceAdmin, slug, settings, origin);
 
     await storage.deleteSpace(slug, instanceAdmin.id);

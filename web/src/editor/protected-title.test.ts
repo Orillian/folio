@@ -8,6 +8,20 @@ describe('protected page title', () => {
     expect(ensureProtectedPageTitle('#   \nBody', 'Page')).toBe('# Page\nBody');
   });
 
+  it('takes an H1 below blank lines as the title (no duplicate), and never eats a `##` line', () => {
+    expect(ensureProtectedPageTitle('\n# Tabs\n\nBody', 'Tabs')).toBe('\n# Tabs\n\nBody');
+    expect(ensureProtectedPageTitle('\n\n# Tabs', 'Other')).toBe('\n\n# Tabs');
+    expect(ensureProtectedPageTitle('## Section\n\nBody', 'Page')).toBe('# Page\n\n## Section\n\nBody');
+  });
+
+  it('does not guard a page whose first line is not its H1: a blank line above the heading stays editable', () => {
+    let state = EditorState.create({ doc: '\n# Tabs\n\nBody', extensions: [protectPageTitle()] });
+    state = state.update({ changes: { from: state.doc.length, insert: ' more' }, userEvent: 'input.type' }).state;
+    expect(state.doc.toString()).toBe('\n# Tabs\n\nBody more');
+    state = state.update({ changes: { from: 0, to: 1 }, userEvent: 'delete.backward' }).state;
+    expect(state.doc.toString()).toBe('# Tabs\n\nBody more');
+  });
+
   it('allows renaming but rejects deleting H1 and its line boundary', () => {
     let state = EditorState.create({ doc: '# Old\n\nBody', extensions: [protectPageTitle()] });
     state = state.update({ changes: { from: 2, to: 5, insert: 'New' }, userEvent: 'input.type' }).state;
