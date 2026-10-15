@@ -150,8 +150,8 @@ written; Dataview, Canvas and plugins are not supported.
 
 - **The first start after upgrading re-reads every document.** The page index
   has a new version, so the scan re-parses all documents once even when their
-  files have not changed. The server starts listening before that scan, so
-  there is no downtime, but on a large space expect a longer first scan, and
+  files have not changed. The server starts listening before that scan, but
+  a very large space can keep it from answering for a few minutes, and
   until it has passed over a space the new page metadata, tags and unresolved
   links for it are incomplete. The `links` table is now a view over the new
   `page_links` table, with the same columns for anything that still reads it.
