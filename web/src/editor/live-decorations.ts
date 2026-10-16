@@ -84,6 +84,8 @@ export type BlockSpec =
   | { kind: 'table'; from: number; to: number; source: string }
   | { kind: 'html'; from: number; to: number; html: string }
   | { kind: 'pagetree'; from: number; to: number; depth: number }
+  /** Obsidian Bases: a ```base fence shown as its view (base-widget.tsx). */
+  | { kind: 'base'; from: number; to: number; code: string }
   /** `<details>` spread over several blocks, collapsed into one disclosure widget. */
   | ({ kind: 'details' } & DetailsBlock);
 
@@ -597,6 +599,7 @@ export function computeBlockSpecs({ doc, tree, selection, ranges, live }: Comput
         if (node.name !== 'Document' && covered(claimed, node.from, node.to)) return false;
         if (node.name === 'FencedCode') {
           collectMermaid(doc, node.node, selection, specs);
+          collectBaseFence(doc, node.node, selection, specs);
           return false;
         }
         if (node.name === 'Image') {
@@ -668,6 +671,20 @@ function collectMermaid(doc: DocText, node: SyntaxNode, selection: readonly Span
   // both cases the author is looking at the code they are writing.
   if (touches(selection, fence.from, fence.to)) return;
   out.push({ kind: 'mermaid', from: fence.from, to: fence.to, code: fence.code });
+}
+
+/** A closed ```base fence at the start of a line, the caret outside it: its view replaces the YAML. */
+function collectBaseFence(doc: DocText, node: SyntaxNode, selection: readonly Span[], out: BlockSpec[]): void {
+  if (childrenNamed(node, 'CodeMark').length < 2) return;
+  const info = node.getChild('CodeInfo');
+  if (!info) return;
+  if (doc.sliceString(info.from, info.to).trim().split(/\s+/)[0].toLowerCase() !== 'base') return;
+  const first = doc.lineAt(node.from);
+  const last = doc.lineAt(node.to);
+  if (first.from !== node.from || last.from === first.from) return;
+  if (touches(selection, first.from, last.to)) return;
+  const text = node.getChild('CodeText');
+  out.push({ kind: 'base', from: first.from, to: last.to, code: text ? doc.sliceString(text.from, text.to) : '' });
 }
 
 /**

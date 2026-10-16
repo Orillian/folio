@@ -29,20 +29,35 @@
  * A deleted target therefore keeps its inbound rows: SET NULL, then 'unresolved'
  * here; a page that appears (created, restored from the trash, synced in)
  * resolves the links waiting for it.
+ *
+ * App links (16.10.2026: `/s/<space>/p/<id>`, the space home, a folder route —
+ * resolve.ts parseAppLink) name their page by id or route, in ANY space: the
+ * pages they name are loaded by id across spaces (loadAppPages), a page of
+ * another space is recorded with its route as target_path. Every resolution of
+ * a space retries its unresolved app links; a page of ANOTHER space deleted or
+ * restored is noticed at this space's next resolution (its rows keep pointing at
+ * nothing meanwhile: FK SET NULL, read as unresolved).
  */
-import type { LinkKind } from '../../shared/contracts.js';
+import type { CanvasDocument, LinkKind } from '../../shared/contracts.js';
 import { INDEX_META_VERSION } from '../../shared/contracts.js';
 import { query, withTransaction } from '../db/pool.js';
+import { timeSlicer } from '../markdownAst.js';
+import { instanceHost } from '../publicUrl.js';
 import { buildPagePathIndex, wikilinkBasenames } from '../wikilinks.js';
-import { parsePageMeta, type ParsedPageMeta } from './parse.js';
+import { parseCanvasMeta, parsePageMetaAsync, type ParsedPageMeta } from './parse.js';
 import {
+  APP_LINK_SHAPE,
+  appDirCandidates,
   appFilesPath,
   classifyLinkTarget,
   fileLinkCandidates,
   isWikiSyntax,
   markdownLinkCandidates,
   NO_PAGES,
+  parseAppLink,
   resolveRelative,
+  type AppLinkRef,
+  type AppPageLookup,
   type FileLookup,
   type PageLookup,
 } from './resolve.js';
@@ -86,10 +101,18 @@ export interface IndexedPage {
  * resolve — call resolveLinks next.
  */
 export async function indexPageMeta(page: IndexedPage, body: string, frontmatter: Record<string, unknown> | null | undefined): Promise<ParsedPageMeta> {
-  const meta = parsePageMeta(body, frontmatter);
+  return writePageMeta(page, await parsePageMetaAsync(body, frontmatter), frontmatter);
+}
+
+/** Phase 1 for a canvas page: its file cards, the links and tags of its text cards (parse.ts parseCanvasMeta). */
+export async function indexCanvasMeta(page: IndexedPage, doc: CanvasDocument, frontmatter: Record<string, unknown> | null | undefined): Promise<ParsedPageMeta> {
+  return writePageMeta(page, parseCanvasMeta(doc, frontmatter), frontmatter);
+}
+
+async function writePageMeta(page: IndexedPage, meta: ParsedPageMeta, frontmatter: Record<string, unknown> | null | undefined): Promise<ParsedPageMeta> {
   const sourceDir = posixParent(page.relPath);
   // No pages and no files known yet: the kinds are provisional (phase 2 settles them); the space makes `/files/<space>/…` a path of the space.
-  const provisional: PageLookup = { ...NO_PAGES, space: page.space };
+  const provisional: PageLookup = { ...NO_PAGES, space: page.space, appHost: instanceHost() };
   const links = meta.links.map((l) => ({ ...l, target: classifyLinkTarget(l.syntax, l.linkPath, sourceDir, provisional) }));
   await withTransaction(async (client) => {
     // Two saves of one page (a debounced write-back and a REST PUT) index one after the other: without the row
@@ -193,9 +216,12 @@ const LINK_ROW_COLUMNS = `l.id::text AS id, s.path AS source_path, l.syntax, l.l
 /**
  * External rows never change kind — except an app-absolute `/files/…` URL,
  * which is a path of the space when it names this space (rows indexed before
- * wave 3 still carry 'external' for it).
+ * wave 3 still carry 'external' for it), and a Folio app URL (`/s/…`, or an
+ * absolute one whose host may be — or become — the instance's: PUBLIC_URL is
+ * read at resolution time).
  */
-const RESOLVABLE_ROW = `(l.kind <> 'external' OR l.link_path LIKE '/files/%')`;
+const APP_ROW = `(l.link_path LIKE '/s/%' OR l.link_path ~* '^https?://[^/?#]+/s/')`;
+const RESOLVABLE_ROW = `(l.kind <> 'external' OR l.link_path LIKE '/files/%' OR ${APP_ROW})`;
 
 /** Every folder `paths` live in (`a/b/c.png` -> `a`, `a/b`). */
 function foldersOf(paths: Iterable<string>): Set<string> {
@@ -269,6 +295,40 @@ async function loadFiles(space: string, wanted: Wanted | null, allPagePaths: str
   return { has: (p) => exact.has(p), wikiIndex: buildPagePathIndex(paths), isFolder: (p) => folders.has(p) };
 }
 
+/** The pages `refs` may name — by id in any space, and the index pages of the folder routes — in two queries at most. */
+async function loadAppPages(refs: AppLinkRef[]): Promise<AppPageLookup> {
+  const ids = [...new Set(refs.flatMap((r) => (r.kind === 'page' ? [r.id] : [])))];
+  const dirRefs = refs.filter((r): r is Extract<AppLinkRef, { kind: 'dir' }> => r.kind === 'dir');
+  const byId = new Map<string, { space: string; path: string }>();
+  if (ids.length > 0) {
+    const rows = await query<{ id: string; space_slug: string; path: string }>(
+      `SELECT id, space_slug, path FROM pages_index WHERE id = ANY($1::text[]) AND kind <> 'folder'`,
+      [ids],
+    );
+    for (const r of rows) byId.set(r.id, { space: r.space_slug, path: r.path });
+  }
+  const atPath = new Map<string, { id: string; path: string }>();
+  if (dirRefs.length > 0) {
+    const spaces = [...new Set(dirRefs.map((r) => r.space))];
+    const paths = [...new Set(dirRefs.flatMap((r) => appDirCandidates(r.dir)))];
+    const rows = await query<{ id: string; space_slug: string; path: string }>(
+      `SELECT id, space_slug, path FROM pages_index WHERE space_slug = ANY($1::text[]) AND path = ANY($2::text[]) AND kind <> 'folder'`,
+      [spaces, paths],
+    );
+    for (const r of rows) atPath.set(`${r.space_slug}\u0000${r.path}`, { id: r.id, path: r.path });
+  }
+  return {
+    byId: (id) => byId.get(id) ?? null,
+    dirPage: (space, dir) => {
+      for (const candidate of appDirCandidates(dir)) {
+        const hit = atPath.get(`${space}\u0000${candidate}`);
+        if (hit) return hit;
+      }
+      return null;
+    },
+  };
+}
+
 /** Every file of the space (`space_files`) as the link resolver sees it - for readers outside the index (the exports resolve an attachment by name the way the index did). */
 export function loadSpaceFiles(space: string): Promise<FileLookup> {
   return loadFiles(space, null, []);
@@ -293,6 +353,7 @@ export async function resolveLinks(space: string, scope: ResolveScope): Promise<
         WHERE s.space_slug = $1 AND ${RESOLVABLE_ROW}
           AND (l.source_page_id = ANY($2::text[])
                OR (l.kind = 'page' AND l.target_page_id IS NULL)
+               OR (l.kind = 'unresolved' AND ${APP_ROW})
                OR lower(regexp_replace(l.target_path, '^.*/', '')) = ANY($3::text[])
                OR lower(regexp_replace(l.link_path, '^.*/', '')) = ANY($3::text[]))`,
       [space, sourceIds, keys],
@@ -313,6 +374,14 @@ export async function resolveLinks(space: string, scope: ResolveScope): Promise<
         if (isWikiSyntax(row.syntax)) {
           for (const b of wikilinkBasenames(row.link_path)) basenames.add(b);
         } else {
+          // A canvas file card names its target from the space root, exactly (resolve.ts).
+          if (row.syntax === 'canvas') {
+            const exactPath = resolveRelative('', row.link_path);
+            if (exactPath) exact.add(exactPath);
+            continue;
+          }
+          // A Folio app URL names its page by id or route, not by a path of this space (loadAppPages below).
+          if (APP_LINK_SHAPE.test(row.link_path)) continue;
           const appPath = row.link_path.startsWith('/') ? appFilesPath(row.link_path, space) : null;
           // A markdown link may name an attachment by its name too (resolve.ts): the files named like it.
           if (appPath === null) for (const b of wikilinkBasenames(row.link_path)) basenames.add(b);
@@ -327,9 +396,20 @@ export async function resolveLinks(space: string, scope: ResolveScope): Promise<
       }
       pages = await loadPages(space, { exact: [...exact], basenames: [...basenames], folders: [...folders] });
     }
+    // App links (`/s/<space>/p/<id>`, the space home, a folder route): the pages they name, in any space.
+    const appHost = instanceHost();
+    const appRefs = rows.flatMap((row) => {
+      if (row.syntax === 'canvas' || isWikiSyntax(row.syntax)) return [];
+      const ref = parseAppLink(row.link_path, appHost);
+      return ref ? [ref] : [];
+    });
+    pages = { ...pages, appHost, app: await loadAppPages(appRefs) };
 
     const changed: Array<{ id: string; kind: LinkKind; targetPath: string; targetPageId: string | null }> = [];
+    // A whole space can hold a hundred thousand links: classified in slices, never holding the event loop long.
+    const tick = timeSlicer();
     for (const row of rows) {
+      await tick();
       const next = classifyLinkTarget(row.syntax, row.link_path, posixParent(row.source_path), pages);
       if (next.kind !== row.kind || next.targetPath !== row.target_path || next.targetPageId !== row.target_page_id) {
         changed.push({ id: row.id, ...next });
@@ -392,6 +472,17 @@ export async function notifyIndexResolved(space: string): Promise<void> {
  * Phase 1 + the cheap phase 2 for one saved document: its own links, the
  * fragments of links into it. Errors are logged, never thrown into the save.
  */
+/** reindexSavedPage for a canvas page (its properties changed): its cards are indexed again with the new front matter. */
+export async function reindexSavedCanvas(page: IndexedPage, doc: CanvasDocument, frontmatter: Record<string, unknown> | null | undefined): Promise<void> {
+  try {
+    await indexCanvasMeta(page, doc, frontmatter);
+    await resolveLinks(page.space, { sourceIds: [page.id], targetIds: [page.id] });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[index] failed to index ${page.space}/${page.relPath}:`, err);
+  }
+}
+
 export async function reindexSavedPage(page: IndexedPage, body: string, frontmatter: Record<string, unknown> | null | undefined): Promise<void> {
   try {
     await indexPageMeta(page, body, frontmatter);

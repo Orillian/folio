@@ -10,5 +10,17 @@
   "loading": "Завантаження форми…",
   "notFound": "Форму не знайдено",
   "viewTable": "Переглянути таблицю",
-  "checkboxYes": "Так"
+  "checkboxYes": "Так",
+  "answersRestored": "Відновлено ваші відповіді від {{time}}.",
+  "answersClear": "Очистити",
+  "answersSkipped": "Файли не зберігаються — додайте їх знову: {{fields}}.",
+  "choiceNone": "Варіантів вибору ще немає",
+  "choiceClear": "Скасувати вибір",
+  "choicePlaceholder": "Оберіть…",
+  "choiceSearch": "Пошук…",
+  "choiceNothingFound": "Нічого не знайдено",
+  "choiceRemove": "Прибрати {{value}}",
+  "linkUrl": "Адреса посилання",
+  "linkLabel": "Підпис (необов'язково)",
+  "answersDropped": "Цих відповідей більше немає серед варіантів, тому їх пропущено: {{fields}}."
 }

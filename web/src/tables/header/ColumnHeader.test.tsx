@@ -17,8 +17,8 @@ import '../i18n/register';
  * that content into the document — which a `title` attribute never would.
  */
 
-// The app is pinned to Russian in tests (see markdown/PageTree.test.tsx),
-// so assertions read against the ru bundle.
+// The app is pinned to English in tests (see markdown/PageTree.test.tsx),
+// so assertions read against the en bundle.
 beforeEach(async () => {
   await i18next.changeLanguage('en');
 });

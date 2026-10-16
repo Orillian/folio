@@ -14,8 +14,15 @@
  */
 import { stripOfmComments } from '../shared/ofm/plainText.js';
 import { stripStatusDirectives } from '../shared/status.js';
-import { parseMarkdownAst } from './markdownAst.js';
+import { parseMarkdownAstAsync, parseMarkdownAstChunked } from './markdownAst.js';
 
 export function docIndexText(body: string): string {
-  return stripStatusDirectives(stripOfmComments(body, parseMarkdownAst));
+  return stripStatusDirectives(stripOfmComments(body, parseMarkdownAstChunked));
+}
+
+/** docIndexText that yields to the event loop while it parses a big body with comments (the scan's upsert). */
+export async function docIndexTextAsync(body: string): Promise<string> {
+  if (!body.includes('%%')) return stripStatusDirectives(body);
+  const tree = await parseMarkdownAstAsync(body);
+  return stripStatusDirectives(stripOfmComments(body, () => tree));
 }

@@ -500,9 +500,12 @@ export async function getPageAtSha(pageId: string, sha: string): Promise<PageAtS
     throw notFound('revision');
   }
   if (entry.kind === 'board') return { svg: raw };
+  // A canvas: the file as it was (JSON), never restored through Folio (POST restore refuses it).
+  if (entry.kind === 'canvas') return { markdown: raw };
   // Round FORMS: same "restore trap" as a table — a form's definition
   // (fields/table ref/public/…) lives in frontmatter too, so stripping it
   // here would restore a form with no fields at all.
   if (entry.kind === 'table' || entry.kind === 'form') return { markdown: raw }; // raw file — schema-in-frontmatter must survive a restore
+  if (entry.kind === 'base') return { markdown: raw }; // a `.base` is YAML, never a document with front matter
   return { markdown: stripFrontmatterBody(raw) };
 }

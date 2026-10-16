@@ -1,4 +1,5 @@
 import type { TableColumn, TableDoc, TableRow } from '@shared/contracts';
+import { STATUS_PRESET_OPTIONS } from '@shared/tables/columnDefaults';
 
 /**
  * Round 26 (DATA TABLES) — mock TableDoc for wave 1.
@@ -14,17 +15,8 @@ import type { TableColumn, TableDoc, TableRow } from '@shared/contracts';
  * named in spec §0.3 — so that eyeballing the UI shows something realistic.
  */
 
-/** The normative status preset from spec §3, in its normative order. */
-export const STATUS_OPTIONS: NonNullable<TableColumn['options']> = [
-  { value: 'PLANNING', color: 'purple', description: 'planned' },
-  { value: 'WAITING', color: 'gray', description: 'waiting on others' },
-  { value: 'QUESTIONS', color: 'orange', description: 'answers needed' },
-  { value: 'IN PROG', color: 'blue', description: 'in progress' },
-  { value: 'DONE', color: 'green', description: 'done' },
-  { value: 'REPLAN', color: 'yellow', description: 'being moved' },
-  { value: 'FAILED', color: 'red', description: 'failed' },
-  { value: 'CANCELLED', color: 'gray', description: 'cancelled' },
-];
+/** The normative status preset from spec §3 — shared with the server's MCP tools (shared/tables/columnDefaults.ts). */
+export const STATUS_OPTIONS: NonNullable<TableColumn['options']> = STATUS_PRESET_OPTIONS;
 
 export const MOCK_COLUMNS: TableColumn[] = [
   {

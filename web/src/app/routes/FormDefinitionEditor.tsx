@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
@@ -7,6 +7,10 @@ import { serializeFormFile } from '@shared/forms/codec';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
 import { Modal } from '../ui/Modal';
+import { useAuthOptional } from '../auth/AuthProvider';
+import { builderDraftKey, formatDraftTime, useBeforeUnloadWarning, useDraftAutosave } from '../../forms/draftStorage';
+import { PENDING_PREFIX, loadBuilderDraft, maxPendingCounter, snapshotJson, snapshotOfForm } from './formBuilderDraft';
+import type { BuilderSnapshot } from './formBuilderDraft';
 import { COLUMN_TYPES, ColumnTypeIcon, typeLabelKey } from '../../tables/cells/typeMeta';
 import { STATUS_OPTIONS } from '../../tables/fixtures';
 import '../i18n/register';
@@ -59,8 +63,6 @@ export interface FormDefinitionEditorProps {
  * out in the UI itself (deleteFieldHint) so nobody assumes the column is
  * gone too.
  */
-const PENDING_PREFIX = 'pending-column:';
-
 const inputClassName =
   'rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-sm text-neutral-900 outline-none focus:border-neutral-500 dark:border-neutral-700 dark:text-neutral-100 dark:focus:border-neutral-500';
 
@@ -73,9 +75,17 @@ const inputClassName =
  * form's own free prose, if it has any — is this editor's job to preserve).
  */
 export function FormDefinitionEditor({ pageId, form, tableId, tableError, onClose, onSaved }: FormDefinitionEditorProps) {
-  const { t } = useTranslation('app');
+  const { t, i18n } = useTranslation('app');
   const { t: tTables } = useTranslation('tables');
   const errorText = useApiErrorText();
+  const auth = useAuthOptional();
+  const draftKey = builderDraftKey(pageId, auth?.user.id);
+  const baseJson = useMemo(() => snapshotJson(snapshotOfForm(form)), [form]);
+  // A stored draft is only OFFERED (banner), never applied silently, and
+  // autosave stays paused until the owner picks — otherwise the untouched
+  // saved form would overwrite the very draft being offered.
+  const [offered, setOffered] = useState(() => loadBuilderDraft(draftKey, form));
+  const [confirmingClose, setConfirmingClose] = useState(false);
   const [title, setTitle] = useState(form.title);
   const [description, setDescription] = useState(form.description ?? '');
   const [isPublic, setIsPublic] = useState(form.public);
@@ -83,7 +93,7 @@ export function FormDefinitionEditor({ pageId, form, tableId, tableError, onClos
   const [fields, setFields] = useState<FormField[]>(form.fields);
   const [addingField, setAddingField] = useState(false);
   const [newFieldName, setNewFieldName] = useState('');
-  const pendingCounterRef = useRef(0);
+  const pendingCounterRef = useRef(maxPendingCounter(form.fields));
 
   function updateField(index: number, patch: Partial<FormField>) {
     setFields((prev) => prev.map((f, i) => (i === index ? { ...f, ...patch } : f)));
@@ -108,6 +118,36 @@ export function FormDefinitionEditor({ pageId, form, tableId, tableError, onClos
     setFields((prev) => [...prev, { columnId: `${PENDING_PREFIX}${pendingCounterRef.current}`, label, required: false, kind: type }]);
     setAddingField(false);
     setNewFieldName('');
+  }
+
+  const snapshot = useMemo<BuilderSnapshot>(
+    () => ({ title, description, isPublic, submitButton, fields }),
+    [title, description, isPublic, submitButton, fields],
+  );
+  const dirty = snapshotJson(snapshot) !== baseJson;
+  const autosave = useDraftAutosave(draftKey, { base: baseJson, snapshot }, { enabled: !offered, persist: dirty });
+  useBeforeUnloadWarning(dirty);
+
+  function restoreDraft() {
+    if (!offered) return;
+    const s = offered.snapshot;
+    setTitle(s.title);
+    setDescription(s.description);
+    setIsPublic(s.isPublic);
+    setSubmitButton(s.submitButton);
+    setFields(s.fields);
+    pendingCounterRef.current = Math.max(pendingCounterRef.current, maxPendingCounter(s.fields));
+    setOffered(null);
+  }
+  function discardDraft() {
+    autosave.clear();
+    autosave.resume();
+    setOffered(null);
+  }
+  /** X / Cancel / Escape / backdrop: with edits on screen ask first, otherwise just close. */
+  function requestClose() {
+    if (dirty) setConfirmingClose(true);
+    else onClose();
   }
 
   const save = useMutation({
@@ -144,22 +184,32 @@ export function FormDefinitionEditor({ pageId, form, tableId, tableError, onClos
       };
       return api.updatePage(pageId, { markdown: serializeFormFile(doc) });
     },
-    onSuccess: onSaved,
+    onSuccess: () => {
+      // Saved for real — the local draft has done its job.
+      autosave.clear();
+      onSaved();
+    },
   });
 
   return (
+    <>
     <Modal
       title={t('routes.form.editDefinition')}
-      onClose={onClose}
+      onClose={requestClose}
       size="lg"
       footer={
         <>
-          <button type="button" onClick={onClose} className="rounded-md px-3 py-1.5 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800">
+          {dirty && !offered && (
+            <span className="mr-auto self-center text-xs text-neutral-400 dark:text-neutral-500" role="status">
+              {t('routes.form.draftSaved')}
+            </span>
+          )}
+          <button type="button" onClick={requestClose} className="rounded-md px-3 py-1.5 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800">
             {t('ui.cancel')}
           </button>
           <button
             type="button"
-            disabled={save.isPending}
+            disabled={save.isPending || Boolean(offered)}
             onClick={() => save.mutate()}
             className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
           >
@@ -168,7 +218,26 @@ export function FormDefinitionEditor({ pageId, form, tableId, tableError, onClos
         </>
       }
     >
-      <div className="flex flex-col gap-3">
+      {offered && (
+        <div
+          role="alert"
+          className="mb-3 flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <p>
+            {t('routes.form.draftBanner', { time: formatDraftTime(offered.savedAt, i18n.language) })}
+            {offered.stale && ` ${t('routes.form.draftStale')}`}
+          </p>
+          <div className="flex gap-2">
+            <button type="button" onClick={restoreDraft} className="rounded-md bg-neutral-900 px-2.5 py-1 text-white dark:bg-white dark:text-neutral-900">
+              {t('routes.form.draftRestore')}
+            </button>
+            <button type="button" onClick={discardDraft} className="rounded-md px-2.5 py-1 hover:bg-amber-100 dark:hover:bg-amber-900/40">
+              {t('routes.form.draftDiscard')}
+            </button>
+          </div>
+        </div>
+      )}
+      <fieldset disabled={Boolean(offered)} className={`m-0 flex min-w-0 flex-col gap-3 border-0 p-0 ${offered ? 'opacity-50' : ''}`}>
         {save.isError && (
           <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
             {errorText(save.error)}
@@ -279,7 +348,36 @@ export function FormDefinitionEditor({ pageId, form, tableId, tableError, onClos
             </button>
           )}
         </div>
-      </div>
+      </fieldset>
     </Modal>
+    {confirmingClose && (
+      <Modal
+        title={t('routes.form.closeTitle')}
+        onClose={() => setConfirmingClose(false)}
+        footer={
+          <>
+            <button type="button" onClick={() => setConfirmingClose(false)} className="rounded-md px-3 py-1.5 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800">
+              {t('routes.form.closeKeepEditing')}
+            </button>
+            <button type="button" onClick={onClose} className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800">
+              {t('routes.form.closeKeepDraft')}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                autosave.clear();
+                onClose();
+              }}
+              className="rounded-md bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700"
+            >
+              {t('routes.form.closeDiscard')}
+            </button>
+          </>
+        }
+      >
+        <p>{t('routes.form.closeBody')}</p>
+      </Modal>
+    )}
+    </>
   );
 }

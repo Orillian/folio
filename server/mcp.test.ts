@@ -63,11 +63,11 @@ describe('server/mcp.ts — server identity', () => {
 describe('server/mcp.ts — tool annotations and instructions', () => {
   const actor: McpActor = { user: { id: 'nobody' } as User, scopes: ['read'], tokenId: 'test-annotations-token' };
 
-  it('annotates all 26 tools: a title, explicit booleans, and readOnlyHint or destructiveHint', async () => {
+  it('annotates all 40 tools: a title, explicit booleans, and readOnlyHint or destructiveHint', async () => {
     const { client, close } = await connectedClient(actor);
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(26);
+      expect(tools).toHaveLength(40);
       for (const tool of tools) {
         const a = tool.annotations;
         expect(a?.title ?? tool.title, `${tool.name} title`).toBeTruthy();
@@ -78,16 +78,19 @@ describe('server/mcp.ts — tool annotations and instructions', () => {
         if (a?.readOnlyHint) expect(a.destructiveHint).toBe(false);
       }
       const readOnly = tools.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name).sort();
-      expect(readOnly).toHaveLength(16);
+      expect(readOnly).toHaveLength(20);
       expect(readOnly).toContain('search_pages');
-      for (const name of ['get_page_metadata', 'list_unresolved_links', 'list_orphans']) expect(readOnly).toContain(name);
+      for (const name of ['get_page_metadata', 'list_unresolved_links', 'list_orphans', 'get_graph', 'query_base', 'list_tags', 'list_properties']) expect(readOnly).toContain(name);
       // ChatGPT deep research needs these two exact names, and they must never count as writes.
       expect(readOnly).toContain('search');
       expect(readOnly).toContain('fetch');
       // Tools that replace or delete content say so.
       const byName = new Map(tools.map((t) => [t.name, t.annotations]));
-      for (const name of ['update_page', 'update_board', 'folio_table_update', 'folio_table_delete']) expect(byName.get(name)?.destructiveHint, name).toBe(true);
-      for (const name of ['create_page', 'create_board', 'folio_table_insert', 'folio_table_create', 'folio_table_add_column']) expect(byName.get(name)?.destructiveHint, name).toBe(false);
+      for (const name of ['update_page', 'update_board', 'folio_table_update', 'folio_table_delete', 'set_page_properties', 'save_base', 'rename_tag', 'update_form', 'folio_table_update_column', 'folio_table_delete_column', 'folio_table_save_view', 'folio_table_delete_view']) expect(byName.get(name)?.destructiveHint, name).toBe(true);
+      for (const name of ['create_page', 'create_board', 'folio_table_insert', 'folio_table_create', 'folio_table_add_column', 'create_form', 'convert_canvas_to_board']) expect(byName.get(name)?.destructiveHint, name).toBe(false);
+      // rename_tag rewrites many files, so clients should ask; it is not the same call twice (the second finds nothing)
+      expect(byName.get('rename_tag')?.destructiveHint).toBe(true);
+      expect(byName.get('rename_tag')?.idempotentHint).toBe(false);
     } finally {
       await close();
     }
@@ -113,7 +116,11 @@ describe('server/mcp.ts — tool annotations and instructions', () => {
       const { tools } = await client.listTools();
       const writers = tools.filter((t) => !t.annotations?.readOnlyHint);
       expect(writers.map((t) => t.name).sort()).toEqual(
-        ['board_ops', 'create_board', 'create_page', 'folio_table_add_column', 'folio_table_create', 'folio_table_delete', 'folio_table_insert', 'folio_table_update', 'update_board', 'update_page'],
+        [
+          'board_ops', 'convert_canvas_to_board', 'create_board', 'create_form', 'create_page', 'folio_table_add_column', 'folio_table_create', 'folio_table_delete',
+          'folio_table_delete_column', 'folio_table_delete_view', 'folio_table_insert', 'folio_table_save_view', 'folio_table_update', 'folio_table_update_column', 'rename_tag',
+          'save_base', 'set_page_properties', 'update_board', 'update_form', 'update_page',
+        ],
       );
       // The public demo's write limit (demoLimits.ts) counts exactly these names: a new write tool must be added to the list.
       expect([...MCP_WRITE_TOOL_NAMES].sort()).toEqual(writers.map((t) => t.name).sort());

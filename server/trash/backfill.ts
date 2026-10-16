@@ -119,7 +119,7 @@ async function detectTarget(spaceDirAbs: string): Promise<DetectedTarget | null>
 
 interface BackfillFields {
   pageId: string | null;
-  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'folder' | 'space';
+  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'folder' | 'space';
   title: string;
   childrenCount: number;
 }
@@ -177,6 +177,14 @@ async function fieldsForFile(absFile: string, relInside: string): Promise<Backfi
   if (office) {
     // Same story as a PDF — a docx/xlsx/pptx carries no id in its bytes either.
     return { pageId: null, kind: 'office', title: base.slice(0, -(office.length + 1)), childrenCount: 0 };
+  }
+  if (lower.endsWith('.canvas')) {
+    // A canvas is never written by Folio either — no id in the file.
+    return { pageId: null, kind: 'canvas', title: base.slice(0, -'.canvas'.length), childrenCount: 0 };
+  }
+  if (lower.endsWith('.base')) {
+    // An Obsidian base carries no id in its YAML either.
+    return { pageId: null, kind: 'base', title: base.slice(0, -'.base'.length), childrenCount: 0 };
   }
   return null; // not a page file — nothing to record
 }

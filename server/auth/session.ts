@@ -17,6 +17,7 @@ import { checkLoginRateLimitRedis, isRedisReady, type RateLimitResult } from '..
 import * as pageAccess from '../pageAccess.js';
 import { isAgentPath } from '../agentPath.js';
 import { normalizePublicUrl } from '../publicUrl.js';
+import { setSentryUser } from '../sentry.js';
 import { isPublicPage, publicReadablePageIds } from '../publicSites.js';
 
 export const SESSION_COOKIE_NAME = 'folio_session';
@@ -329,6 +330,7 @@ export async function requireSession(request: FastifyRequest, reply: FastifyRepl
   }
   request.authUser = resolved.user;
   request.tokenScopes = resolved.tokenScopes;
+  setSentryUser(resolved.user.id);
 }
 
 /**

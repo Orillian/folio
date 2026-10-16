@@ -46,8 +46,10 @@
       "users": "Users",
       "spaces": "Spaces",
       "assistantAnalytics": "Assistant analytics",
+      "chatIntegrations": "Chat integrations",
       "help": "Tips",
       "signOut": "Sign out",
+      "reportProblem": "Report a problem",
       "sections": {
         "tools": "Tools",
         "admin": "Administration"
@@ -330,14 +332,24 @@
       "fieldsHeading": "Fields",
       "fieldHelpPlaceholder": "Help text (optional)",
       "fieldRequired": "Required field",
-      "addField": "+ Add field",
+      "addField": "Add field",
       "newFieldNamePlaceholder": "Field name",
       "deleteField": "Delete field",
       "deleteFieldHint": "Removes the field from the form only — the column and any answers already collected stay in the table.",
       "tableNotReady": "Waiting for the linked table to load — try again in a moment.",
       "tableNotFound": "Could not save: {{message}}",
       "save": "Save",
-      "saving": "Saving…"
+      "saving": "Saving…",
+      "draftBanner": "There is an unsaved draft of this form from {{time}}.",
+      "draftStale": "The form was changed after this draft was started — restoring replaces those changes.",
+      "draftRestore": "Restore",
+      "draftDiscard": "Discard",
+      "draftSaved": "Draft saved on this device",
+      "closeTitle": "Discard changes?",
+      "closeBody": "You have unsaved changes to this form. They are kept as a draft on this device until you save or discard them.",
+      "closeKeepEditing": "Keep editing",
+      "closeKeepDraft": "Close, keep draft",
+      "closeDiscard": "Discard changes"
     },
     "folder": {
       "loadFailed": "Could not load the folder.",
@@ -449,6 +461,8 @@
     "createBoard": "Create a board",
     "createTable": "Create a data table",
     "createForm": "Create a form",
+    "createBase": "New base",
+    "saveAsBase": "Save as base…",
     "cycleTheme": "Toggle theme (now: {{theme}})",
     "syncSpace": "Sync the space",
     "label": "Quick switcher",
@@ -722,6 +736,7 @@
     }
   },
   "sidebar": {
+    "graphHint": "A map of this space: pages as dots, links between them as lines. Click a dot to open the page. Only pages you can open are shown.",
     "branchField": {
       "emptyRepo": "the repository is empty — a main branch will be created",
       "fetchError": "couldn't fetch branches — enter one manually"
@@ -753,6 +768,7 @@
     "newBoard": "New board",
     "newTable": "New data table",
     "newForm": "New form",
+    "newBase": "New base",
     "newPage": "New page",
     "uploadFile": "Upload file",
     "createPageFailed": "Could not create the page",
@@ -879,7 +895,15 @@
       "notLive": "The server hasn't been updated yet — changing the slug is coming soon",
       "failed": "Could not change the slug",
       "changing": "Changing…",
-      "action": "Change"
+      "action": "Change",
+      "renameTitle": "Rename — \"{{title}}\"",
+      "currentName": "Current name: {{name}}",
+      "nameLabel": "New name",
+      "nameHint": "Any letters, digits and spaces; the extension {{ext}} is kept",
+      "nameInvalid": "The name must not be empty, start or end with a dot, or contain / \\ : * ? \" < > |",
+      "nameConflict": "A file with this name already exists in this folder",
+      "nameFailed": "Could not rename the file",
+      "renameWarning": "Links to it in notes and canvases will be updated automatically"
     },
     "createSpace": {
       "title": "New space",
@@ -968,6 +992,14 @@
       "from": "via {{host}}",
       "demoNote": "Shared demo account: connections from other visitors are visible here and reset daily."
     },
+    "chatApps": {
+      "title": "Chat apps",
+      "hint": "Slack and Teams accounts that show previews of the Folio links you share. Previews use your access.",
+      "as": "as {{name}}",
+      "confirmTitle": "Disconnect this chat app?",
+      "confirmBody": "Folio links you share in {{name}} will no longer show a preview. You can connect again from a preview in {{name}}.",
+      "failed": "Could not disconnect the chat app"
+    },
     "tokenPlaceholder": "<your token>",
     "mcp": {
       "title": "Connect MCP",
@@ -975,6 +1007,19 @@
       "cursorHint": "Paste into ~/.cursor/mcp.json",
       "replaceHint": "Replace the token placeholder with a real one — create a new one above or paste an existing one."
     }
+  },
+  "feedback": {
+    "title": "Report a problem",
+    "messageLabel": "What went wrong?",
+    "messagePlaceholder": "Describe what you did and what happened instead. You can paste a screenshot here.",
+    "attach": "Attach a screenshot",
+    "removeImage": "Remove the screenshot",
+    "tooLarge": "The image is larger than 5 MB.",
+    "send": "Send",
+    "sending": "Sending…",
+    "thanks": "Thank you, the report was sent.",
+    "failed": "Could not send the report. Try again in a moment.",
+    "privacy": "Sent to the Folio team with the page address (without its query), the page type, the app version and your browser. Page text is not included."
   },
   "oauth": {
     "resuming": "Continuing the connection…",
@@ -1120,6 +1165,8 @@
       "pdf": "PDF",
       "office": "Office file",
       "form": "Form",
+      "canvas": "Canvas",
+      "base": "Base",
       "folder": "Folder",
       "space": "Space"
     },
@@ -1356,6 +1403,37 @@
         "earlier_other": "and {{count}} earlier openings"
       }
     }
+  },
+  "timer": {
+    "button": "Timer",
+    "buttonTitle": "Timer — shared with everyone on this page",
+    "buttonTitleSpace": "Timer — shared with everyone viewing a folder of this space",
+    "title": "Timer",
+    "sharedPage": "Everyone who has this page open sees and hears it.",
+    "sharedSpace": "Everyone looking at a folder of this space sees and hears it.",
+    "presets": "Presets",
+    "minutesShort": "{{count}} min",
+    "custom": "Custom",
+    "minutes": "Minutes",
+    "seconds": "Seconds",
+    "start": "Start",
+    "invalid": "Enter a time between 1 second and 3 hours.",
+    "pause": "Pause",
+    "resume": "Resume",
+    "addMinute": "+1 min",
+    "reset": "Reset",
+    "paused": "Paused, {{time}} left",
+    "finished": "Time is up",
+    "timeUp": "Time is up",
+    "startedBy": "Started by {{name}}",
+    "pill": "Timer: {{time}}",
+    "pillPaused": "Timer paused: {{time}}",
+    "pillFinished": "Timer: time is up",
+    "muteLabel": "Play a sound when time is up",
+    "soundLocked": "Sound is blocked by the browser — click anywhere on the page to enable it.",
+    "enableSound": "Enable sound",
+    "soundLockedToast": "Click anywhere to enable the sound.",
+    "failed": "Could not change the timer"
   },
   "notifications": {
     "bell": "Notifications",
@@ -1835,6 +1913,127 @@
       "deleteTitle": "Delete saved search?",
       "deleteBody": "“{{name}}” will be removed from your saved searches. The pages it finds are not affected.",
       "deleteFailed": "Could not delete the search"
+    }
+  },
+  "chatAdmin": {
+    "title": "Chat integrations",
+    "intro": "Previews of Folio links in Slack and Microsoft Teams. Each person connects their own Folio account the first time they share a link, and a preview shows only what that person can open in Folio. Setup steps: docs/CHAT-PREVIEWS.md.",
+    "loadFailed": "Could not load the chat integrations.",
+    "configured": "Configured",
+    "notConfigured": "Not configured",
+    "linkedUsers_one": "{{count}} person connected",
+    "linkedUsers_other": "{{count}} people connected",
+    "env": "Environment variables",
+    "present": "set",
+    "missing": "not set",
+    "endpoints": "Paste into the app settings",
+    "endpoint": {
+      "eventsRequestUrl": "Event Subscriptions: Request URL",
+      "interactivityRequestUrl": "Interactivity: Request URL",
+      "redirectUrl": "OAuth & Permissions: Redirect URL",
+      "connectUrl": "Connect page (for people)",
+      "messagingEndpoint": "Azure Bot: Messaging endpoint",
+      "folioCallbackUrl": "Folio sign-in callback"
+    },
+    "domains": "Link domains",
+    "slackManifest": "Download Slack app manifest",
+    "teamsPackage": "Download Teams app package",
+    "teamsPackageNeedsId": "Set FOLIO_TEAMS_APP_ID to download the Teams app package.",
+    "copy": "Copy",
+    "people": "Connected people",
+    "noPeople": "Nobody has connected yet.",
+    "disconnectNamed": "Disconnect {{name}}",
+    "confirmTitle": "Disconnect this person?",
+    "confirmBody": "{{name}}'s {{platform}} account will stop showing Folio previews. They can connect again.",
+    "disconnectFailed": "Could not disconnect"
+  },
+  "graph": {
+    "title": "Graph",
+    "settings": "Graph settings",
+    "reset": "Restore defaults",
+    "counts": "Pages: {{pages}} · links: {{links}}",
+    "truncated": "Showing the {{shown}} most recently changed pages of {{total}}. Open a page's local graph to see its neighbourhood.",
+    "error": "Could not load the graph.",
+    "empty": "Nothing to show: no pages match the filters.",
+    "aria": "Link graph: {{nodes}} nodes, {{links}} links. Use + and - to zoom, the arrow keys to pan, 0 to fit.",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fit": "Fit to screen",
+    "legendFilter": "Show only {{query}} (click again to show everything)",
+    "open": "Open",
+    "searchTag": "Search",
+    "local": {
+      "title": "Local graph",
+      "of": "Graph: {{title}}",
+      "wholeSpace": "Whole space",
+      "short": "Neighbours",
+      "depth": "Depth",
+      "depthN": "Depth {{depth}}",
+      "direction": "Links",
+      "both": "Both ways",
+      "out": "Outgoing",
+      "in": "Incoming",
+      "expand": "Open full size",
+      "hide": "Hide local graph",
+      "show": "Show local graph",
+      "none": "Link pages to each other — they will appear here.",
+      "depthHint1": "1 — direct links",
+      "depthHint2": "2 — through one page",
+      "depthHint3": "3 — through two pages",
+      "collapse": "Collapse local graph",
+      "expandSection": "Expand local graph"
+    },
+    "filters": {
+      "title": "Filters",
+      "search": "Search: words, tag:, kind:, in:, status:",
+      "hint": "Same syntax as search; it filters pages, and tags, files and unresolved links follow the pages they hang on.",
+      "tags": "Tags",
+      "files": "Attachments",
+      "unresolved": "Unresolved links",
+      "orphans": "Orphans",
+      "tree": "Tree structure",
+      "treeHint": "Parent → child lines of the page tree (dashed), so nested pages show their place even without links."
+    },
+    "groups": {
+      "title": "Groups",
+      "colorBy": "Colour by",
+      "byKind": "Page kind",
+      "byFolder": "Top folder",
+      "byTag": "Tag",
+      "none": "Nothing",
+      "color": "Group colour",
+      "query": "Query, e.g. tag:project or in:docs/",
+      "remove": "Remove group",
+      "add": "New group",
+      "rootFolder": "Space root",
+      "otherSpace": "Other spaces"
+    },
+    "display": {
+      "title": "Display",
+      "arrows": "Arrows",
+      "sizeByDegree": "Size by number of links",
+      "labelZoom": "Text fade threshold",
+      "nodeSize": "Node size",
+      "linkThickness": "Link thickness"
+    },
+    "forces": {
+      "title": "Forces",
+      "center": "Center force",
+      "repel": "Repel force",
+      "link": "Link force",
+      "distance": "Link distance"
+    },
+    "kinds": {
+      "doc": "Documents",
+      "board": "Boards",
+      "folder": "Folders",
+      "table": "Tables",
+      "pdf": "PDF",
+      "office": "Office files",
+      "form": "Forms",
+      "tag": "Tags",
+      "file": "Attachments",
+      "unresolved": "Unresolved"
     }
   }
 }

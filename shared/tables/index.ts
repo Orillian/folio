@@ -10,3 +10,4 @@ export * from './codec.js';
 export * from './query.js';
 export * from './csv.js';
 export * from './yaml.js';
+export * from './columnDefaults.js';

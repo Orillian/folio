@@ -24,6 +24,10 @@ what is not there.
   custom domain; everything resets daily. Don't enter personal data or API keys. The
   demo uses the optional analytics hook: anonymous events (page kinds, space
   slugs), never page content; your own installation sends nothing.
+- **The shared page timer lives in one server process.** Its state is kept in
+  memory, like the live editing rooms, so a restart clears running timers, and
+  several server processes would each hold their own copy. It is not shown to
+  share-link guests or on public sites.
 - **One agent per space.** `.agent` customizes the assistant for a space; a
   space cannot have several differently configured agents.
 
@@ -34,7 +38,23 @@ what is not there.
 2. **A reader sees a whiteboard as a static picture** — the Excalidraw editor
    is not enabled for them.
 3. **PDF and Office files are not editable and not searchable by content** —
-   by title only.
+   by title only. **Obsidian canvases (`.canvas`) are view only**: no card can
+   be added, moved or edited in Folio, and a share link or a public site shows
+   the canvas read-only too. Search sees their text cards, group labels, web
+   page URLs and connection labels, never the names of the files their cards
+   point at. A web page card shows its URL, not the page; a PDF card a preview
+   of the file; a canvas over 8 MB is not shown, and only the first 5,000 cards
+   and 10,000 connections of one are. When a page a canvas points at is renamed
+   or moved in Folio, the canvas's file cards (and the links in its text cards)
+   follow in every space, an Obsidian vault included, the way the wikilinks of
+   notes do; only the changed path strings are rewritten. A card whose file was
+   moved outside Folio is not found — paths in a canvas are matched exactly,
+   never by name. "Convert to Folio board" loses what a
+   whiteboard cannot carry: Markdown formatting (plain text), text longer than
+   its card (cut with "…"), the content of note cards (a title and a link stay),
+   images over 1.5 MB (4 MB in all) and audio/video (linked cards), web page
+   previews, group background images, nested groups (each becomes its own
+   frame) and the curve of connections (right-angled arrows).
 4. **Page rights are not inherited by child pages**: restricting a parent
    leaves its children open. There is no "close the whole subtree" mode. On a
    public site this matters most: lock every page that must stay closed.
@@ -69,14 +89,14 @@ what is not there.
    rewritten to use them: the `[[` picker in the editor still inserts a plain
    relative link, and wikilinks are only ever rewritten when the page they
    point at is renamed or moved — never "while we are at it". Not supported:
-   Dataview and `query` blocks, Canvas (`.canvas`), Bases (`.base`), community
+   Dataview and `query` blocks, community
    plugins, an inline PDF viewer or audio/video player for `![[file.pdf]]` (a
    link to the file instead), per-type callout colours and icons (Obsidian's
    types map onto five looks), and Obsidian's rule that an unclosed `%%` hides
    the rest of the note (it stays text here). In the Live editor an image embed written as `![[image.png]]` shows as its name, not as the picture (Reading, PDF and DOCX show the picture; `![](image.png)` is a picture everywhere), and a note embed is not drawn inline while editing. Space files (attachments, `assets/`) are indexed as files, not as pages: they are
    not in the tree or in search, an attachment is found by name with Obsidian's rules
-   and a missing one is listed among unresolved links. `.canvas` and `.base` files
-   are not shown. Properties are written only in Folio's own format: a Folio key
+   and a missing one is listed among unresolved links. A `.base` file is a
+   page (see "Obsidian Bases" below) and a `.canvas` is a view-only page (see 3). Properties are written only in Folio's own format: a Folio key
    with a foreign value is shown as such and never overwritten, and `labels:` is
    kept: new tags are written as `tags:`, an existing `labels:` is only edited in place.
    The properties of a board, a PDF or an Office file live in a sidecar under
@@ -163,7 +183,77 @@ A space set to public is readable by anyone, without an account
     space administrators, and an instance administrator who is not a member of
     the space can change the publishing settings but not those files.
 
+## Chat previews
+
+Link previews in Slack and Microsoft Teams ([setup](CHAT-PREVIEWS.md)).
+
+21. **One card for the whole conversation.** A preview is built with the Folio
+    access of the person who shared the link and is seen by everyone in the
+    channel. A page restricted to specific people therefore shows its title only,
+    even to readers who could open it; Teams cards are not refreshed per viewer.
+22. **A preview is a snapshot** of the page when the link was shared; it is not
+    updated afterwards.
+23. **One Slack workspace and one Teams tenant per instance.** Slack uses a single
+    bot token (no Enterprise Grid org-wide install); Teams is registered as a
+    single-tenant bot. Slack accepts five link domains, so an instance with many
+    custom site domains previews only the first ones.
+24. **Connecting needs the desktop or web client** of Teams (Teams mobile
+    unfurls only links that need no sign-in), and an `https` `PUBLIC_URL`
+    reachable from the internet. Cards are in English.
+
 ## Known defects
 
-21. **Emptying the trash** may leave a folder with nested pages inside the
+25. **Emptying the trash** may leave a folder with nested pages inside the
     service trash folder.
+
+## Graph view
+
+22. **The graph view has limits.** A graph shows at most 10,000 pages: in a
+    larger space the 10,000 most recently changed pages you can open are kept,
+    and the view says so and suggests the local graph. There is no time-lapse
+    animation, no saved layouts or pinned nodes (positions are computed again on
+    every open), no 3D, and no graph on public sites or share links. The local
+    graph is only in the side panel of a document; tables, boards and forms
+    have no such panel, so open their neighbourhood from the space's graph. A
+    link to a page you cannot open is left out entirely, so a graph can look
+    sparser to you than to an administrator. Through MCP, `get_graph` returns
+    300 pages by default and at most 2,000. Folder colours are assigned by how
+    often a folder occurs in the current view, so the same folder can have a
+    different colour in the global and in a local graph. A Folio page URL counts
+    as a link only on the instance's own host (`PUBLIC_URL`) or root-relative
+    (`/s/…`); a link to the same instance under another address, a share link
+    (`/share/…`) and a public-site address (`/public/…`, a site's own domain)
+    stay external links. Pages of another space appear only as targets of this
+    space's links (the space graph) or as direct neighbours (the local graph);
+    the graph does not walk on through them. When a page of another space is
+    deleted or restored, links to it from here catch up at this space's next
+    index update (a save or a scan here). Tree lines come from the page tree and
+    are not links: they never count as backlinks.
+
+## Obsidian Bases
+
+26. **Bases are supported in part.** A `.base` file opens as a page with a table,
+    cards or list view, and its filters, formulas, grouping, sorting and
+    summaries work, but Folio does not implement all of Obsidian. Not supported:
+    `kanban` and `map` views and views from plugins (they show a notice and fall
+    back to a table), `html()`, `image()`, `icon()` and plugin functions (a
+    formula column using one shows "formula not supported"; a filter statement
+    using one is ignored, with a warning on the page), attachments as rows (only
+    pages are rows), `![[x.base]]` embeds, and a base across several spaces.
+    Dates are computed in UTC, so a relative date such as `today()` follows UTC,
+    not the viewer's time zone. A regular expression with nested quantifiers or
+    back-references is refused, and a very expensive formula is stopped by a
+    per-query budget. A query looks at 5,000 candidate pages at most (the first
+    ones by path, with a warning once past that), shows 200 rows at a time ("Show
+    more"), and a `.base` file over 256 KB is refused. Rows are the pages you can
+    open, so the same base can show fewer rows to you than to an administrator.
+27. **Editing cells has limits.** You can change a cell only on a page you can
+    edit, and only a note property: never a `file.*` or a `formula.*` column, and
+    never a Folio key that holds a foreign value (for example `status: todo` on a
+    document). A `base` code block inside a document is read-only; to edit cells
+    open the base page itself. The visual editor keeps unchanged parts of the file
+    byte for byte, but a filter it cannot express as a rule stays a raw
+    expression you edit as text, and formulas have no autocomplete yet. Share
+    links and public sites show a note instead of a base, because a base exposes
+    page properties; through MCP, `query_base` is refused on public sites and
+    returns at most 500 rows per call (100 by default).

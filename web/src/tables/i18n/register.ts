@@ -6,7 +6,7 @@ import { STANDALONE_LANGUAGE } from '../../i18n/standalone';
 /**
  * Round 26 (DATA TABLES) — mirrors web/src/markdown/i18n/register.ts exactly:
  * this zone owns and registers its own 'tables' bundle at import time,
- * idempotently. TABLES-UI fills in uk/en/ru.json; this file itself shouldn't
+ * idempotently. TABLES-UI fills in uk/en.json; this file itself shouldn't
  * need touching.
  */
 if (!i18next.isInitialized) {

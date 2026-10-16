@@ -293,6 +293,11 @@ export interface ExcalidrawElement {
   fixedSegments?: { start: [number, number]; end: [number, number]; index: number }[];
   startIsSpecial?: boolean;
   endIsSpecial?: boolean;
+  // image-only: the picture lives in the scene's `files` under fileId
+  fileId?: string;
+  status?: string;
+  scale?: [number, number];
+  crop?: null;
 }
 
 export interface ExcalidrawScene {
@@ -1460,6 +1465,15 @@ export function renderSceneSvg(scene: ExcalidrawScene): string {
       let marker = e.endArrowhead ? ' marker-end="url(#arr)"' : '';
       if (e.startArrowhead) marker += ' marker-start="url(#arr-start)"';
       body.push(`<polyline points="${pts}" fill="none" stroke="${e.strokeColor || '#495057'}" stroke-width="${e.strokeWidth}"${marker}/>`);
+    } else if (e.type === 'image') {
+      // The picture the scene carries (an image element's `files` entry); a missing one draws a placeholder frame.
+      const file = e.fileId ? (scene.files?.[e.fileId] as { dataURL?: unknown } | undefined) : undefined;
+      const href = typeof file?.dataURL === 'string' && file.dataURL.startsWith('data:image/') ? file.dataURL : null;
+      body.push(
+        href
+          ? `<image x="${f1(x)}" y="${f1(y)}" width="${f1(e.width)}" height="${f1(e.height)}" preserveAspectRatio="xMidYMid meet" href="${esc(href)}"${op}/>`
+          : `<rect x="${f1(x)}" y="${f1(y)}" width="${f1(e.width)}" height="${f1(e.height)}" fill="none" stroke="#adb5bd" stroke-dasharray="4 4"/>`,
+      );
     } else if (e.type === 'text') {
       const holder = e.containerId ? byId.get(e.containerId) : undefined;
       if (holder && holder.type === 'arrow') {

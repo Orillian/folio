@@ -34,6 +34,8 @@ import { translitSlug } from './translit.js';
 import * as links from './links.js';
 import * as pageIndex from './indexV2/store.js';
 import { dirOf as wikiDirOf } from './wikilinks.js';
+import { movedCanvasPath, rewriteCanvasStrings } from '../shared/canvas/index.js';
+import { resolveRelative } from './indexV2/resolve.js';
 import * as shares from './shares.js';
 import { shareGrantsPage } from './export/shareScope.js';
 import { isPublicPage } from './publicSites.js';
@@ -2807,6 +2809,15 @@ export async function rewriteLinksAfterMove(moved: storage.SlugRenameMove[]): Pr
 
   for (const [sourceId, targets] of rewritesBySource) {
     const srcEntry = await storage.getEntry(sourceId);
+    if (srcEntry?.kind === 'canvas') {
+      const movedFiles = new Map(targets.map((t) => [t.oldRelPath, t.newRelPath] as const));
+      await rewriteCanvasLinks(srcEntry, movedFiles, movedDirsOf(moved), (text) => {
+        let out = text;
+        for (const t of targets) out = links.rewriteRelativeLinks(out, srcEntry.dirPath, t.oldRelPath, t.newRelPath, wiki);
+        return out;
+      });
+      continue;
+    }
     if (!srcEntry || srcEntry.kind !== 'doc') continue; // boards never carry markdown links (see scanSpace)
     const currentBody = isDocLive(sourceId) ? (getLiveText(sourceId) ?? (await storage.readFreshDocBody(sourceId))) : await storage.readFreshDocBody(sourceId);
     let rewritten = currentBody;
@@ -2821,6 +2832,48 @@ export async function rewriteLinksAfterMove(moved: storage.SlugRenameMove[]): Pr
   // Index v2: the whole space's links resolved once more, now that every rewritten source is saved (each save
   // resolved only its own links; a link the rename made point elsewhere is settled here).
   if (space) await resolveSpaceLinksAfterMove(space);
+}
+
+/** The folders a slug rename moved: a directory page's (index.md / README.md) folder, old -> new. */
+function movedDirsOf(moved: storage.SlugRenameMove[]): Map<string, string> {
+  const dirs = new Map<string, string>();
+  const dirOfIndex = (p: string) => (/(^|\/)(index|README)\.md$/.test(p) && p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : null);
+  for (const m of moved) {
+    const from = dirOfIndex(m.oldRelPath);
+    const to = dirOfIndex(m.newRelPath);
+    if (from !== null && to !== null && from !== to) dirs.set(from, to);
+  }
+  return dirs;
+}
+
+/**
+ * A canvas that points at something that moved: its file cards (and group
+ * backgrounds) follow the move, and `text` re-aims the links inside its text
+ * cards — the way Obsidian keeps a canvas in step with a rename. In every space,
+ * light footprint (a vault) included: the wikilinks of notes are rewritten
+ * there too (owner, 16.10.2026: a canvas follows a rename like a note does).
+ * The file is edited in place, only the changed path strings touched, every
+ * other byte kept (shared/canvas/rewrite.ts); a failure is logged, the move stands.
+ */
+async function rewriteCanvasLinks(
+  entry: storage.PageIndexEntry,
+  movedFiles: ReadonlyMap<string, string>,
+  movedDirs: ReadonlyMap<string, string>,
+  text: (cardText: string) => string,
+): Promise<void> {
+  const mapPath = (value: string) => movedCanvasPath(resolveRelative('', value) ?? value, movedFiles, movedDirs);
+  await storage
+    .rewriteCanvasFile(entry.id, (raw) =>
+      rewriteCanvasStrings(raw, [
+        { key: 'file', map: mapPath },
+        { key: 'background', map: mapPath },
+        { key: 'text', map: (value) => text(value) },
+      ]),
+    )
+    .catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error(`[canvas] ${entry.space}/${entry.relPath}: could not follow a move:`, err);
+    });
 }
 
 /** Phase 2 of the page index for a whole space after a rename/move; a failure is logged, the move stands. */
@@ -2863,6 +2916,12 @@ export async function movePage(id: string, toParentPath: string, author: GitIden
 
   for (const sourceId of sourceIds) {
     const srcEntry = await storage.getEntry(sourceId);
+    if (srcEntry?.kind === 'canvas') {
+      // Its file cards name paths from the root: only what moved changes. Its text cards' relative links start from its folder.
+      const oldDir = oldDirOfMoved.get(sourceId) ?? srcEntry.dirPath;
+      await rewriteCanvasLinks(srcEntry, movedFiles, movedDirMap, (text) => links.rebaseRelativeLinks(text, oldDir, srcEntry.dirPath, movedFiles, movedDirMap, wiki));
+      continue;
+    }
     if (!srcEntry || srcEntry.kind !== 'doc') continue;
     const currentBody = isDocLive(sourceId) ? (getLiveText(sourceId) ?? (await storage.readFreshDocBody(sourceId))) : await storage.readFreshDocBody(sourceId);
     const rebased = links.rebaseRelativeLinks(currentBody, oldDirOfMoved.get(sourceId) ?? srcEntry.dirPath, srcEntry.dirPath, movedFiles, movedDirMap, wiki);
@@ -3039,7 +3098,8 @@ export function attachToServer(httpServer: HttpServer): void {
       // is nothing for a room to hold (bindState below no-ops for it too,
       // this just refuses the connection outright instead of opening a
       // socket that would never do anything).
-      if (entry.kind === 'pdf' || entry.kind === 'office') {
+      // A canvas likewise: Folio shows it, never edits it.
+      if (entry.kind === 'pdf' || entry.kind === 'office' || entry.kind === 'canvas' || entry.kind === 'base') {
         rejectUpgrade(socket, 400, 'Bad Request');
         return;
       }

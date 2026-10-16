@@ -23,9 +23,11 @@ import { trackPageOpen, type PageKind } from '../../analytics';
 import { StaticBoardView } from './StaticBoardView';
 import { PdfView } from './PdfView';
 import { OfficeView } from './OfficeView';
+import { CanvasPageView } from './CanvasPageView';
 import { ReplaceFileDropZone } from '../files/ReplaceFileDropZone';
 import { TablePageView, tableRole, type TableViewState } from './TablePageView';
 import { FormPageView } from './FormPageView';
+import { BasePageView } from '../../bases/BasePageView';
 import { NotFound } from './NotFound';
 import { NoAccess } from './NoAccess';
 import '../i18n/register';
@@ -271,7 +273,7 @@ export function PageContent({ id }: PageContentProps) {
         <PageConflictBanner space={data.space} pageId={data.id} />
         {/* The toggle rides in the header (portal), the editors in a popover under it. */}
         <PagePropertiesPopover pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} />
-        <FormPageView pageId={data.id} space={data.space} markdown={data.markdown ?? ''} canEdit={editable} />
+        <FormPageView pageId={data.id} space={data.space} markdown={data.markdown ?? ''} choices={data.formChoices} canEdit={editable} />
       </div>
     );
   }
@@ -310,6 +312,36 @@ export function PageContent({ id }: PageContentProps) {
         <ReplaceFileDropZone space={data.space} pageId={data.id} pagePath={data.path} canEdit={chromeEditable} className="ph-no-capture min-h-0 flex-1">
           <PdfView pageId={data.id} title={data.title} version={data.updatedAt} />
         </ReplaceFileDropZone>
+      </div>
+    );
+  }
+
+  if (data.kind === 'canvas') {
+    // Obsidian canvas: read-only, no collab room, no OutlinePanel — the icon row
+    // a file page gets (the icon lives in the index, never in the file), then the
+    // canvas itself; editors get "Convert to Folio board" in its toolbar.
+    return (
+      <div className="flex h-full flex-col">
+        <PageConflictBanner space={data.space} pageId={data.id} />
+        <PageChrome pageId={data.id} space={data.space} icon={data.icon} canEdit={chromeEditable} allowCover={false} compact />
+        <PagePropertiesPopover pageId={data.id} space={data.space} canEdit={chromeEditable} canManageTypes={canManageMembers(spaceRole)} />
+        <div className="ph-no-capture min-h-0 flex-1">
+          <CanvasPageView page={data} canConvert={canEditContent(spaceRole) && !isLocalPage} />
+        </div>
+      </div>
+    );
+  }
+
+  if (data.kind === 'base') {
+    // Obsidian Bases: a view over the space's pages. No collab room, no OutlinePanel; the icon lives in the
+    // index row (like a pdf's). Cells edit THOSE pages' properties, each with its own rights (BasePageView).
+    return (
+      <div className="flex h-full flex-col">
+        <PageConflictBanner space={data.space} pageId={data.id} />
+        <PageChrome pageId={data.id} space={data.space} icon={data.icon} canEdit={chromeEditable} allowCover={false} compact />
+        <div className="ph-mask min-h-0 flex-1">
+          <BasePageView pageId={data.id} space={data.space} canEditBase={editable && !isLocalPage} />
+        </div>
       </div>
     );
   }

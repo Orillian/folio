@@ -26,21 +26,25 @@
  *    `#^id` -> block, with the key it is matched by), display text, line and
  *    context (the trimmed source line, at most 300 characters). Autolinks
  *    (`<https://…>`, bare URLs) and same-page `#fragment` links are not
- *    recorded; neither is anything inside code.
+ *    recorded — except a Folio app URL (`…/s/<space>/p/<id>`, any host here;
+ *    resolve.ts decides whether the host is ours), which the reading view
+ *    renders as a page link; neither is anything inside code. An app URL's
+ *    `#fragment` is split off like a relative link's.
  *
  * Lines are 1-based within the body as indexed (the text after the front
  * matter block) — the text the editor shows.
  */
 import type { Definition, Heading, Html, Nodes, Paragraph, PhrasingContent, Root, Text } from 'mdast';
-import type { LinkFragmentKind, LinkSyntax } from '../../shared/contracts.js';
+import type { CanvasDocument, LinkFragmentKind, LinkSyntax } from '../../shared/contracts.js';
 import { createSlugDeduper, headingAnchorSource } from '../../shared/headingSlug.js';
 import { phrasingToPlainText } from '../../shared/inlineText.js';
 import { matchBlockIdAtEnd } from '../../shared/ofm/blockId.js';
 import { scanOfm } from '../../shared/ofm/scan.js';
 import { findTags, normalizeTag } from '../../shared/ofm/tags.js';
 import { fragmentInfo } from '../../shared/ofm/wikilink.js';
-import { codeRanges, maskRanges, parseMarkdownAst } from '../markdownAst.js';
+import { codeRanges, maskRanges, parseMarkdownAstAsync, parseMarkdownAstChunked } from '../markdownAst.js';
 import { findWikilinks } from '../wikilinks.js';
+import { APP_LINK_SHAPE } from './resolve.js';
 
 export interface ParsedHeading {
   level: 1 | 2 | 3 | 4 | 5 | 6;
@@ -102,6 +106,12 @@ export { fragmentInfo };
 function splitHref(href: string): { linkPath: string; fragment: string | null } | null {
   const trimmed = href.trim();
   if (!trimmed) return null;
+  // A Folio app URL (`/s/<space>/p/<id>#heading`, absolute or root-relative — resolve.ts parseAppLink) keeps its
+  // `?query` but gives up its `#fragment`, which is the target page's heading or block like any page link's.
+  if (APP_LINK_SHAPE.test(trimmed)) {
+    const hashIdx = trimmed.indexOf('#');
+    return hashIdx === -1 ? { linkPath: trimmed, fragment: null } : { linkPath: trimmed.slice(0, hashIdx), fragment: trimmed.slice(hashIdx + 1) || null };
+  }
   if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith('/')) return { linkPath: trimmed, fragment: null };
   const hashIdx = trimmed.indexOf('#');
   let pathPart = hashIdx === -1 ? trimmed : trimmed.slice(0, hashIdx);
@@ -162,8 +172,17 @@ function lineLocator(body: string): (offset: number) => number {
   };
 }
 
+/** The page index of one body. Big bodies are parsed in chunks (markdownAst.ts parseMarkdownAstChunked: linear time). */
 export function parsePageMeta(body: string, frontmatter?: Record<string, unknown> | null): ParsedPageMeta {
-  const tree: Root = parseMarkdownAst(body);
+  return metaFromTree(body, frontmatter, parseMarkdownAstChunked(body));
+}
+
+/** parsePageMeta that yields to the event loop while it parses a big body — the scan and the save path use this. */
+export async function parsePageMetaAsync(body: string, frontmatter?: Record<string, unknown> | null): Promise<ParsedPageMeta> {
+  return metaFromTree(body, frontmatter, await parseMarkdownAstAsync(body));
+}
+
+function metaFromTree(body: string, frontmatter: Record<string, unknown> | null | undefined, tree: Root): ParsedPageMeta {
   const lines = body.split('\n').map((l) => l.replace(/\r$/, ''));
   const lineAt = lineLocator(body);
   const headings: ParsedHeading[] = [];
@@ -219,6 +238,11 @@ export function parsePageMeta(body: string, frontmatter?: Record<string, unknown
     const start = node.position?.start;
     if (!start || start.offset === undefined) return;
     const re = new RegExp(HTML_LINK_RE);
+    // Lowercased once per node, and lines counted on from the previous match: one big HTML block with thousands of
+    // anchors was quadratic here (both used to be redone from the node's start for every match).
+    let lower: string | null = null;
+    let line = start.line;
+    let lineScan = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(node.value)) !== null) {
       const tagName = m[1].toLowerCase();
@@ -230,11 +254,14 @@ export function parsePageMeta(body: string, frontmatter?: Record<string, unknown
         const alt = HTML_ALT_RE.exec(m[0]);
         display = alt ? (alt[1] ?? alt[2] ?? alt[3] ?? null) : null;
       } else {
-        const close = node.value.toLowerCase().indexOf('</a>', m.index + m[0].length);
+        lower ??= node.value.toLowerCase();
+        const close = lower.indexOf('</a>', m.index + m[0].length);
         if (close !== -1) display = node.value.slice(m.index + m[0].length, close).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ');
       }
-      let line = start.line;
-      for (let i = node.value.indexOf('\n'); i !== -1 && i < m.index; i = node.value.indexOf('\n', i + 1)) line++;
+      for (let i = node.value.indexOf('\n', lineScan); i !== -1 && i < m.index; i = node.value.indexOf('\n', i + 1)) {
+        line++;
+        lineScan = i + 1;
+      }
       pushLink('html', href, display, line, start.offset + m.index);
     }
   };
@@ -277,8 +304,10 @@ export function parsePageMeta(body: string, frontmatter?: Record<string, unknown
         return;
       case 'link': {
         const offset = node.position?.start.offset;
-        // `<https://…>` and bare URLs are autolinks: external text, not a link anyone wrote as one.
+        // `<https://…>` and bare URLs are autolinks: external text, not a link anyone wrote as one — except a pasted
+        // Folio page URL (`https://<host>/s/<space>/p/<id>`), which the reading view shows as a link to that page.
         if (offset !== undefined && body[offset] === '[') pushLink('md', node.url, phrasingToPlainText(node.children as PhrasingContent[]), node.position?.start.line ?? 0, offset);
+        else if (offset !== undefined && /^https?:\/\//i.test(node.url) && APP_LINK_SHAPE.test(node.url)) pushLink('md', node.url, null, node.position?.start.line ?? 0, offset);
         for (const child of node.children) walk(child, true);
         return;
       }
@@ -335,4 +364,59 @@ export function parsePageMeta(body: string, frontmatter?: Record<string, unknown
   }
 
   return { headings, blocks, tags, links };
+}
+
+// ---------------------------------------------------------------------------
+// Canvas pages (`.canvas`, JSON Canvas 1.0)
+// ---------------------------------------------------------------------------
+
+/**
+ * The page index of a canvas page, from its parsed document (no Markdown body):
+ *  - every FILE CARD is a link of syntax 'canvas' — its path from the space
+ *    root as written, `subpath` as the fragment (resolve.ts matches the path
+ *    exactly); a group's background image is one too;
+ *  - every TEXT CARD is parsed like a note (each card on its own, so an
+ *    unclosed code fence in one card cannot swallow the next): its links and
+ *    `#tags`, relative links resolved from the canvas's folder;
+ *  - every LINK CARD is an external link (syntax 'md');
+ *  - tags from the sidecar's front matter (`tags:` / `labels:`), as for a board.
+ * A canvas has no headings or block ids of its own. `line` is the card's
+ * 1-based position in the file's `nodes` (what identifies it in the outline);
+ * `context` the text card's line, or the file card's path.
+ */
+export function parseCanvasMeta(doc: CanvasDocument, frontmatter?: Record<string, unknown> | null): ParsedPageMeta {
+  const tags: ParsedTag[] = [];
+  const links: ParsedLink[] = [];
+  const pushPath = (linkPath: string, subpath: string | undefined, line: number, context: string) => {
+    const frag = fragmentInfo(subpath ? subpath.replace(/^#/, '') : null);
+    links.push({
+      syntax: 'canvas',
+      linkPath: linkPath.trim(),
+      fragment: frag?.fragment ?? null,
+      fragmentKind: frag?.kind ?? null,
+      fragmentKey: frag?.key ?? null,
+      displayText: null,
+      line,
+      context: context.length > CONTEXT_MAX_CHARS ? Array.from(context).slice(0, CONTEXT_MAX_CHARS).join('') : context,
+    });
+  };
+  doc.nodes.forEach((node, index) => {
+    const line = index + 1;
+    if (node.type === 'file') pushPath(node.file, node.subpath, line, `${node.file}${node.subpath ?? ''}`);
+    else if (node.type === 'group' && node.background) pushPath(node.background, undefined, line, node.background);
+    else if (node.type === 'link') {
+      links.push({ syntax: 'md', linkPath: node.url, fragment: null, fragmentKind: null, fragmentKey: null, displayText: null, line, context: contextOf([node.url], 1) });
+    } else if (node.type === 'text' && node.text.trim()) {
+      const card = parsePageMeta(node.text);
+      for (const link of card.links) links.push({ ...link, line });
+      for (const tag of card.tags) tags.push({ ...tag, line });
+    }
+  });
+  const seen = new Set(tags.map((t) => t.tag));
+  for (const tag of frontmatterTags(frontmatter)) {
+    if (seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push({ tag, source: 'frontmatter', line: null });
+  }
+  return { headings: [], blocks: [], tags, links };
 }

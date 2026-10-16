@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import type { PoolClient } from 'pg';
 import * as matterNS from 'gray-matter';
 import { ulid } from 'ulidx';
-import type { CreatePageBody, FormDoc, PageKind, PageMeta, PageStatus, SpaceAssetMode, SpaceGitStatus, SpaceInfo, SpaceVisibility, TableColumn, TableDoc, TableView, TreeNode } from '../shared/contracts.js';
+import type { CanvasDocument, CreatePageBody, FormDoc, PageKind, PageMeta, PageStatus, SpaceAssetMode, SpaceGitStatus, SpaceInfo, SpaceVisibility, TableColumn, TableDoc, TableView, TreeNode } from '../shared/contracts.js';
 import { INDEX_META_VERSION, officeFormat } from '../shared/contracts.js';
 import { compileScanIgnore } from './scanIgnore.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
@@ -39,7 +39,8 @@ import { deriveFieldsFromColumns, isFormParseError, parseFormFile, serializeForm
 import { decodeScenePayload, extractScenePayload } from './confluenceWhiteboard.js';
 import { AGENT_FOLDER } from './agentPath.js';
 import { serverText } from './serverText.js';
-import { docIndexText } from './indexText.js';
+import { docIndexText, docIndexTextAsync } from './indexText.js';
+import { CANVAS_MAX_BYTES, canvasSearchText, parseJsonCanvas } from '../shared/canvas/index.js';
 import { inlineMarkdownToPlainText } from '../shared/inlineText.js';
 import { carryFrontmatterKeys, mergeFrontmatter, writeFrontmatterKeys, type FolioFrontmatter, type FrontmatterKeyEdit } from './frontmatter.js';
 import * as propsSidecar from './propsSidecar.js';
@@ -69,7 +70,7 @@ export interface PageIndexEntry {
   /** POSIX path relative to the space's CONTENT ROOT (repo dir + rootPath), e.g. "architecture/data-flow.md". */
   relPath: string;
   absPath: string;
-  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form';
+  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base';
   /** True when this entry represents its containing directory in the tree (index.md, or README.md when index.md is absent there). */
   isIndex: boolean;
   /** POSIX dir containing this file, relative to the content root ("" for root-level files). */
@@ -95,6 +96,8 @@ export interface PageIndexEntry {
    * back from the database into an entry.
    */
   frontmatter?: Record<string, unknown>;
+  /** A canvas page's parsed document — set only by indexCanvasFile during a scan, for the page index (its links and tags). */
+  canvasDoc?: CanvasDocument;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +338,10 @@ function titleFallback(relPath: string, kind: PageKind): string {
   // Folio's own storage detail, while here the file IS the page and its
   // format is what the reader needs to tell two rows apart.
   if (kind === 'pdf' || kind === 'office') return base;
+  // A canvas keeps its stem, like Obsidian's file list (the tree icon tells it apart from a note of the same name).
+  if (kind === 'canvas') return base.slice(0, -'.canvas'.length);
+  // An Obsidian base keeps its stem, as Obsidian names it.
+  if (kind === 'base') return base.slice(0, -'.base'.length);
   return base.slice(0, -'.md'.length);
 }
 
@@ -658,7 +665,7 @@ interface PagesIndexRow {
   id: string;
   space_slug: string;
   path: string;
-  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form';
+  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base';
   title: string;
   sort_order: number | null;
   status: PageStatus | null;
@@ -700,8 +707,13 @@ async function upsertPagesIndexRow(entry: PageIndexEntry, fileMtime: Date, fileS
   // A document's `:status[Done]{color=green}` tags are indexed (and shown in
   // snippets) as their text: the attributes are not words anyone searches for;
   // a `%%comment%%` is not content at all (indexText.ts).
+  // A canvas: its group labels, text cards, link URLs and edge labels (indexCanvasFile).
   const plainText =
-    entry.kind === 'doc' ? docIndexText(entry.body ?? '') : entry.kind === 'table' || entry.kind === 'form' ? (entry.body ?? '') : null;
+    entry.kind === 'doc'
+      ? await docIndexTextAsync(entry.body ?? '')
+      : entry.kind === 'table' || entry.kind === 'form' || entry.kind === 'canvas'
+        ? (entry.body ?? '')
+        : null;
   // The row of an id never silently moves to ANOTHER space ($16 false): two
   // connected folders whose files carry the same `id:` used to hand the row back
   // and forth on every scan, and a write through it landed in the other space's
@@ -1080,7 +1092,7 @@ function takeIdClaim(abs: string): string | undefined {
   return claimed;
 }
 
-type IndexOnlyKind = 'doc' | 'pdf' | 'office';
+type IndexOnlyKind = 'doc' | 'pdf' | 'office' | 'canvas' | 'base';
 
 function pathIdFor(kind: IndexOnlyKind, space: string, relPath: string, attempt: number): string {
   const seed = attempt === 0 ? `${space}\0${relPath}` : `${space}\0${relPath}\0${attempt}`;
@@ -1132,7 +1144,7 @@ async function claimIdsForMove(space: string, srcAbs: string, destAbs: string): 
   const srcRel = path.relative(spaceDir(space), srcAbs).split(path.sep).join('/');
   const rows = await query<{ id: string; path: string }>(
     `SELECT id, path FROM pages_index
-      WHERE space_slug = $1 AND kind IN ('doc', 'pdf', 'office')
+      WHERE space_slug = $1 AND kind IN ('doc', 'pdf', 'office', 'canvas', 'base')
         AND (path = $2 OR substr(path, 1, length($3)) = $3)`,
     [space, srcRel, `${srcRel}/`],
   );
@@ -1141,8 +1153,8 @@ async function claimIdsForMove(space: string, srcAbs: string, destAbs: string): 
   }
 }
 
-/** Shared by indexPdfFile and indexOfficeFile — same id resolution, same "never read the bytes" rule, same non-searchable stub shape. */
-async function indexBinaryFile(kind: 'pdf' | 'office', space: string, relPath: string, abs: string, mtime: Date): Promise<PageIndexEntry | null> {
+/** Shared by indexPdfFile, indexOfficeFile and indexBaseFile — same id resolution, same "never read the bytes" rule, same non-searchable stub shape. */
+async function indexBinaryFile(kind: 'pdf' | 'office' | 'base', space: string, relPath: string, abs: string, mtime: Date): Promise<PageIndexEntry | null> {
   // stat only — the bytes are never read, let alone rewritten (see "Binary page files").
   let size: number;
   try {
@@ -1190,6 +1202,125 @@ function indexPdfFile(space: string, relPath: string, abs: string, mtime: Date):
 /** A .docx/.xlsx/.pptx file becomes a kind:'office' page — same machinery as a pdf, see "Binary page files" above. */
 function indexOfficeFile(space: string, relPath: string, abs: string, mtime: Date): Promise<PageIndexEntry | null> {
   return indexBinaryFile('office', space, relPath, abs, mtime);
+}
+
+/**
+ * A `.canvas` file (JSON Canvas 1.0, Obsidian) becomes a kind:'canvas' page.
+ * Like a pdf the file is NEVER written — its id lives in pages_index only
+ * (resolveIndexOnlyId), order and icon in the row. Unlike a pdf it is READ: the
+ * search text is its group labels, text cards, link URLs and edge labels
+ * (shared/canvas/text.ts canvasSearchText), and the parsed document travels on
+ * the entry to the page index (file cards and the links / tags inside text
+ * cards — indexCanvasMeta). A file over CANVAS_MAX_BYTES or one that is not
+ * valid JSON is still a page (it opens on a readable error), searchable by title.
+ */
+async function indexCanvasFile(space: string, relPath: string, abs: string, mtime: Date): Promise<PageIndexEntry | null> {
+  let size: number;
+  try {
+    size = (await fs.stat(abs)).size;
+  } catch {
+    return null;
+  }
+  const id = await resolveIndexOnlyId('canvas', space, relPath, abs, size);
+  const existing = await queryOne<{ sort_order: number | null; icon: string | null }>('SELECT sort_order, icon FROM pages_index WHERE id = $1', [id]);
+  const canvasDoc = size <= CANVAS_MAX_BYTES ? await readCanvasDocument(abs) : undefined;
+  return {
+    id,
+    space,
+    relPath,
+    absPath: abs,
+    kind: 'canvas',
+    isIndex: false,
+    dirPath: posixParent(relPath),
+    title: titleFallback(relPath, 'canvas'),
+    order: existing?.sort_order ?? ORDER_SENTINEL,
+    explicitOrder: existing?.sort_order ?? undefined,
+    status: 'published',
+    icon: existing?.icon ?? undefined,
+    updatedAt: mtime.toISOString(),
+    body: canvasDoc ? canvasSearchText(canvasDoc) : '',
+    canvasDoc: canvasDoc ?? { nodes: [], edges: [] },
+  };
+}
+
+/** The parsed document of a `.canvas` file; undefined when it cannot be read or is not a JSON Canvas. */
+async function readCanvasDocument(abs: string): Promise<CanvasDocument | undefined> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(abs, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const parsed = parseJsonCanvas(raw);
+  return parsed.ok ? parsed.document : undefined;
+}
+
+/** The raw text of a canvas page's file (never written by Folio) — capped: a larger file is refused with a readable message. */
+export async function readCanvasRaw(id: string): Promise<{ text: string } | { error: string }> {
+  const entry = await requireEntry(id);
+  if (entry.kind !== 'canvas') throw badRequest('page is not a canvas');
+  let size: number;
+  try {
+    size = (await fs.stat(entry.absPath)).size;
+  } catch {
+    throw notFound('page');
+  }
+  if (size > CANVAS_MAX_BYTES) {
+    return { error: `The canvas file is too large to show (${Math.round(size / 1024 / 1024)} MB; the limit is ${CANVAS_MAX_BYTES / 1024 / 1024} MB).` };
+  }
+  return { text: await fs.readFile(entry.absPath, 'utf8') };
+}
+
+/**
+ * The page index after a page's SIDECAR properties changed (a board, a file
+ * page, a canvas): its tags and `prop:` values. A canvas is indexed from its
+ * cards as well, so they are read again — indexing it from an empty body would
+ * drop its links.
+ */
+export async function reindexSidecarProperties(entry: PageIndexEntry, data: Record<string, unknown>): Promise<void> {
+  const ref = { id: entry.id, space: entry.space, relPath: entry.relPath };
+  if (entry.kind === 'canvas') {
+    const doc = (await readCanvasDocument(entry.absPath)) ?? { nodes: [], edges: [] };
+    await pageIndex.reindexSavedCanvas(ref, doc, data);
+    return;
+  }
+  await pageIndex.reindexSavedPage(ref, '', data);
+}
+
+/**
+ * The ONE write a canvas file ever gets: `transform` of its text, when a page it
+ * points at was renamed or moved through Folio, in any space — a vault
+ * included, where notes' wikilinks are rewritten too (collab.ts
+ * rewriteCanvasLinks — shared/canvas/rewrite.ts keeps every other byte).
+ * Written atomically, then the page's row and index are refreshed at once so
+ * the next scan sees nothing new. Returns true when the file changed.
+ */
+export async function rewriteCanvasFile(id: string, transform: (raw: string) => string): Promise<boolean> {
+  const entry = await requireEntry(id);
+  if (entry.kind !== 'canvas') throw badRequest('page is not a canvas');
+  const raw = await fs.readFile(entry.absPath, 'utf8').catch(() => null);
+  if (raw === null || raw.length > CANVAS_MAX_BYTES) return false;
+  const next = transform(raw);
+  if (next === raw) return false;
+  await writeFileAtomic(entry.absPath, next);
+  const stat = await fs.stat(entry.absPath);
+  const fresh = await indexCanvasFile(entry.space, entry.relPath, entry.absPath, stat.mtime);
+  if (fresh) {
+    await upsertPagesIndexRow(fresh, stat.mtime, stat.size);
+    const sidecar = await propsSidecar.readSidecarText(spaceDir(entry.space), entry.relPath).catch(() => null);
+    await pageIndex.indexCanvasMeta({ id: fresh.id, space: fresh.space, relPath: fresh.relPath }, fresh.canvasDoc ?? { nodes: [], edges: [] }, propsSidecar.parseSidecar(sidecar).data);
+  }
+  return true;
+}
+
+/**
+ * Obsidian Bases (16.10.2026): a `.base` file becomes a kind:'base' page — the
+ * id machinery of a pdf (the file is Obsidian's YAML and carries no id; order
+ * and icon live in the row), searchable by title. Its content is read when the
+ * page is opened (server/bases/**), never at scan time.
+ */
+function indexBaseFile(space: string, relPath: string, abs: string, mtime: Date): Promise<PageIndexEntry | null> {
+  return indexBinaryFile('base', space, relPath, abs, mtime);
 }
 
 /**
@@ -1456,7 +1587,8 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   const stillPresent = new Set<string>();
   // Docs whose page index (indexV2: headings, blocks, tags, links) is rebuilt once the walk is done — after the
   // stale rows are gone, so the resolution phase below sees the space as it is now.
-  const pendingMeta: Array<{ id: string; relPath: string; body: string; frontmatter: Record<string, unknown> | undefined }> = [];
+  // A canvas carries its parsed document instead of a body (its links and tags are read from the cards).
+  const pendingMeta: Array<{ id: string; relPath: string; body: string; frontmatter: Record<string, unknown> | undefined; canvas?: CanvasDocument }> = [];
   // Paths whose page appeared, changed or was re-read (any kind): links that could mean them are re-resolved.
   const readPaths: string[] = [];
   let filesRead = 0;
@@ -1490,7 +1622,7 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
         if (dirent.isDirectory()) await count(abs, false);
         else if (dirent.isFile()) {
           const lower = dirent.name.toLowerCase();
-          if (lower.endsWith('.md') || lower.endsWith('.excalidraw.svg') || lower.endsWith('.pdf') || officeFormat(lower)) totalFiles++; // `.form.md` is also `.md`, already counted
+          if (lower.endsWith('.md') || lower.endsWith('.excalidraw.svg') || lower.endsWith('.pdf') || officeFormat(lower) || lower.endsWith('.canvas') || lower.endsWith('.base')) totalFiles++; // `.form.md` is also `.md`, already counted
         }
       }
     }
@@ -1565,9 +1697,13 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
       // Round OFFICE: same case-insensitive rule; officeFormat is the one
       // source of truth for which of the three extensions this is.
       const isOffice = officeFormat(lower) !== undefined;
+      // Obsidian canvas (16.10.2026): a JSON Canvas file, read-only — never written (indexCanvasFile).
+      const isCanvas = lower.endsWith('.canvas');
+      // Obsidian Bases (16.10.2026): a `.base` file is a view over pages (indexBaseFile).
+      const isBase = lower.endsWith('.base');
       // Anything else — including a `.folio` metadata file (round 22) — is never a page:
       // skipped here, so it can never enter pages_index/the tree/search in the first place.
-      if (!isMd && !isBoard && !isTable && !isForm && !isPdf && !isOffice) {
+      if (!isMd && !isBoard && !isTable && !isForm && !isPdf && !isOffice && !isCanvas && !isBase) {
         if (isUnsupportedMarkdown(lower)) skippedUnsupported++;
         // Not a page: a file of the space (wave 3) — never one under `.agent/`, never a `*.folio` metadata file.
         if (mode === 'pages') await noteFile(abs, relPath);
@@ -1593,7 +1729,7 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
       // change self-healing on the next scan — for pages whose title comes
       // from INSIDE the file (doc's H1, board's header) titleFallback is only
       // a fallback, so they are deliberately left to the bytes check alone.
-      const derivedTitle = isPdf || isOffice ? titleFallback(relPath, isPdf ? 'pdf' : 'office') : undefined;
+      const derivedTitle = isPdf || isOffice || isCanvas ? titleFallback(relPath, isPdf ? 'pdf' : isOffice ? 'office' : 'canvas') : isBase ? titleFallback(relPath, 'base') : undefined;
       // Index v2: a page indexed by an older parser (meta_version below INDEX_META_VERSION — every row right
       // after migration 042) is read again even though its bytes did not change, so new metadata reaches old rows.
       // Every kind has metadata now: a document's headings / tags / links, a table's or form's own properties
@@ -1638,7 +1774,11 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
                 ? await indexPdfFile(space, relPath, abs, stat.mtime)
                 : isOffice
                   ? await indexOfficeFile(space, relPath, abs, stat.mtime)
-                  : await indexBoardFile(space, relPath, abs, stat.mtime);
+                  : isCanvas
+                    ? await indexCanvasFile(space, relPath, abs, stat.mtime)
+                  : isBase
+                    ? await indexBaseFile(space, relPath, abs, stat.mtime)
+                    : await indexBoardFile(space, relPath, abs, stat.mtime);
         if (entry) {
           // Page access that travelled with a trash item (see RestoredAccess): by id first, then by the path the file landed on.
           const rule = restoredAccess ? (restoredAccess.byId.get(entry.id) ?? restoredAccess.byPath.get(entry.relPath)) : undefined;
@@ -1660,7 +1800,13 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
       // A table's / form's own properties, a board's / file's sidecar: tags and `prop:` of the page (no body to parse).
       else if (entry.kind === 'table' || entry.kind === 'form') pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: '', frontmatter: entry.frontmatter ?? {} });
       else if (propsSidecar.usesSidecar(entry.kind)) {
-        pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: '', frontmatter: propsSidecar.parseSidecar(sidecars.get(entry.relPath) ?? null).data });
+        pendingMeta.push({
+          id: entry.id,
+          relPath: entry.relPath,
+          body: '',
+          frontmatter: propsSidecar.parseSidecar(sidecars.get(entry.relPath) ?? null).data,
+          canvas: entry.canvasDoc,
+        });
       }
       reportProcessed();
     }
@@ -1704,15 +1850,17 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   // A sidecar that changed (or went away) while its page file did not: the page's properties are indexed again.
   try {
     const queued = new Set(pendingMeta.map((p) => p.id));
-    const rows = await query<{ id: string; path: string; frontmatter: Record<string, unknown> | null }>(
-      `SELECT id, path, frontmatter FROM pages_index WHERE space_slug = $1 AND kind = ANY($2::text[])`,
-      [space, ['board', 'pdf', 'office']],
+    const rows = await query<{ id: string; path: string; kind: string; frontmatter: Record<string, unknown> | null }>(
+      `SELECT id, path, kind, frontmatter FROM pages_index WHERE space_slug = $1 AND kind = ANY($2::text[])`,
+      [space, ['board', 'pdf', 'office', 'canvas', 'base']],
     );
     for (const row of rows) {
       if (queued.has(row.id)) continue;
       const data = propsSidecar.parseSidecar(sidecars.get(row.path) ?? null).data;
       if (sameJson(data, row.frontmatter ?? {})) continue;
-      pendingMeta.push({ id: row.id, relPath: row.path, body: '', frontmatter: data });
+      // A canvas is indexed from its cards as well: re-read them, or the property change would wipe its links.
+      const canvas = row.kind === 'canvas' ? ((await readCanvasDocument(path.join(root, row.path))) ?? { nodes: [], edges: [] }) : undefined;
+      pendingMeta.push({ id: row.id, relPath: row.path, body: '', frontmatter: data, canvas });
     }
   } catch (err) {
     if (isConnectionFailure(err)) throw err;
@@ -1721,11 +1869,15 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   }
 
   // Index v2, phase 1: the documents read in this scan (their links raw, unresolved).
+  // Cooperative (15.10.2026: a big document held the event loop for 339 s on prod): a big body is parsed in chunks
+  // with a yield between them (indexV2/parse.ts parsePageMetaAsync), and each body is let go once indexed.
   for (const p of pendingMeta) {
-    await pageIndex.indexPageMeta({ id: p.id, space, relPath: p.relPath }, p.body, p.frontmatter).catch((err) => {
+    const page = { id: p.id, space, relPath: p.relPath };
+    await (p.canvas ? pageIndex.indexCanvasMeta(page, p.canvas, p.frontmatter) : pageIndex.indexPageMeta(page, p.body, p.frontmatter)).catch((err) => {
       // eslint-disable-next-line no-console
       console.error(`[index] failed to index ${space}/${p.relPath}:`, err);
     });
+    p.body = '';
   }
   // Phase 2: resolve against the pages as they are now. Only when something changed, so an idle rescan stays free;
   // a small change resolves just the links it can affect, a big one (a first scan, a pull) the whole space.
@@ -2153,6 +2305,8 @@ export function relPathStem(relPath: string, kind: PageKind): string {
   // every other kind — for the isDirectory() probe above to check the right
   // path instead of a mangled one.
   if (kind === 'pdf') return base.slice(0, -'.pdf'.length);
+  if (kind === 'canvas') return base.slice(0, -'.canvas'.length);
+  if (kind === 'base') return base.slice(0, -'.base'.length);
   // Round OFFICE: same "no real sibling children directory in practice, but
   // still return a sane stem" rule as pdf above.
   if (kind === 'office') {
@@ -2325,6 +2479,18 @@ export interface CreatePageInitial {
   docBody?: string;
   /** A rendered `.excalidraw.svg` with the scene embedded — replaces the blank 1x1 starter. */
   boardSvg?: string;
+  /** kind 'base': the `.base` YAML (already validated by the caller) instead of the starter view. */
+  baseSource?: string;
+}
+
+/** A new base's file name: the title as Obsidian would name it (letters of any script kept), else its slug. */
+function baseFileStem(title: string): string {
+  try {
+    const stem = normalizeFileStem(title);
+    return /\.base$/i.test(stem) ? stem.slice(0, -'.base'.length) || translitSlug(title) : stem;
+  } catch {
+    return translitSlug(title);
+  }
 }
 
 /** `language` decides the language of the default names written INTO a new file (the first view of a data table, the first field of a form's table). */
@@ -2343,6 +2509,8 @@ export async function createPage(body: CreatePageBody, initial?: CreatePageIniti
   // or a scan finding one already in the repo — never from this generic
   // "blank starter page" endpoint, which has no file bytes to create it with.
   if (body.kind === 'pdf' || body.kind === 'office') throw badRequest('pdf/office pages are created by uploading a file, not by this endpoint');
+  // A canvas is an Obsidian file Folio reads, never writes: there is nothing to create here (a board is Folio's own canvas).
+  if (body.kind === 'canvas') throw badRequest('canvas pages are read from .canvas files; create a board instead');
   // Wave 2: an explicit file name for a DOC (ignored for every other kind); refused before anything is created.
   const fileStem = body.kind === 'doc' && body.fileStem !== undefined ? normalizeFileStem(body.fileStem) : undefined;
   if (!(await spaceExists(body.space))) throw notFound('space');
@@ -2458,6 +2626,18 @@ export async function createPage(body: CreatePageBody, initial?: CreatePageIniti
         body: '',
       };
       await fs.writeFile(path.join(spaceDir(body.space), relPath), serializeFormFile(formDoc), 'utf8');
+    } else if (body.kind === 'base') {
+      // Obsidian Bases: the file is Obsidian's YAML and carries no id — the id rides a claim, the path's own
+      // deterministic id unless the client minted one (as a light-footprint doc's does). The starter is one
+      // table view of the pages in the folder the base is created in (the whole space at the root).
+      relPath = await uniqueRelPath(body.space, parentPath, baseFileStem(title), '.base');
+      const abs = path.join(spaceDir(body.space), relPath);
+      if (!body.id) id = await freePathId('base', body.space, relPath);
+      claimPageId(abs, id);
+      const starter =
+        (parentPath ? `filters:\n  and:\n    - file.inFolder(${JSON.stringify(parentPath)})\n` : '') +
+        'views:\n  - type: table\n    name: Table\n    order:\n      - file.name\n      - file.folder\n      - file.tags\n      - file.mtime\n    sort:\n      - property: file.mtime\n        direction: DESC\n';
+      await fs.writeFile(abs, initial?.baseSource ?? starter, 'utf8');
     } else {
       relPath = await uniqueRelPath(body.space, parentPath, fileStem ?? translitSlug(title), '.md');
       const abs = path.join(spaceDir(body.space), relPath);
@@ -2504,6 +2684,39 @@ export async function uploadFilePage(space: string, parentPathRaw: string, origi
     const entryId = await getEntryIdByExactPath(space, relPath);
     if (!entryId) throw new Error('internal: file uploaded but not indexed');
     return toPageMeta(await requireEntry(entryId));
+  });
+}
+
+/** The text of a base page's `.base` file (Obsidian Bases, 16.10.2026). */
+export async function readBaseRaw(id: string): Promise<{ entry: PageIndexEntry; text: string }> {
+  const entry = await requireEntry(id);
+  if (entry.kind !== 'base') throw badRequest('page is not a base');
+  const text = await fs.readFile(entry.absPath, 'utf8').catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') throw notFound('page');
+    throw err;
+  });
+  return { entry, text };
+}
+
+/**
+ * Rewrites a base page's file: `transform` gets the current text (under the
+ * space lock) and returns the new one, or null for "nothing to write". The
+ * index row's size / mtime / updated_at follow at once (like writeFilePageBytes)
+ * so the next scan sees nothing new. The commit is the debounced auto-commit
+ * the route nudges, attributed to the caller (gitSync.recordEditor).
+ */
+export async function writeBaseRaw(id: string, transform: (current: string, entry: PageIndexEntry) => string | null | Promise<string | null>): Promise<{ entry: PageIndexEntry; text: string; written: boolean }> {
+  const first = await requireEntry(id);
+  if (first.kind !== 'base') throw badRequest('page is not a base');
+  return withSpaceLock(first.space, async () => {
+    const entry = await requireEntry(id);
+    const current = await fs.readFile(entry.absPath, 'utf8');
+    const next = await transform(current, entry);
+    if (next === null || next === current) return { entry, text: current, written: false };
+    await writeFileAtomic(entry.absPath, next);
+    const stat = await fs.stat(entry.absPath);
+    await query('UPDATE pages_index SET file_mtime = $2, file_size = $3, updated_at = $4 WHERE id = $1', [id, stat.mtime, stat.size, stat.mtime.toISOString()]);
+    return { entry: await requireEntry(id), text: next, written: true };
   });
 }
 
@@ -3331,7 +3544,7 @@ export async function setFormIcon(entry: PageIndexEntry, icon: string | undefine
  * on every scan so a rescan doesn't quietly reset what was set here.
  */
 export async function setBinaryPageOrder(entry: PageIndexEntry, order: number): Promise<void> {
-  if (entry.kind !== 'pdf' && entry.kind !== 'office') throw badRequest('page is not a pdf/office file');
+  if (entry.kind !== 'pdf' && entry.kind !== 'office' && entry.kind !== 'canvas' && entry.kind !== 'base') throw badRequest('page is not a pdf/office file or a canvas or a base');
   if (order === entry.explicitOrder) return;
   await query('UPDATE pages_index SET sort_order = $2 WHERE id = $1', [entry.id, order]);
   entry.order = order;
@@ -3340,7 +3553,7 @@ export async function setBinaryPageOrder(entry: PageIndexEntry, order: number): 
 
 /** setBinaryPageOrder's icon twin — same "index-only, not in git" trade-off. */
 export async function setBinaryPageIcon(entry: PageIndexEntry, icon: string | undefined): Promise<void> {
-  if (entry.kind !== 'pdf' && entry.kind !== 'office') throw badRequest('page is not a pdf/office file');
+  if (entry.kind !== 'pdf' && entry.kind !== 'office' && entry.kind !== 'canvas' && entry.kind !== 'base') throw badRequest('page is not a pdf/office file or a canvas or a base');
   if (icon === entry.icon) return;
   await query('UPDATE pages_index SET icon = $2 WHERE id = $1', [entry.id, icon ?? null]);
   entry.icon = icon;
@@ -3553,11 +3766,19 @@ export async function readFreshFormDoc(id: string): Promise<FormDoc> {
  * tab must never be able to repoint a form at a different table or forge
  * its id.
  */
-export async function writeFormDoc(id: string, doc: Omit<FormDoc, 'meta' | 'table'>): Promise<PageMeta> {
+export async function writeFormDoc(
+  id: string,
+  doc: Omit<FormDoc, 'meta' | 'table'>,
+  opts: {
+    /** Runs under the file lock with the file as it is on disk now, before anything is written; throwing refuses the write (an etag check: forms/service.ts). */
+    beforeWrite?: (currentRaw: string) => void;
+  } = {},
+): Promise<PageMeta> {
   const entry = await requireEntry(id);
   if (entry.kind !== 'form') throw badRequest('page is not a form');
   const next = await withDocFileLock(id, async () => {
     const prev = await fs.readFile(entry.absPath, 'utf8');
+    opts.beforeWrite?.(prev);
     const current = parseFormFile(prev);
     if (isFormParseError(current)) throw badRequest(`form file is invalid: ${current.message}`);
     const merged: FormDoc = { ...doc, meta: current.meta, table: current.table };
@@ -3772,8 +3993,20 @@ function pageFileKind(name: string): PageKind | undefined {
   if (lower.endsWith('.excalidraw.svg')) return 'board';
   if (lower.endsWith('.pdf')) return 'pdf';
   if (officeFormat(lower)) return 'office';
+  if (lower.endsWith('.canvas')) return 'canvas';
+  if (lower.endsWith('.base')) return 'base';
   if (lower.endsWith('.md')) return 'doc';
   return undefined;
+}
+
+/** True when both paths are one file (the same inode) — a case-only rename on a case-insensitive filesystem. */
+async function isSameFile(a: string, b: string): Promise<boolean> {
+  try {
+    const [sa, sb] = await Promise.all([fs.stat(a), fs.stat(b)]);
+    return sa.ino === sb.ino && sa.dev === sb.dev;
+  } catch {
+    return false;
+  }
 }
 
 async function isDirectory(abs: string): Promise<boolean> {
@@ -3845,9 +4078,9 @@ async function rewritePageFileId(space: string, abs: string, kind: PageKind, new
       withTablePageFields(serializeFormFile({ ...parsedForm, meta: { ...parsedForm.meta, id: newId } }), order, icon, raw),
       'utf8',
     );
-  } else if (kind === 'pdf' || kind === 'office') {
-    // Never rewritten (see "Binary page files"): the copied bytes stay as
-    // they are and the fresh id rides a claim the following scan picks up.
+  } else if (kind === 'pdf' || kind === 'office' || kind === 'canvas' || kind === 'base') {
+    // Never rewritten (see "Binary page files"; a canvas is never written either):
+    // the copied bytes stay as they are and the fresh id rides a claim the following scan picks up.
     claimPageId(abs, newId);
   } else {
     const raw = await fs.readFile(abs, 'utf8');
@@ -4100,7 +4333,11 @@ export async function copyPage(
               ? '.pdf'
               : source.kind === 'office'
                 ? `.${officeFormat(source.relPath)}`
-                : '.md';
+                : source.kind === 'canvas'
+                  ? '.canvas'
+                : source.kind === 'base'
+                  ? '.base'
+                  : '.md';
     const relPath = await uniqueRelPath(toSpace, toParentPath, stem, ext);
     const destAbs = path.join(spaceDir(toSpace), relPath);
 
@@ -4136,8 +4373,8 @@ export async function copyPage(
         withTablePageFields(serializeFormFile({ ...parsed, meta: { ...parsed.meta, id: copiedId } }), undefined, source.icon, raw),
         'utf8',
       );
-    } else if (source.kind === 'pdf' || source.kind === 'office') {
-      // Bytes copied as they are (see "Binary page files"); the fresh id rides a claim the scan below picks up.
+    } else if (source.kind === 'pdf' || source.kind === 'office' || source.kind === 'canvas' || source.kind === 'base') {
+      // Bytes copied as they are (see "Binary page files"; a canvas is never written either); the fresh id rides a claim the scan below picks up.
       claimPageId(destAbs, copiedId);
       await fs.copyFile(source.absPath, destAbs);
     } else {
@@ -4256,9 +4493,41 @@ export function validateSlug(rawSlug: string): string {
   return slug;
 }
 
+/**
+ * Kinds whose title IS the file name, as in Obsidian (owner, 16.10.2026): an
+ * Obsidian canvas / base is renamed to any valid file name ("My tasks", non-Latin letters too), not
+ * to a lowercase-ASCII slug. The extension stays.
+ */
+export function isFreeNameKind(kind: PageKind): boolean {
+  return kind === 'canvas' || kind === 'base';
+}
+
+/** What no file name may hold (Obsidian's own rule for a file name) plus control characters. */
+const FILE_NAME_FORBIDDEN_RE = /[/\\:*?"<>|\u0000-\u001f\u007f]/;
+/** The longest name (bytes, extension excluded) accepted — most filesystems stop at 255 for the whole name. */
+export const FILE_NAME_MAX_BYTES = 200;
+
+/**
+ * The file stem a canvas / base is renamed to: Unicode and spaces kept (NFC),
+ * trimmed, the extension it already has dropped when typed. Refused (400) when
+ * empty, starting with a dot, ending with a dot, holding `/ \ : * ? " < > |` or
+ * a control character, or too long.
+ */
+export function normalizeFreeFileName(raw: string, ext: string): string {
+  let stem = raw.normalize('NFC').trim();
+  if (stem.toLowerCase().endsWith(ext.toLowerCase())) stem = stem.slice(0, -ext.length).trim();
+  if (!stem) throw badRequest('the name must not be empty');
+  if (stem.startsWith('.')) throw badRequest('the name must not start with a dot');
+  if (stem.endsWith('.')) throw badRequest('the name must not end with a dot');
+  if (FILE_NAME_FORBIDDEN_RE.test(stem)) throw badRequest('the name must not contain / \\ : * ? " < > | or control characters');
+  if (Buffer.byteLength(stem, 'utf8') > FILE_NAME_MAX_BYTES) throw badRequest(`the name is too long (at most ${FILE_NAME_MAX_BYTES} bytes)`);
+  return stem;
+}
+
 export async function renamePageSlug(id: string, rawSlug: string): Promise<SlugRenameResult> {
-  const slug = validateSlug(rawSlug);
   const entry = await requireEntry(id);
+  const free = isFreeNameKind(entry.kind);
+  const slug = free ? normalizeFreeFileName(rawSlug, entry.kind === 'canvas' ? '.canvas' : '.base') : validateSlug(rawSlug);
   if (entry.isIndex && entry.dirPath === '') throw badRequest('cannot change the slug of the space root');
 
   return withSpaceLock(entry.space, async () => {
@@ -4303,7 +4572,11 @@ export async function renamePageSlug(id: string, rawSlug: string): Promise<SlugR
                 ? '.pdf'
                 : entry.kind === 'office'
                   ? `.${officeFormat(entry.relPath)}`
-                  : '.md';
+                  : entry.kind === 'canvas'
+                  ? '.canvas'
+                  : entry.kind === 'base'
+                    ? '.base'
+                    : '.md';
       srcAbs = entry.absPath;
       destAbs = path.join(path.dirname(entry.absPath), `${slug}${ext}`);
       oldRelPath = entry.relPath;
@@ -4322,7 +4595,11 @@ export async function renamePageSlug(id: string, rawSlug: string): Promise<SlugR
     }
 
     if (srcAbs === destAbs) return { meta: toPageMeta(entry), moved: [] }; // renaming to the same slug: no-op
-    if (await pathExists(destAbs)) throw conflict('a page already exists with this slug at this location');
+    // A change of letter case only ("tasks" -> "Tasks") on a case-insensitive filesystem: the destination IS the source.
+    const sameFile = srcAbs.toLowerCase() === destAbs.toLowerCase() && (await isSameFile(srcAbs, destAbs));
+    if (!sameFile && (await pathExists(destAbs))) {
+      throw conflict(free ? `a file named "${path.basename(destAbs)}" already exists in this folder` : 'a page already exists with this slug at this location');
+    }
     if (childDirDestAbs && (await pathExists(childDirDestAbs))) throw conflict('a page already exists with this slug at this location');
 
     // Snapshot every page nested under the directory BEFORE renaming it, so we know
@@ -4507,7 +4784,7 @@ async function snapshotPageAccess(space: string, scope: { all: boolean; pageId?:
 interface TrashRecord {
   spaceSlug: string;
   pageId: string;
-  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'folder' | 'space';
+  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'folder' | 'space';
   origPath: string;
   title: string;
   trashPath: string;
@@ -4541,7 +4818,7 @@ async function snapshotIndexOnlyIds(space: string, scope: { all: boolean; pageId
   if (!isLightFootprintSpace(space)) return [];
   const rows = await query<{ id: string; path: string }>(
     `SELECT id, path FROM pages_index
-      WHERE space_slug = $1 AND kind IN ('doc', 'pdf', 'office')
+      WHERE space_slug = $1 AND kind IN ('doc', 'pdf', 'office', 'canvas', 'base')
         AND ($2::boolean OR id = $3 OR ($4::text IS NOT NULL AND substr(path, 1, length($4)) = $4))
       ORDER BY path`,
     [space, scope.all, scope.pageId ?? null, scope.dirPrefix ?? null],

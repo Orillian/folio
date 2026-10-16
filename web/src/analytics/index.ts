@@ -108,7 +108,7 @@ export function trackOnce(event: string, key: string, props?: Props): void {
   track(event, props);
 }
 
-export type PageKind = 'doc' | 'board' | 'table' | 'form' | 'pdf' | 'office' | 'agent';
+export type PageKind = 'doc' | 'board' | 'table' | 'form' | 'pdf' | 'office' | 'canvas' | 'base' | 'agent';
 
 export function trackPageOpen(kind: PageKind, space: string): void {
   track('page_open', { kind, space_slug: space });

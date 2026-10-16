@@ -24,15 +24,14 @@ import { isDemoMode } from '../demo.js';
 import { DEMO_OAUTH_PER_MINUTE } from '../demoLimits.js';
 import { notFound } from '../errors.js';
 import { ClientMetadataError, fetchClientMetadata, isMetadataClientId } from './cimd.js';
+import { exchangeAuthorizationCode } from './exchange.js';
 import { CONSENT_HEADERS, pickLang, renderConsentPage, renderErrorPage } from './consentPage.js';
 import * as store from './store.js';
 import {
   MAX_REDIRECT_URIS,
   SUPPORTED_SCOPES,
   isValidCodeChallenge,
-  isValidCodeVerifier,
   parseRequestedScopes,
-  pkceMatches,
   redirectHost,
   redirectUriError,
   redirectUriMatches,
@@ -160,7 +159,8 @@ async function cookieUser(request: FastifyRequest): Promise<User | null> {
 async function resolveClient(clientId: string): Promise<store.OAuthClient> {
   const cached = await store.getClient(clientId);
   if (!isMetadataClientId(clientId)) {
-    if (!cached || cached.source !== 'dcr') throw new ClientMetadataError('unknown client_id');
+    // Self-registered clients, and Folio's own internal ones (the chat link previews, server/integrations/chat).
+    if (!cached || cached.source === 'cimd') throw new ClientMetadataError('unknown client_id');
     return cached;
   }
   if (cached?.fetchedAt && Date.now() - cached.fetchedAt.getTime() < CIMD_CACHE_SECONDS * 1000) return cached;
@@ -370,29 +370,9 @@ export async function registerOAuthRoutes(app: FastifyInstance, opts: OAuthRoute
       };
 
       if (p.grant_type === 'authorization_code') {
-        if (!p.code || !p.redirect_uri || !p.code_verifier) return oauthError(reply, 400, 'invalid_request', 'code, redirect_uri and code_verifier are required');
-        if (!isValidCodeVerifier(p.code_verifier)) return oauthError(reply, 400, 'invalid_grant', 'code_verifier is not valid');
-        const row = await store.findCode(p.code);
-        if (!row || row.clientId !== client.clientId || row.redirectUri !== p.redirect_uri || !pkceMatches(p.code_verifier, row.codeChallenge)) {
-          return oauthError(reply, 400, 'invalid_grant', 'the authorization code is invalid');
-        }
-        // Everything the caller must prove has been proven; only now is a replay conclusive.
-        if (row.usedAt) {
-          if (row.grantId) await store.revokeGrant(row.grantId);
-          recordAudit(row.userId, 'oauth.code_replayed', row.clientId);
-          return oauthError(reply, 400, 'invalid_grant', 'the authorization code was already used');
-        }
-        if (row.expired) return oauthError(reply, 400, 'invalid_grant', 'the authorization code has expired');
-        const owner = await authStore.findUserById(row.userId);
-        if (!owner || owner.disabled) return oauthError(reply, 400, 'invalid_grant', 'the authorization code is invalid');
-        const grantId = await store.createGrant({ userId: row.userId, clientId: row.clientId, scopes: row.scopes, resource: row.resource });
-        if (!(await store.markCodeUsed(p.code, grantId))) {
-          await store.revokeGrant(grantId);
-          return oauthError(reply, 400, 'invalid_grant', 'the authorization code was already used');
-        }
-        const tokens = await store.issueFirstTokens(grantId);
-        recordAudit(row.userId, 'oauth.connected', grantId, { client: row.clientId, scopes: row.scopes });
-        return respond(tokens, row.scopes);
+        const out = await exchangeAuthorizationCode({ clientId: client.clientId, code: p.code, redirectUri: p.redirect_uri, codeVerifier: p.code_verifier });
+        if (!out.ok) return oauthError(reply, 400, out.error, out.description);
+        return respond(out.tokens, out.scopes);
       }
 
       if (p.grant_type === 'refresh_token') {

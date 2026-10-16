@@ -42,3 +42,18 @@ export function publicUrlOrOrigin(originFallback: string): string {
   const base = raw ? normalizePublicUrl(raw) : originFallback;
   return base.replace(/\/$/, '');
 }
+
+/**
+ * The instance's own host from PUBLIC_URL (lowercase, no port, no trailing dot), '' when PUBLIC_URL is unset or
+ * does not parse. The page index (indexV2/resolve.ts parseAppLink) reads an absolute URL on this host as a Folio
+ * app link — the same host publicSites.ts mainHost() gives the chat link previews.
+ */
+export function instanceHost(): string {
+  const raw = process.env.PUBLIC_URL;
+  if (!raw || !raw.trim()) return '';
+  try {
+    return new URL(normalizePublicUrl(raw)).hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return '';
+  }
+}

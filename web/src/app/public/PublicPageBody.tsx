@@ -9,6 +9,7 @@ import { TablePageView } from '../routes/TablePageView';
 import { FormPageView } from '../routes/FormPageView';
 import { PdfView } from '../routes/PdfView';
 import { OfficeView } from '../routes/OfficeView';
+import { CanvasPane } from '../../canvas';
 import { publicFileUrl, publicHomeUrl, publicPageUrl } from './publicSite';
 import '../i18n/register';
 
@@ -46,6 +47,7 @@ export interface PublicPageBodyProps {
  *   board  the stored SVG, static
  *   form   the form, with sending disabled (that needs a session or a share link)
  *   pdf / office  the file itself from `/files/<space>/<path>`
+ *   canvas the Obsidian canvas, read-only; file cards open the site's own pages (only public ones resolve)
  */
 export function PublicPageBody({ site, page }: PublicPageBodyProps) {
   const { t } = useTranslation('app');
@@ -65,7 +67,7 @@ export function PublicPageBody({ site, page }: PublicPageBodyProps) {
         <p className="mx-6 mt-6 rounded-md bg-neutral-100 px-3 py-2 text-xs text-neutral-600 dark:bg-neutral-900 dark:text-neutral-400">
           {t('publicSite.formReadOnly')}
         </p>
-        <FormPageView pageId={page.id} markdown={page.markdown ?? ''} canEdit={false} submitDisabled />
+        <FormPageView pageId={page.id} markdown={page.markdown ?? ''} choices={page.formChoices} canEdit={false} submitDisabled />
       </div>
     );
   }
@@ -78,6 +80,28 @@ export function PublicPageBody({ site, page }: PublicPageBodyProps) {
     return (
       <div className="h-full">
         <PdfView pageId={page.id} title={page.title} version={page.updatedAt} src={publicFileUrl(page.space, page.path)} />
+      </div>
+    );
+  }
+
+  if (page.kind === 'base') {
+    // A base shows page properties, which a public site does not publish.
+    return <div className="p-8 text-sm text-neutral-500 dark:text-neutral-400">{page.title}</div>;
+  }
+
+  if (page.kind === 'canvas' && page.canvas) {
+    return (
+      <div className="h-[calc(100dvh-4rem)] min-h-[24rem]">
+        <CanvasPane
+          payload={page.canvas}
+          pageId={page.id}
+          space={page.space}
+          pagePath={page.path}
+          publicSite={markdownSite}
+          pageHref={(id) => markdownSite.pageUrl(id)}
+          fileUrl={(p) => publicFileUrl(page.space, p)}
+          pdfUrl={(_id, p) => publicFileUrl(page.space, p)}
+        />
       </div>
     );
   }

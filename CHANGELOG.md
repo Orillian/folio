@@ -4,8 +4,181 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-16
+
+A graph of how your pages link, Obsidian canvases and bases, and a few tools for
+working together. The space opens as a graph (across spaces, with the page tree
+as dashed lines) and every page has a local graph panel. Obsidian canvases open
+as pages, Obsidian bases run as live tables, cards and lists whose cells you can
+edit, and a canvas converts to a Folio board. A page gets a shared countdown
+timer, the properties panel works on every page kind, Folio links are indexed as
+page links, and a link pasted into Slack or Microsoft Teams unfurls into a card.
+Folio AI and MCP now build forms, tables and bases (the MCP server has 40 tools,
+and a `get_graph` tool reads the link graph). Optional error reporting with a
+"Report a problem" dialog is off by default. Indexing no longer blocks the
+server. The interface now speaks English and Ukrainian only (the Russian
+interface is removed). Adds migrations 045 to 048.
+
 ### Added
 
+- **A reload no longer loses a form you were building or filling in.** The form
+  editor keeps a local draft of everything on screen (title, description, submit
+  text, fields with help text and "required", order, fields not saved yet) and
+  offers it back after a reload with "Restore" / "Discard"; closing the editor with
+  unsaved changes asks whether to keep editing, close and keep the draft, or discard
+  it, and closing the tab warns. A person filling in a form (signed in, through a
+  share link, or an embedded form) gets their answers back after a reload with a
+  "Clear" link, and they are removed once the response is sent. Drafts live in the
+  browser only, per user and per form; file contents and sensitive field types are
+  never stored.
+- **Optional error reporting and a "Report a problem" dialog (off by default).**
+  Set `SENTRY_DSN` to the DSN of a Sentry project of your own and the server and
+  the browser report unhandled errors and 5xx answers (a sample of traces too:
+  `SENTRY_TRACES_SAMPLE_RATE`, default 0.1), and the user menu gets "Report a
+  problem": a message, an optional screenshot (picked or pasted), the page path
+  without its query, the page id and kind, the release and the browser, tied to
+  the last error the person ran into. Nothing goes to the Folio authors. No page
+  content, search words, request bodies, cookies, `Authorization` headers or query
+  strings are sent (a share token in a path becomes `[token]`); the user is the
+  internal id only; there is no Session Replay; expected 4xx answers are not
+  reported. With no DSN nothing is loaded and nothing is contacted. Builds given
+  `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT` and `FOLIO_RELEASE` upload
+  source maps and delete them from the output. Details:
+  [docs/INSTALL.md](docs/INSTALL.md#optional-error-reporting-off-by-default).
+- **Graph view across spaces and with the tree structure.** A page of another
+  space that you may open appears in the graph, labelled "space / title" in its
+  own colour, and opens in its own space. A "Tree structure" toggle (on by
+  default) adds the page tree's parent → child lines, dashed, so a nested space
+  is not a cloud of dots; in the local graph the parent, the children and the
+  siblings (two steps away) are neighbours too. The graph API takes `tree=1`.
+- **A clearer local graph panel.** A visible Depth label with a hint on each
+  button (direct links, through one page, through two pages), a header that
+  collapses the section (remembered for every page), and an empty state that
+  says how to get links.
+- **Canvases in an Obsidian vault follow renames, like notes.** In a
+  light-footprint space (an Obsidian vault, a notes repository) the `.canvas`
+  file used to be left alone, so a file card read "File not found" after a note
+  was renamed or moved through Folio. The canvas is now rewritten in every space
+  by the same rules as the wikilinks of notes: only the changed path strings are
+  touched, every other byte stays, and the edit rides the rename's own commit.
+- **Free names for canvases and bases.** As in Obsidian, the name of a canvas or
+  a base is its file name. "Rename" in the page tree menu takes any valid file
+  name, such as "My tasks" with a space or non-Latin letters (no `/ \ : * ? " < > |`,
+  no leading or trailing dot, up to 200 bytes), keeps the `.canvas` / `.base`
+  extension, moves the page's property sidecar along, rewrites links to the file
+  (wikilinks, Markdown links, file cards of other canvases, vaults included) in
+  one commit, and keeps the page id. A name already taken is refused with a clear
+  error; a change of letter case is allowed. `POST /api/pages/:id/rename` now
+  renames the file for these two kinds as well, and `POST /api/pages/:id/slug`
+  takes a free name for them (other pages still take a lowercase slug).
+- **The built-in assistant and MCP build every kind of page.** Folio AI in Agent
+  mode, and any MCP client with a `write` token, can now create and change forms
+  and the table their answers go to, change data table columns and views, and
+  turn an Obsidian canvas into an editable board. Seven new tools (40 in all, 20
+  of them read-only): `create_form`, `update_form` (the same steps as the form
+  editor: a new field adds a column to the paired table, a removed field keeps
+  its column and answers; a stale `etag` is refused), `folio_table_update_column`,
+  `folio_table_delete_column`, `folio_table_save_view`, `folio_table_delete_view`
+  and `convert_canvas_to_board`. `read_page` on a form returns its fields and
+  etag. A `status` column created through MCP without options gets the status
+  preset, as in the web app. The assistant has two new skills, for forms and for
+  the syntax of bases, and its Ask mode hides exactly the tools that write.
+- **MCP: tags, properties and bases.** Five new tools (the MCP server now has
+  33 tools, 20 of them read-only). `list_tags(space, prefix?, limit?)` returns
+  the space's tag tree with page counts, `list_properties(space)` the property
+  keys in use with their type, page count and sample values; both count only
+  pages the caller can open. `rename_tag(space, from, to)` renames a tag across
+  the space like the web app (bodies, `tags:` / `labels:`, tables, boards and
+  files; one commit authored by the token's owner), changes only pages the
+  caller can edit and reports how many pages it changed and skipped.
+  `set_page_properties(id, properties, etag?, merge?)` writes a page's
+  properties for any page kind through the same code as the properties panel
+  (a stale `etag` fails with the current etag, reserved table and form keys are
+  refused, `merge: true` changes only the keys given). `save_base(space, yaml,
+  path?, id?, etag?)` creates a `.base` or replaces one, refuses invalid YAML
+  with the line number, and returns a preview of the first view.
+- **Link previews in Slack and Microsoft Teams.** A Folio link pasted into a
+  message unfurls into a card with the page's title, breadcrumb, opening text,
+  headings, tags and last update (rows and columns for a data table), built with
+  the Folio access of the person who shared it. People connect their own Folio
+  account once from the chat app (Sign in with Slack or the Teams sign-in window,
+  then Folio's own OAuth consent, read only); a page they cannot open gives a
+  card with no title, and a restricted page shows its title only because the
+  whole channel sees the card. Share links and public-site pages unfurl without
+  connecting. New settings `FOLIO_SLACK_*` and `FOLIO_TEAMS_*`; a new
+  Administration → Chat integrations page with the Slack manifest and the Teams
+  app package; "Chat apps" in API tokens to disconnect. Database migration 045.
+  See [docs/CHAT-PREVIEWS.md](docs/CHAT-PREVIEWS.md).
+- **Obsidian Bases (`.base`).** A base from an Obsidian vault opens as a page:
+  a saved query over the pages of its space that you may open, shown as a table,
+  cards (cover from an `image:` property) or a list, with group by, sort,
+  limit, column summaries (the built-in ones and your own formulas), display
+  names, and the base's and the view's filters combined with `and` / `or` /
+  `not`. Formulas and filters run in a safe evaluator of our own (no `eval`):
+  arithmetic, comparisons, date arithmetic with durations, lists, objects,
+  regular expressions, `this`, and the usual string, number, date, list, link,
+  file and object functions; `html()`, `image()`, `icon()` and plugin functions
+  are not supported (a formula column shows "formula not supported", a filter
+  using one is ignored with a warning), and `kanban` and `map` views fall back to
+  a table with a notice. Access is applied in SQL, as in search and the graph, so
+  a page you cannot open is never a row; a query looks at up to 5,000 candidate
+  pages and shows 200 rows at a time. An Edit toggle changes a cell in place: it
+  edits that page's property (only pages you can edit, only note properties,
+  never `file.*` or `formula.*`, never a Folio key holding a foreign value). A
+  visual editor ("Configure") edits views, filters, formulas and display names
+  and has a raw YAML tab; saving keeps unchanged blocks and views byte for byte,
+  comments and unknown keys included, in one commit by you. Create one with
+  "+ → New base" or the quick switcher's "New base", or turn a search into a base
+  with "Save as base…". `base` code blocks in documents render the same view
+  (read-only, with `this` meaning the document); share links and public sites
+  show a note instead. A base exports to Markdown as its YAML in a `base` fence,
+  and `kind:base` works in search. New REST routes
+  `GET /api/pages/:id/base`, `GET /api/pages/:id/base/source`,
+  `PUT /api/pages/:id/base` and `POST /api/spaces/:space/base/preview`, and a
+  read-only MCP tool `query_base`; `read_page` on a base returns its YAML and `fetch` renders its rows
+  as a table. Database migration 047. Not yet: `kanban` and `map` views, editing
+  cells inside an embedded block, attachments as rows, `![[x.base]]` embeds, and
+  a base across spaces.
+- **Graph view.** A "Graph" row under Tags in the sidebar opens the space as a
+  graph: pages are nodes, links are edges, and tags, attachments and unresolved
+  links can be added. A "Local graph" section at the top of a document's
+  right-hand panel shows the page and its neighbours 1 to 3 links away (out, in
+  or both) and opens full size. Hover highlights neighbours, click opens the
+  page, nodes drag, the canvas zooms and pans, and on a touch screen the first
+  tap selects. A compact settings panel, remembered per space, has filters in the
+  search grammar, colour groups (top folder, page kind, tag or your own query),
+  display options and the four layout forces. The graph is built on the server
+  from the page index in a few queries (5,000 pages in about 150 ms) with page
+  access applied in SQL: a page you cannot open is never a node, a ghost or an
+  edge. Above 10,000 readable pages the most recently changed 10,000 are shown.
+  New REST routes `GET /api/spaces/:space/graph` and
+  `GET /api/pages/:id/graph`, and a read-only MCP tool `get_graph` (the MCP
+  server now has 27 tools); the built-in AI assistant can use it too. The
+  renderer is a small canvas with `d3-force`, loaded only when a graph is opened.
+- **Shared page timer.** A timer icon in the header of every page (and of a folder
+  listing): 1, 3, 5, 10 minutes or a custom time up to 3 hours, a live `mm:ss`
+  countdown, pause / resume / +1 min / reset. It belongs to the page: everyone who
+  has it open sees the same countdown and reaches zero together, with a soft chime
+  (generated in the browser) and a "Time is up" toast; a muted-speaker icon and a
+  hint appear while the browser still blocks sound. Editors on the page control it,
+  everyone else who can read the page watches. The state lives in server memory (not
+  in the page, Git or the audit log) and travels over the existing `/events` socket,
+  only to people who can read the page. `GET`/`POST /api/pages/:id/timer`. Single
+  server process, like the live editing rooms. No migration.
+- **Obsidian canvases (`.canvas`, JSON Canvas 1.0) open as pages.** A canvas is
+  shown as it is, read-only — Folio never writes the file while showing or
+  indexing it: an infinite canvas with pan, zoom and fit, text cards rendered as
+  Markdown (Obsidian syntax included), note cards with the note's start or the
+  `#heading` / `#^block` they are narrowed to, images, audio and video, web page
+  cards with their URL, groups with labels and background images, Obsidian's
+  colours in light and dark, and curved connections with arrows, labels and
+  colours. A card pointing at a page you may not open shows only "No access".
+  Text cards are searchable, their `#tags` tag the canvas, file cards and links
+  in text cards appear in backlinks and unresolved links, and MCP `read_page`
+  returns an `outline` of the canvas. **Convert to Folio board** makes a new,
+  editable whiteboard from a canvas in one commit, showing first what the board
+  cannot keep; the canvas stays. Renaming or moving a page a canvas points at
+  updates the canvas in any space, an Obsidian vault included. Migration `046_page_kind_canvas.sql`.
 - **Properties on data tables, forms, boards and files.** The properties panel
   now appears on every page kind except folders, as a thin row above the page
   ("Properties (N)" at the top left). A data table or a form keeps its properties
@@ -18,8 +191,56 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   the next scan. Tags and properties of all of them work in search (`tag:`,
   `prop:`), in the tag tree and rename, and in MCP `get_page_metadata`.
 
+### Fixed
+
+- **Select, status, member and link questions in a form are real controls now.** They
+  used to show up as plain text boxes. A form (its own page, an embedded `::form{id}`,
+  a share link, a public site) now offers the options of the table column: a radio
+  group up to 6 choices and a dropdown above that, checkboxes or a searchable list for
+  multiple choice, status with its colours, a searchable member picker (only for
+  signed-in members; anonymous respondents never see the member list, and the question
+  is left out for them) and a URL with an optional label for links. The server
+  rejects an answer that is not among the options, a list for a single-choice column,
+  an unknown member and a link that is not http(s)/mailto. Saved drafts keep multiple
+  answers and drop options that no longer exist. The Folio AI `folio-forms` skill
+  describes it.
+- **A collaborator's cursor name tag no longer loses its first letters inside a list
+  item** (it inherited the list's hanging indent).
+- **Graph, bases and the "New base" dialog, after a visual check.** The space graph
+  no longer draws every label into an unreadable mass: labels fade in with the zoom
+  like Obsidian's (the top hubs at the fitted overview, more as you zoom in, none
+  over another; a hovered or selected node and its neighbours stay labelled), and
+  "Text fade threshold" still sets when they all appear. Folders are named by the
+  title of their page (`Tech / Prompts`) in the graph legend and in the `file.folder`
+  column of a base, instead of their slugs; filters and sorting still compare the path.
+  The base editor lists columns, sort, group and summaries by their plain names
+  (Name, Folder, Tags, Modified, …, or the base's `displayName`) with the raw key as
+  a muted hint. "New base" opens at once, and on a phone the graph's counts no longer
+  sit under the zoom buttons.
+
+- **Links Folio writes itself are page links.** The URL "Copy link" gives
+  (`https://<host>/s/<space>/p/<id>`), a pasted page address, `/s/<space>/p/<id>`
+  as the assistant and MCP write it, the space home `/s/<space>` and a folder
+  route were indexed as external links, so a space linked this way showed its
+  pages and no links in the graph, and backlinks, orphans, unresolved links,
+  bases and `get_backlinks` missed them. They now resolve to the page by id, in
+  any space, on the instance's own host (`PUBLIC_URL`) or root-relative; an
+  unknown id is an unresolved link; other hosts, share links and public-site
+  addresses stay external. Every document is indexed again on the next start.
+- **Indexing no longer blocks the server.** Some Markdown constructs (a large
+  table, a long list or quote, a paragraph with thousands of links, one large
+  HTML block) took far more than linear time to index, and a single big
+  document could hold the server for minutes, so health checks failed while it
+  started. Big documents are now indexed in chunks with pauses between them; a
+  space of 3,000 pages with 1–2 MB documents is indexed while the server keeps
+  answering within a fraction of a second.
+
 ### Changed
 
+- **A browser that asks for Russian gets Ukrainian.** Folio's interface languages
+  are English and Ukrainian; a saved `ru` interface choice from an older database
+  becomes `uk` (migration `048`), and any other unknown browser language still
+  falls back to English.
 - **Reading mode is read-only for properties.** In Reading mode the properties
   are shown as text and chips for everyone; adding, editing and removing them
   happens in Live and Source.

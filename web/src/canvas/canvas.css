@@ -1,0 +1,256 @@
+/* Obsidian canvas (JSON Canvas) renderer — CanvasView.tsx. Theme tokens follow
+   the same two-block rule as markdown.css: prefers-color-scheme for "system",
+   html[data-theme] for an explicit choice. Card colours themselves come from
+   renderModel.ts (Obsidian's palette), set inline. */
+
+.folio-canvas {
+  --cv-bg: #f6f6f5;
+  --cv-dot: rgba(28, 25, 23, 0.14);
+  --cv-card-bg: #ffffff;
+  --cv-card-border: #d6d3d1;
+  --cv-card-fg: #1c1917;
+  --cv-muted: #78716c;
+  --cv-edge: #a8a29e;
+  --cv-group-border: #d6d3d1;
+  --cv-group-fill: rgba(120, 113, 108, 0.04);
+  --cv-label-bg: #f6f6f5;
+  --cv-select: #7c3aed;
+  --cv-toolbar-bg: rgba(255, 255, 255, 0.92);
+
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  background-color: var(--cv-bg);
+  background-image: radial-gradient(var(--cv-dot) 1px, transparent 1px);
+  touch-action: none;
+  user-select: none;
+  outline: none;
+  color: var(--cv-card-fg);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme='light']) .folio-canvas {
+    --cv-bg: #161413;
+    --cv-dot: rgba(231, 229, 228, 0.12);
+    --cv-card-bg: #1f1c1a;
+    --cv-card-border: #3a3532;
+    --cv-card-fg: #e7e5e4;
+    --cv-muted: #a8a29e;
+    --cv-edge: #78716c;
+    --cv-group-border: #44403c;
+    --cv-group-fill: rgba(231, 229, 228, 0.03);
+    --cv-label-bg: #161413;
+    --cv-select: #a78bfa;
+    --cv-toolbar-bg: rgba(31, 28, 26, 0.92);
+  }
+}
+html[data-theme='dark'] .folio-canvas {
+  --cv-bg: #161413;
+  --cv-dot: rgba(231, 229, 228, 0.12);
+  --cv-card-bg: #1f1c1a;
+  --cv-card-border: #3a3532;
+  --cv-card-fg: #e7e5e4;
+  --cv-muted: #a8a29e;
+  --cv-edge: #78716c;
+  --cv-group-border: #44403c;
+  --cv-group-fill: rgba(231, 229, 228, 0.03);
+  --cv-label-bg: #161413;
+  --cv-select: #a78bfa;
+  --cv-toolbar-bg: rgba(31, 28, 26, 0.92);
+}
+
+.folio-canvas-world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.folio-canvas-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.folio-canvas-group {
+  position: absolute;
+  border: 2px solid var(--cv-group-border);
+  border-radius: 10px;
+  background-color: var(--cv-group-fill);
+  background-repeat: no-repeat;
+  background-position: center;
+}
+.folio-canvas-group-label {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 10px;
+  border-radius: 6px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--cv-card-fg);
+  background: var(--cv-group-border);
+}
+
+.folio-canvas-card {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  border: 2px solid var(--cv-card-border);
+  border-radius: 8px;
+  background: var(--cv-card-bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+/* The colour wash sits over the card's own background, under its content. */
+.folio-canvas-card-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  pointer-events: none;
+}
+.folio-canvas-card[data-selected='true'] {
+  outline: 3px solid var(--cv-select);
+  outline-offset: 2px;
+}
+.folio-canvas-card-label {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 4px);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  color: var(--cv-muted);
+}
+.folio-canvas-card-label a {
+  color: inherit;
+  text-decoration: none;
+}
+.folio-canvas-card-label a:hover {
+  text-decoration: underline;
+}
+.folio-canvas-card-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px 16px;
+  user-select: text;
+}
+.folio-canvas-card[data-selected='true'] .folio-canvas-card-body {
+  overflow-y: auto;
+}
+/* Markdown inside a card: no page padding, no reading-width cap, a card-sized type scale. */
+.folio-canvas-card .folio-markdown {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--cv-card-fg);
+}
+.folio-canvas-card .folio-markdown h1 { font-size: 1.5rem; margin: 0 0 0.5em; }
+.folio-canvas-card .folio-markdown h2 { font-size: 1.25rem; margin: 0.8em 0 0.4em; }
+.folio-canvas-card .folio-markdown h3 { font-size: 1.1rem; margin: 0.8em 0 0.4em; }
+.folio-canvas-card .folio-markdown p { margin: 0.4em 0; }
+
+.folio-canvas-center {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px;
+  text-align: center;
+  color: var(--cv-muted);
+  font-size: 15px;
+  overflow: hidden;
+}
+.folio-canvas-media {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  pointer-events: none;
+}
+.folio-canvas-lite {
+  overflow: hidden;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+  padding: 12px 16px;
+  color: var(--cv-card-fg);
+}
+
+.folio-canvas-edge-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: max-content;
+  max-width: 260px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--cv-label-bg);
+  color: var(--cv-card-fg);
+  font-size: 14px;
+  line-height: 1.3;
+  text-align: center;
+  white-space: pre-wrap;
+  pointer-events: none;
+}
+
+.folio-canvas-toolbar {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--cv-card-border);
+  border-radius: 10px;
+  background: var(--cv-toolbar-bg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(6px);
+  font-size: 13px;
+  color: var(--cv-card-fg);
+  user-select: none;
+}
+.folio-canvas-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 32px;
+  height: 32px;
+  justify-content: center;
+  padding: 0 8px;
+  border-radius: 7px;
+}
+.folio-canvas-toolbar button:hover {
+  background: var(--cv-group-fill);
+  background: color-mix(in oklab, var(--cv-card-fg) 8%, transparent);
+}
+.folio-canvas-toolbar .folio-canvas-zoom {
+  min-width: 52px;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 480px) {
+  .folio-canvas-toolbar {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    justify-content: space-between;
+  }
+  .folio-canvas-toolbar .folio-canvas-convert-label {
+    display: none;
+  }
+}

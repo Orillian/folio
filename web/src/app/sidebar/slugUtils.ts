@@ -7,6 +7,38 @@ export function isValidSlug(value: string): boolean {
   return SLUG_PATTERN.test(value);
 }
 
+/**
+ * A canvas / base is named by its file, as in Obsidian: its "slug" is any valid file name (spaces and any script),
+ * not a lowercase-ASCII handle. Mirrors server/storage.ts isFreeNameKind.
+ */
+export function isFreeNameKind(kind: PageKind): boolean {
+  return kind === 'canvas' || kind === 'base';
+}
+
+/** Longest file name (bytes, extension excluded) the server takes — storage.FILE_NAME_MAX_BYTES. */
+const FILE_NAME_MAX_BYTES = 200;
+// eslint-disable-next-line no-control-regex
+const FILE_NAME_FORBIDDEN_RE = /[/\\:*?"<>|\u0000-\u001f\u007f]/;
+
+/**
+ * The file stem typed in the rename dialog, as the server will take it: NFC, trimmed, the extension the file already has
+ * dropped when typed too. Mirrors server/storage.ts normalizeFreeFileName (which stays the authority).
+ */
+export function normalizeFileName(value: string, kind: PageKind): string {
+  const ext = extensionForKind(kind);
+  let stem = value.normalize('NFC').trim();
+  if (stem.toLowerCase().endsWith(ext)) stem = stem.slice(0, -ext.length).trim();
+  return stem;
+}
+
+/** True when `value` (as normalized) is a file name Obsidian would take: not empty, no leading or trailing dot, none of / \\ : * ? " < > |, not too long. */
+export function isValidFileName(value: string, kind: PageKind): boolean {
+  const stem = normalizeFileName(value, kind);
+  if (!stem || stem.startsWith('.') || stem.endsWith('.')) return false;
+  if (FILE_NAME_FORBIDDEN_RE.test(stem)) return false;
+  return new TextEncoder().encode(stem).length <= FILE_NAME_MAX_BYTES;
+}
+
 // A directory's own page — see server/storage.ts's PageIndexEntry.isIndex
 // doc comment: "index.md, or README.md when index.md is absent there".
 // PageMeta/TreeNode don't expose `isIndex` to the client, so this infers it
@@ -43,6 +75,8 @@ export function extensionForKind(kind: PageKind, path?: string): string {
   if (kind === 'table') return '.table.md';
   if (kind === 'form') return '.form.md';
   if (kind === 'pdf') return '.pdf';
+  if (kind === 'canvas') return '.canvas';
+  if (kind === 'base') return '.base';
   if (kind === 'office') {
     const fmt = path ? officeFormat(path) : undefined;
     return `.${fmt ?? 'docx'}`;
@@ -55,6 +89,7 @@ export function newPageTitleKey(kind: PageKind): string {
   if (kind === 'board') return 'sidebar.newBoard';
   if (kind === 'table') return 'sidebar.newTable';
   if (kind === 'form') return 'sidebar.newForm';
+  if (kind === 'base') return 'sidebar.newBase';
   return 'sidebar.newPage';
 }
 

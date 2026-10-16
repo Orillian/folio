@@ -84,7 +84,9 @@ export function PropertiesToggle({ pageId, space, canEdit, open, onToggle, varia
   const { t } = useTranslation('app');
   const { count, visible } = useView(pageId, space, canEdit);
   if (!visible) return null;
-  const label = t('properties.title', { n: count });
+  // Nothing to show yet but the user may add: the toggle says what clicking it does (owner, 16.10).
+  const empty = count === 0 && canEdit;
+  const label = empty ? t('properties.add') : t('properties.title', { n: count });
   if (variant === 'header') {
     return (
       <button
@@ -99,11 +101,17 @@ export function PropertiesToggle({ pageId, space, canEdit, open, onToggle, varia
         className="ph-mask flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-sm text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 max-md:min-h-10 max-md:min-w-10 max-md:justify-center dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
       >
         <ChevronRight size={13} className={`shrink-0 transition-transform max-md:hidden ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
-        <SlidersHorizontal size={14} className="shrink-0 md:hidden" aria-hidden="true" />
+        {empty ? (
+          <Plus size={14} className="shrink-0 md:hidden" aria-hidden="true" />
+        ) : (
+          <SlidersHorizontal size={14} className="shrink-0 md:hidden" aria-hidden="true" />
+        )}
         <span className="hidden truncate md:inline">{label}</span>
-        <span className="text-xs md:hidden" aria-hidden="true">
-          {count}
-        </span>
+        {!empty && (
+          <span className="text-xs md:hidden" aria-hidden="true">
+            {count}
+          </span>
+        )}
       </button>
     );
   }

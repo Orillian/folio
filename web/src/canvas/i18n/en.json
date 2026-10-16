@@ -1,0 +1,64 @@
+{
+  "loading": "Loading canvas…",
+  "readOnlyNote": "Obsidian canvas — shown as it is, read-only. The file is never changed by Folio.",
+  "errorTitle": "This canvas could not be opened",
+  "errorHint": "The file stays as it is. Open it in Obsidian (or fix it in Git) to repair it.",
+  "warningsTitle": "Some parts of this canvas were skipped ({{count}})",
+  "empty": "This canvas is empty.",
+  "toolbar": {
+    "fit": "Fit to screen",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "zoomReset": "Zoom to 100%",
+    "convert": "Convert to Folio board"
+  },
+  "card": {
+    "noAccess": "No access",
+    "missing": "File not found",
+    "open": "Open",
+    "openFile": "Open file",
+    "subpathMissing": "Section not found — showing the start of the note",
+    "emptyNote": "Empty note",
+    "openLink": "Open link",
+    "kind": {
+      "doc": "Note",
+      "board": "Board",
+      "table": "Table",
+      "form": "Form",
+      "pdf": "PDF",
+      "office": "Office file",
+      "canvas": "Canvas",
+      "folder": "Folder"
+    }
+  },
+  "convert": {
+    "title": "Convert to Folio board",
+    "intro": "A new board is made from this canvas. The canvas itself stays exactly as it is.",
+    "name": "Board name",
+    "location": "Folder",
+    "locationRoot": "Space root",
+    "keep": "Keep the canvas",
+    "keepHint": "Always: the canvas file is not changed or removed.",
+    "lossesTitle": "What changes in the board",
+    "lossesLoading": "Checking what changes…",
+    "noLosses": "Nothing is lost.",
+    "submit": "Create board",
+    "creating": "Creating…",
+    "failed": "The board could not be created",
+    "created": "Board created",
+    "loss": {
+      "markdownFlattened": "Markdown in text cards becomes plain text (headings, emphasis, links): {{count}}",
+      "textCut": "Text longer than its card is cut with “…”: {{count}}",
+      "noteContentNotEmbedded": "Note cards show the note's title and link to it, not its content: {{count}}",
+      "imageAsCard": "Images too large to carry inside the board become linked cards: {{count}}",
+      "mediaAsCard": "Audio, video and other files become linked cards: {{count}}",
+      "linkPreview": "Web page cards become links: {{count}}",
+      "groupBackground": "Group background images are dropped: {{count}}",
+      "nestedGroups": "Groups inside groups become separate frames: {{count}}",
+      "edgeRouting": "Curved connections become right-angled arrows: {{count}}",
+      "noAccessCards": "Cards you have no access to become “No access” placeholders: {{count}}",
+      "missingCards": "Cards whose file is missing keep only the missing path: {{count}}",
+      "skippedInvalid": "Parts of the file that could not be read are left out: {{count}}"
+    }
+  }
+}

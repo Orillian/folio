@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router';
@@ -38,6 +38,8 @@ import { MermaidBlock } from '../diagrams';
 import { Backlinks } from './Backlinks';
 import { PageTree } from './PageTree';
 import { FormEmbed } from './FormEmbed';
+// Obsidian Bases: a ```base block runs as a live view; loaded on demand (and no static markdown -> app edge).
+const BaseEmbed = lazy(() => import('../bases/BaseEmbed'));
 import type { MarkdownPublicSite } from './publicSite';
 import './i18n/register';
 import './markdown.css';
@@ -294,7 +296,7 @@ export function Markdown({ markdown, space, pagePath, pageId, shareLinksPageId, 
     // comment / parseFolioLink).
     const origin = typeof window !== 'undefined' ? window.location.origin : undefined;
     return segments.map((segment) => {
-      if (segment.type === 'mermaid' || segment.type === 'pagetree' || segment.type === 'form-embed') return segment;
+      if (segment.type === 'mermaid' || segment.type === 'base' || segment.type === 'pagetree' || segment.type === 'form-embed') return segment;
       const html = renderMarkdownToHtml(
         segment.value,
         {
@@ -612,6 +614,17 @@ export function Markdown({ markdown, space, pagePath, pageId, shareLinksPageId, 
         segment.type === 'mermaid' ? (
           <div className="folio-mermaid-segment" key={index}>
             <MermaidBlock code={segment.code} />
+          </div>
+        ) : segment.type === 'base' ? (
+          <div className="folio-base-segment" key={index}>
+            {/* A base lists pages and their properties for a signed-in reader; a share guest or a public visitor gets a note. */}
+            {shareToken || publicSite ? (
+              <p className="text-sm text-neutral-400 dark:text-neutral-500">{t('base.unavailable')}</p>
+            ) : (
+              <Suspense fallback={null}>
+                <BaseEmbed source={segment.code} space={space} pageId={pageId} />
+              </Suspense>
+            )}
           </div>
         ) : segment.type === 'pagetree' ? (
           <div className="folio-pagetree-segment" key={index}>

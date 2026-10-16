@@ -10,5 +10,17 @@
   "loading": "Loading form…",
   "notFound": "Form not found",
   "viewTable": "View table",
-  "checkboxYes": "Yes"
+  "checkboxYes": "Yes",
+  "answersRestored": "Your answers from {{time}} were restored.",
+  "answersClear": "Clear",
+  "answersSkipped": "Files are not kept — attach them again: {{fields}}.",
+  "choiceNone": "No options to choose from yet",
+  "choiceClear": "Clear choice",
+  "choicePlaceholder": "Select…",
+  "choiceSearch": "Search…",
+  "choiceNothingFound": "Nothing found",
+  "choiceRemove": "Remove {{value}}",
+  "linkUrl": "Link URL",
+  "linkLabel": "Label (optional)",
+  "answersDropped": "These answers are no longer among the choices and were left out: {{fields}}."
 }

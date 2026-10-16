@@ -32,9 +32,18 @@ Every page has:
     skill);
   - `table` — a data table (a separate format, its own set of
     `folio_table_*` tools; see the `folio-tables` skill);
-- `title` — **not a separate field that can be written freely**: it is the
-  first H1 of the body of the document. Renaming a page is an edit of the
-  H1, not of a separate title;
+  - `form` — a form: questions whose answers become rows of a paired data
+    table (`create_form`/`update_form`; see the `folio-forms` skill);
+  - `base` — an Obsidian base (`.base`): a saved query over the pages of a
+    space, shown as a table, cards or a list (`query_base`/`save_base`; see
+    the `folio-bases` skill);
+  - `canvas` — an Obsidian canvas (`.canvas`), read-only: `read_page` gives
+    its outline, `convert_canvas_to_board` makes an editable board of it;
+  - `pdf` / `office` — an uploaded file, not text the tools return;
+- `title` — for a document **not a separate field that can be written
+  freely**: it is the first H1 of the body. Renaming a document is an edit of
+  the H1, not of a separate title (a form's title is changed with
+  `update_form`);
 - the order among siblings and the emoji icon/cover are service fields of
   the frontmatter (`order`, `icon`, `cover`); the server manages them itself,
   the agent does not write them by hand.
@@ -77,3 +86,18 @@ created and edited through `create_board`/`update_board` with the compact
 `sketch` DSL (nodes/arrows) or, for a pinpoint edit of an already existing
 scene, with the full `scene`. The detailed contract is in the `folio-boards`
 skill.
+
+## Forms (kind: form)
+
+A form is a page of questions; every answer is a new row of the data table
+paired with it (each field is one column of that table). `create_form` makes
+the form and, unless an existing table is named, its table as the form's
+child page; `update_form` changes it. The detailed contract is in the
+`folio-forms` skill.
+
+## Bases (kind: base)
+
+A base is a saved query (Obsidian's YAML): its rows are the pages of the
+space that match its filters, its columns their properties. It stores no data
+of its own — a value shown in a base is changed on the page itself
+(`set_page_properties`). The detailed contract is in the `folio-bases` skill.

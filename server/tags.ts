@@ -35,9 +35,10 @@
  * in), under the space lock; the index of each changed page is rebuilt.
  *
  * Who is touched: pages the caller can edit (effective page role, page access
- * included). A page they can read but not edit, or that page access hides from
- * them, is skipped and counted in `pagesSkipped`; `.agent/**` pages are never
- * touched by a non-admin and not counted (they do not exist for that caller).
+ * included). A page they can open but not edit is skipped and counted in
+ * `pagesSkipped`. A page that page access hides from them, and `.agent/**` pages
+ * for a non-admin, are never touched and never counted (they do not exist for
+ * that caller, and a count would tell them how many there are).
  */
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
@@ -56,7 +57,7 @@ import * as gitSync from './gitSync.js';
 import { sqlParam, visiblePagesSql, type PageViewer } from './accessSql.js';
 import { reindexSavedPage } from './indexV2/store.js';
 import { normalizeTag } from './indexV2/parse.js';
-import { parseMarkdownAst } from './markdownAst.js';
+import { parseMarkdownAstChunked } from './markdownAst.js';
 import { parseSidecar, putSidecarText, readSidecarText, sidecarRelPath, unwrapSidecar, usesSidecar, wrapSidecar } from './propsSidecar.js';
 import { ownProperties } from './reservedPropertyKeys.js';
 import * as storage from './storage.js';
@@ -156,7 +157,8 @@ export interface BodyTagToken {
 /** Every `#tag` the page parser would index from `body`, with its source offsets, in order. */
 export function findBodyTagTokens(body: string): BodyTagToken[] {
   if (!body.includes('#')) return [];
-  const tree: Root = parseMarkdownAst(body);
+  // The index's own parse (indexV2/parse.ts): the same tags, in linear time for a big body.
+  const tree: Root = parseMarkdownAstChunked(body);
   const tokens: BodyTagToken[] = [];
 
   const textTokens = (node: Text): void => {
@@ -499,7 +501,10 @@ export async function renameTag(options: RenameTagOptions): Promise<RenameTagRes
         const entry = await storage.getEntry(id);
         if (!entry) continue;
         if (isAgentPath(entry.relPath) && !administers) continue; // does not exist for this caller
-        if (!session.roleAtLeast(await session.effectivePageRole(user, entry), 'editor')) {
+        const role = await session.effectivePageRole(user, entry);
+        // A page the caller cannot open does not exist for them: it is neither changed nor counted.
+        if (role === undefined) continue;
+        if (!session.roleAtLeast(role, 'editor')) {
           pagesSkipped++;
           continue;
         }
@@ -562,7 +567,7 @@ async function renameOwnPropertyTag(entry: storage.PageIndexEntry, from: string,
   const next = unwrapSidecar(renamed);
   await putSidecarText(root, entry.relPath, next);
   await query('UPDATE pages_index SET updated_at = $2 WHERE id = $1', [entry.id, new Date().toISOString()]);
-  await reindexSavedPage(ref, '', parseSidecar(next).data);
+  await storage.reindexSidecarProperties(entry, parseSidecar(next).data);
   return path.join(root, ...sidecarRelPath(entry.relPath).split('/'));
 }
 

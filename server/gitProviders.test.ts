@@ -268,14 +268,14 @@ describe('gitProviders.ts: pagination and provider errors', () => {
 
   it('error texts exist in every server language and keep the {host} placeholder substituted', () => {
     const err = new gitProviders.GitProviderError('git_provider_token_invalid', 'git.example.com');
-    for (const lang of ['en', 'uk', 'ru']) {
+    for (const lang of ['en', 'uk']) {
       const text = err.localize(lang);
       expect(text).toContain('git.example.com');
       expect(text).not.toContain('{host}');
     }
     expect(err.localize('uk')).not.toBe(err.localize('en'));
-    const localized = err.toLocalizedHttpError('ru');
+    const localized = err.toLocalizedHttpError('uk');
     expect(localized.code).toBe('git_provider_token_invalid');
-    expect(localized.message).toBe(err.localize('ru'));
+    expect(localized.message).toBe(err.localize('uk'));
   });
 });

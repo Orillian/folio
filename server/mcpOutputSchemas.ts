@@ -16,7 +16,7 @@ export const pageMetaOutput = z.looseObject({
   id: z.string().describe('Page id'),
   space: z.string().describe('Space slug the page belongs to'),
   path: z.string().describe('Path relative to the space root'),
-  kind: z.string().describe('Page kind: doc, board, table, pdf, office or form'),
+  kind: z.string().describe('Page kind: doc, board, table, form, base, canvas, pdf or office'),
   title: z.string().describe('Page title'),
   order: z.number().describe('Position among its siblings'),
   status: z.string().describe('Page status'),
@@ -48,6 +48,27 @@ const columnOutput = z.looseObject({
   options: z.array(z.looseObject({})).optional().describe('Allowed values of a select or status column'),
 });
 
+const formOutput = z
+  .looseObject({
+    title: z.string().describe('Form title'),
+    description: z.string().optional().describe('Text shown above the questions'),
+    public: z.boolean().describe('Accepts answers from anyone with a share link of the form'),
+    submitButton: z.string().optional().describe('Label of the submit button'),
+    fields: z
+      .array(
+        z.looseObject({
+          columnId: z.string().describe('Column of the paired table the answer goes to'),
+          label: z.string().describe('The question'),
+          help: z.string().optional().describe('Hint under the question'),
+          required: z.boolean().describe('The form cannot be sent without it'),
+          kind: z.string().describe('Column type: text, longtext, number, date, checkbox, select, status, user or link'),
+        }),
+      )
+      .describe('The questions, in order'),
+    table: z.looseObject({ id: z.string().nullable().describe('Page id of the paired table (null when it cannot be found)'), path: z.string() }).describe('The data table the answers are rows of'),
+  })
+  .describe('The form definition');
+
 const cellValueOutput = z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()]);
 const rowOutput = z.looseObject({
   id: z.string().describe('Row id'),
@@ -58,6 +79,30 @@ type TreeNodeOutput = z.infer<typeof pageMetaOutput> & { children: TreeNodeOutpu
 const treeNodeOutput: z.ZodType<TreeNodeOutput> = z.lazy(() =>
   pageMetaOutput.extend({ children: z.array(treeNodeOutput).describe('Child pages') }),
 );
+
+export interface TagNodeOutput {
+  tag: string;
+  name: string;
+  pages: number;
+  total: number;
+  children: TagNodeOutput[];
+}
+const tagNodeOutput: z.ZodType<TagNodeOutput> = z.lazy(() =>
+  z.looseObject({
+    tag: z.string().describe('The whole tag, lowercase, hierarchy as a/b — what tag: searches and rename_tag take'),
+    name: z.string().describe('Last segment of the tag'),
+    pages: z.number().describe('Pages the caller can open that carry exactly this tag'),
+    total: z.number().describe('Pages the caller can open that carry this tag or one of its children'),
+    children: z.array(tagNodeOutput).describe('Child tags (tag/…)'),
+  }),
+);
+
+const propertiesStateOutput = {
+  properties: z.record(z.string(), z.unknown()).describe('The page\'s properties after the call, as the API returns them (dates as text)'),
+  types: z.record(z.string(), z.string()).describe('Effective type of each key: text, number, checkbox, date, datetime, list, tags, aliases'),
+  foreign: z.array(z.string()).describe('Folio-owned keys (order, status, icon, cover, id) holding a value Folio would not write itself; they are kept as they are'),
+  readOnly: z.array(z.string()).describe('Keys that cannot be edited (id of a document)'),
+};
 
 export const outputSchemas = {
   list_spaces: {
@@ -79,6 +124,9 @@ export const outputSchemas = {
     svg: z.string().optional().describe('Raw SVG source (board pages when no layout summary applies)'),
     scene: z.record(z.string(), z.unknown()).nullable().optional().describe('Board layout summary: shapes, arrows, texts, frames, layout rows/cols, bounds; null when the board has no readable scene'),
     note: z.string().optional().describe('Why the content is not returned (PDF/Office file, unreadable board)'),
+    outline: z.string().optional().describe('Obsidian canvas pages (kind "canvas"): a readable Markdown outline — groups with their cards (text, notes, files, links; geometry and colour), then the connections. Read-only'),
+    form: formOutput.optional().describe('Form pages (kind "form"): settings, fields and the paired table'),
+    etag: z.string().optional().describe('Form pages: pass it to update_form'),
   },
   page: pageMetaOutput.shape,
   board_ops: {
@@ -94,7 +142,7 @@ export const outputSchemas = {
           path: z.string().describe('Path relative to the space root'),
           title: z.string().describe('Page title'),
           snippet: z.string().describe('Matching excerpt'),
-          kind: z.string().optional().describe('Page kind: doc, board, table, form, pdf or office'),
+          kind: z.string().optional().describe('Page kind: doc, board, table, form, pdf, office or canvas'),
           tags: z.array(z.string()).optional().describe('Normalized tags of the page (lowercase, hierarchy as a/b)'),
         }),
       )
@@ -168,6 +216,84 @@ export const outputSchemas = {
       .array(z.looseObject({ id: z.string(), path: z.string(), title: z.string(), updatedAt: z.string() }))
       .describe('Pages nothing the caller can see links to'),
   },
+  get_graph: {
+    nodes: z
+      .array(
+        z.looseObject({
+          id: z.string().describe('Page id, or tag:<tag> / file:<path> / ghost:<path> for a tag, a space file, a link target that does not exist'),
+          title: z.string(),
+          kind: z.string().describe('Page kind (doc, board, table, pdf, office, form), or tag, file, unresolved'),
+          path: z.string().optional(),
+          tags: z.array(z.string()).optional(),
+          degree: z.number().describe('Distinct neighbours in this answer'),
+        }),
+      )
+      .describe('Pages the caller can open, plus tag, file and unresolved nodes when asked for'),
+    edges: z
+      .array(z.looseObject({ source: z.string(), target: z.string(), count: z.number().describe('Links of the source to the target') }))
+      .describe('Links between the nodes, source -> target'),
+    totalPages: z.number().describe('Readable pages in scope before the limit'),
+    truncated: z.boolean().describe('True when pages were left out because of the limit'),
+    limit: z.number(),
+    center: z.string().optional().describe('The page the neighbourhood is around'),
+  },
+  list_tags: {
+    tags: z.array(tagNodeOutput).describe('Tag tree of the space, in alphabetical order; a tag without pages of its own is listed when a child has some'),
+    totalTags: z.number().describe('Tags matching the prefix, before the limit'),
+    truncated: z.boolean().describe('True when tags were left out because of the limit'),
+  },
+  rename_tag: {
+    from: z.string().describe('The tag that was renamed, normalized'),
+    to: z.string().describe('Its new name, normalized'),
+    pagesChanged: z.number().describe('Pages whose tags were rewritten (body #tags, tags:/labels: front matter, sidecars)'),
+    pagesSkipped: z.number().describe('Pages that carry the tag, that the caller can open but not edit (or that could not be written); they keep the old tag. Pages the caller cannot open are not counted'),
+  },
+  set_page_properties: {
+    id: z.string().describe('Page id'),
+    written: z.boolean().describe('False when the properties already were as asked: nothing was written'),
+    changedKeys: z.array(z.string()).describe('Keys set or removed by this call'),
+    etag: z.string().nullable().describe('Etag of the properties after the call — pass it to the next set_page_properties; null when the page has no front matter'),
+    ...propertiesStateOutput,
+  },
+  list_properties: {
+    properties: z
+      .array(
+        z.looseObject({
+          key: z.string().describe('Property name'),
+          type: z.string().describe('text, number, checkbox, date, datetime, list, tags or aliases'),
+          declared: z.boolean().describe('True when the space declares this type (.folio/properties.json or .obsidian/types.json); false when it is inferred from the values'),
+          pages: z.number().describe('Pages the caller can open that have this property'),
+          samples: z.array(z.unknown()).describe('A few of the most common values'),
+        }),
+      )
+      .describe('Properties of the space, most used first'),
+    source: z.string().describe('Where the declared types came from: folio, obsidian or none'),
+    truncated: z.boolean().describe('True when keys were left out because of the cap'),
+  },
+  save_base: {
+    id: z.string().describe('Page id of the base'),
+    space: z.string(),
+    path: z.string().describe('Path of the .base file relative to the space root'),
+    created: z.boolean().describe('True when a new base was created, false when an existing one was updated'),
+    written: z.boolean().describe('False when the file already held exactly this YAML'),
+    etag: z.string().describe('Etag of the file now — pass it as etag on the next update'),
+    warnings: z.array(z.string()).describe('Parts of the YAML that were read leniently (a view or filter of an unknown shape is ignored by the reader); the file keeps them as written'),
+    preview: z.looseObject({}).describe('The first view answered the way query_base does, at most 10 rows: view, views, columns, rows, total, truncated, warnings, error?'),
+  },
+  query_base: {
+    view: z.string().nullable().describe('The view answered (null: the base has no views, a default table)'),
+    views: z.array(z.looseObject({ name: z.string(), type: z.string(), supported: z.boolean() })).describe('The views of the base'),
+    columns: z.array(z.looseObject({ id: z.string(), label: z.string() })).describe('Property ids (note.x / file.x / formula.x) and their display names'),
+    rows: z
+      .array(z.looseObject({ id: z.string().describe('Page id'), title: z.string(), path: z.string(), values: z.record(z.string(), z.unknown()) }))
+      .describe('One page per row, values by column id'),
+    groups: z.array(z.looseObject({ key: z.unknown(), count: z.number() })).optional(),
+    summaries: z.record(z.string(), z.unknown()).optional(),
+    total: z.number().describe('Rows after the filters, before offset/limit'),
+    truncated: z.boolean().describe('More pages matched than a base evaluates'),
+    warnings: z.array(z.string()),
+    error: z.string().optional().describe('The base file could not be read'),
+  },
   page_history: {
     revisions: z
       .array(
@@ -210,4 +336,26 @@ export const outputSchemas = {
   folio_table_delete: { affected: z.number().describe('Rows deleted') },
   folio_table_add_column: columnOutput.shape,
   folio_table_create: pageMetaOutput.shape,
+  folio_table_update_column: {
+    column: columnOutput.describe('The column after the change'),
+    converted: z.number().describe('Values converted to the new type'),
+    cleared: z.number().describe('Values that could not be converted and were cleared'),
+  },
+  folio_table_delete_column: { deleted: z.string().describe('Id of the deleted column') },
+  folio_table_save_view: {
+    created: z.boolean().describe('True when a new view was added'),
+    view: z.looseObject({ id: z.string().describe('View id'), name: z.string() }).describe('The view after the call: filter, sort, columns (hidden, order), frozen, rowHeight'),
+  },
+  folio_table_delete_view: { deleted: z.string().describe('Id of the deleted view') },
+  form_write: {
+    ...pageMetaOutput.shape,
+    form: formOutput,
+    etag: z.string().describe('Etag of the form now — pass it to the next update_form'),
+    tableId: z.string().describe('Page id of the paired table (its rows are the answers)'),
+    columnsAdded: z.array(z.string()).describe('Ids of the columns this call added to the paired table'),
+  },
+  convert_canvas_to_board: {
+    board: pageMetaOutput.describe('The new board page'),
+    report: z.looseObject({ losses: z.array(z.looseObject({ code: z.string(), count: z.number() })).describe('What the board could not carry over, by kind') }).describe('What the conversion lost'),
+  },
 } as const;

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ClipboardList, CloudOff, Copy, CopyPlus, Files, FileText, FileType2, Folder, LayoutDashboard, LayoutTemplate, Link as LinkIcon, MoreHorizontal, Move, Pencil, Plus, Presentation, RefreshCw, Sheet, Table2, Trash2, Upload } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ClipboardList, CloudOff, Copy, CopyPlus, Files, FileText, FileType2, Folder, LayoutDashboard, LayoutTemplate, Link as LinkIcon, MoreHorizontal, Move, Pencil, Plus, Presentation, RefreshCw, Sheet, Table2, Trash2, Upload, Waypoints, Database } from 'lucide-react';
 import { officeFormat, type PageKind, type PageMeta, type TreeNode } from '@shared/contracts';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
@@ -17,11 +17,14 @@ import { MoveDialog } from './MoveDialog';
 import { CopyDialog } from './CopyDialog';
 import { ChangeSlugDialog } from './ChangeSlugDialog';
 import { FILE_PAGE_ACCEPT, useReplaceFilePage } from '../files/useReplaceFilePage';
-import { newPageTitleKey } from './slugUtils';
+import { isFreeNameKind, newPageTitleKey } from './slugUtils';
 import { canContain, canReorder, computeDropPlan, computeReorder, dropZoneFor } from './reorderPages';
 import type { DropPlan, DropZone, ReorderDirection } from './reorderPages';
 import { childDirOf, dirname, findNodeByPath, treeNodeDisplayTitle } from './treeUtils';
 import '../i18n/register';
+
+// Obsidian Bases: the "New base" dialog (lazy: its YAML writer stays out of the main chunk).
+import { NewBaseDialog, preloadNewBaseDialog } from '../../bases/lazyNewBase';
 
 /** The row currently being dragged, as every other row needs to see it. */
 export interface DraggedNode {
@@ -95,6 +98,7 @@ export function TreeRow({
   const [renameValue, setRenameValue] = useState(node.title);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [creatingBase, setCreatingBase] = useState(false);
   const [copying, setCopying] = useState(false);
   const [changingSlug, setChangingSlug] = useState(false);
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
@@ -154,6 +158,12 @@ export function TreeRow({
   ) : node.kind === 'form' ? (
     // Round FORMS: same reasoning as board/table above.
     <ClipboardList size={14} className="shrink-0 opacity-60" aria-hidden="true" />
+  ) : node.kind === 'canvas' ? (
+    // Obsidian canvas: read-only and drawn very differently once opened.
+    <Waypoints size={14} className="shrink-0 opacity-60" aria-hidden="true" />
+  ) : node.kind === 'base' ? (
+    // Obsidian base: a view over pages (table / cards / list).
+    <Database size={14} className="shrink-0 opacity-60" aria-hidden="true" />
   ) : (
     <span className="w-[14px] shrink-0" aria-hidden="true" />
   );
@@ -495,6 +505,7 @@ export function TreeRow({
       <div
         role="button"
         tabIndex={0}
+        data-tree-page-id={node.id}
         draggable={isDraggable}
         onDragStart={(e) => {
           if (!isDraggable) return;
@@ -683,6 +694,17 @@ export function TreeRow({
                   >
                     {t('sidebar.newForm')}
                   </MenuItem>
+                  {/* Obsidian Bases: the starter view lists the pages of the folder it is created in. */}
+                  <MenuItem
+                    icon={<Database size={14} />}
+                    onPreload={() => void preloadNewBaseDialog()}
+                    onSelect={() => {
+                      close();
+                      setCreatingBase(true);
+                    }}
+                  >
+                    {t('sidebar.newBase')}
+                  </MenuItem>
                   {/* Round PDF/OFFICE: unlike doc/board/table above, a pdf/
                       office page has no server-generated starter file —
                       this opens the native file picker instead of calling
@@ -768,7 +790,7 @@ export function TreeRow({
                       one goes through "change slug" below, which renames the
                       file itself. Offering an action that can only ever toast
                       an error is worse than not offering it. */}
-                  {node.kind !== 'pdf' && node.kind !== 'office' && (
+                  {node.kind !== 'pdf' && node.kind !== 'office' && node.kind !== 'canvas' && node.kind !== 'base' && (
                     <MenuItem
                       icon={<Pencil size={14} />}
                       onSelect={() => {
@@ -779,14 +801,15 @@ export function TreeRow({
                       {t('header.breadcrumbs.rename')}
                     </MenuItem>
                   )}
+                  {/* A canvas / base is named by its file, as in Obsidian: its "Rename" is the file-name dialog (any valid name), not a slug. */}
                   <MenuItem
-                    icon={<LinkIcon size={14} />}
+                    icon={isFreeNameKind(node.kind) ? <Pencil size={14} /> : <LinkIcon size={14} />}
                     onSelect={() => {
                       close();
                       setChangingSlug(true);
                     }}
                   >
-                    {t('sidebar.slug.menuLabel')}
+                    {isFreeNameKind(node.kind) ? t('header.breadcrumbs.rename') : t('sidebar.slug.menuLabel')}
                   </MenuItem>
                   {isFilePage && (
                     <MenuItem
@@ -899,6 +922,8 @@ export function TreeRow({
           <code className="rounded bg-neutral-100 px-1 py-0.5 text-xs dark:bg-neutral-800">data/.trash</code>.
         </ConfirmDialog>
       )}
+
+      {creatingBase && <NewBaseDialog space={space} initialParentPath={childDirOf(node)} onClose={() => setCreatingBase(false)} />}
 
       {moving && (
         <MoveDialog

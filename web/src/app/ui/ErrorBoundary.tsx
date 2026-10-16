@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { captureError } from '../../sentry';
 
 export interface ErrorBoundaryProps {
   /** What to show instead of the subtree that threw. `reset` renders the subtree again. */
@@ -30,6 +31,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
   componentDidCatch(error: unknown, info: ErrorInfo): void {
     // eslint-disable-next-line no-console
     console.error('[folio] render failed:', error, info.componentStack);
+    // Reported only when the operator switched error reporting on (web/src/sentry); a no-op otherwise.
+    captureError(error);
   }
 
   componentDidUpdate(previous: ErrorBoundaryProps): void {

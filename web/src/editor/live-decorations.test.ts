@@ -320,6 +320,13 @@ describe('computeBlockSpecs', () => {
     expect(blocks(src, 20)).toEqual([]);
   });
 
+  it('replaces a closed ```base fence with its view, keeps the source under the caret (Obsidian Bases)', () => {
+    const src = 'intro\n\n```base\nviews:\n  - type: table\n    name: T\n```\n';
+    expect(blocks(src)).toEqual([{ kind: 'base', from: 7, to: 53, code: 'views:\n  - type: table\n    name: T' }]);
+    expect(blocks(src, 20)).toEqual([]);
+    expect(blocks('```base\nviews: []\n')).toEqual([]);
+  });
+
   it('ignores non-mermaid and unterminated fences', () => {
     expect(blocks('```js\nlet a = 1\n```\n')).toEqual([]);
     expect(blocks('```mermaid\nflowchart TD\n')).toEqual([]);

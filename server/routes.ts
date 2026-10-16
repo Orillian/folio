@@ -3,6 +3,7 @@ import * as fsSync from 'node:fs';
 import { posix as pathPosix } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
+  canvasConvertBodySchema,
   acceptInviteBodySchema,
   createInviteBodySchema,
   createPageBodySchema,
@@ -25,6 +26,9 @@ import {
 } from '../shared/contracts.js';
 import { isFormParseError, parseFormFile } from '../shared/forms/index.js';
 import type {
+  CanvasConversionReport,
+  CanvasConvertResult,
+  CanvasPayload,
   AuthState,
   EmbedPayload,
   FolioConfig,
@@ -52,6 +56,7 @@ import type {
   TreeNode,
   PageMetadata,
   SpaceTagsResponse,
+  GraphResponse,
   UnresolvedLinksResponse,
   OrphansResponse,
 } from '../shared/contracts.js';
@@ -62,8 +67,12 @@ import * as tables from './tables/service.js';
 import * as forms from './forms/service.js';
 import { clampSearchLimit, clampSearchOffset, searchPages } from './search.js';
 import { buildPageDoc } from './pageDoc.js';
+import { publicUrlOrOrigin } from './publicUrl.js';
+import { buildCanvasPayload } from './canvasView.js';
+import { canvasConversionReport, convertCanvasPage } from './canvasToBoard.js';
 import { buildEmbed, parseEmbedDepth } from './embed.js';
 import * as indexRead from './indexV2/read.js';
+import * as graph from './graph.js';
 import { userViewer } from './accessSql.js';
 import * as assets from './assets.js';
 import * as git from './git.js';
@@ -96,6 +105,7 @@ import { resolveCopyScope } from './copyScope.js';
 import { findTrashItemId, recordPageChange, snapshotPageChange } from './pageChanges.js';
 import * as bootScan from './bootScan.js';
 import { isGitHubConnectEnabled } from './auth/githubConnect.js';
+import { parseBaseConfig } from '../shared/bases/parse.js';
 
 /** PUBLIC_URL is normally set; this is only the fallback when it's not (round 8: "URL built from PUBLIC_URL, fallback request origin"). */
 function requestOrigin(request: FastifyRequest): string {
@@ -204,13 +214,13 @@ export async function buildAdminSpacesList(): Promise<AdminSpaceInfo[]> {
   return result;
 }
 
-/** Body for POST /api/pages/:id/slug (round 22) — kept local rather than in shared/contracts.ts (that file wasn't touched for this round); mirrors storage.SLUG_PATTERN/MAX_SLUG_LENGTH so the friendly 400 message and the authoritative check never drift apart. */
+/**
+ * Body for POST /api/pages/:id/slug (round 22) — kept local rather than in shared/contracts.ts. Only the length is
+ * bounded here: what a slug may hold depends on the page (a lowercase-ASCII slug for most pages, any valid file
+ * name for a canvas / base — storage.renamePageSlug), and that check is authoritative and answers with a 400.
+ */
 const renamePageSlugBodySchema = z.object({
-  slug: z
-    .string()
-    .min(1)
-    .max(storage.MAX_SLUG_LENGTH)
-    .regex(storage.SLUG_PATTERN, `slug must match ${storage.SLUG_PATTERN.source} (lowercase letters, digits, hyphens; max ${storage.MAX_SLUG_LENGTH} chars)`),
+  slug: z.string().min(1).max(storage.MAX_SLUG_LENGTH * 4),
 });
 
 const renameSpaceBodySchema = z.object({
@@ -560,6 +570,16 @@ export function registerRoutes(app: FastifyInstance): void {
     return response;
   });
 
+  // Graph view (16.10.2026): the space's links as nodes and edges, viewer+, filtered in SQL with the same rules
+  // (server/graph.ts) — a page the caller cannot open is never a node, and a link to it is not drawn at all.
+  app.get('/api/spaces/:space/graph', async (request) => {
+    const { space } = request.params as { space: string };
+    await session.requireSpaceRole(request, space, 'viewer');
+    const q = request.query as Record<string, unknown>;
+    const response: GraphResponse = await graph.getSpaceGraph(space, userViewer(request.authUser!), graph.parseGraphOptions(q), graph.clampGraphLimit(q?.limit));
+    return response;
+  });
+
   app.get('/api/spaces/:space/tree', async (request) => {
     const { space } = request.params as { space: string };
     await session.requireSpaceRole(request, space, 'viewer');
@@ -822,9 +842,13 @@ export function registerRoutes(app: FastifyInstance): void {
     // Only doc and board rooms are seeded from a Y.Doc; for any other kind `ydocState` is ignored.
     const clientState =
       body.ydocState !== undefined && (body.kind === 'doc' || body.kind === 'board') ? collab.decodeClientState(body.kind, body.ydocState) : undefined;
+    if (body.kind === 'base' && body.base !== undefined) {
+      const parsed = parseBaseConfig(body.base);
+      if (parsed.error) throw badRequest(`not a valid base: ${parsed.error.message}`);
+    }
     const meta = await storage.createPage(
       body,
-      clientState && { docBody: clientState.docBody, boardSvg: clientState.boardSvg },
+      body.kind === 'base' ? { baseSource: body.base } : clientState && { docBody: clientState.docBody, boardSvg: clientState.boardSvg },
       resolveTextLanguage(request.authUser?.lang, request.headers['accept-language']),
     );
     // File first, snapshot second (see collab.storeClientSnapshot): a failure here must
@@ -847,7 +871,45 @@ export function registerRoutes(app: FastifyInstance): void {
   app.get('/api/pages/:id', async (request) => {
     const { id } = request.params as { id: string };
     const entry = await session.requirePageRole(request, id, 'viewer');
-    return buildPageDoc(entry);
+    return buildPageDoc(entry, userViewer(request.authUser!));
+  });
+
+  /** Obsidian canvas: the parsed `.canvas` with its file cards resolved for this reader — the same object PageDoc.canvas carries (server/canvasView.ts). */
+  app.get('/api/pages/:id/canvas', async (request): Promise<CanvasPayload> => {
+    const { id } = request.params as { id: string };
+    const entry = await session.requirePageRole(request, id, 'viewer');
+    if (entry.kind !== 'canvas') throw badRequest('page is not a canvas');
+    return buildCanvasPayload(entry, userViewer(request.authUser!));
+  });
+
+  /** What "Convert to Folio board" would lose — read only, nothing is written (server/canvasToBoard.ts). */
+  app.get('/api/pages/:id/canvas/convert', async (request): Promise<CanvasConversionReport> => {
+    const { id } = request.params as { id: string };
+    const entry = await session.requirePageRole(request, id, 'viewer');
+    if (entry.kind !== 'canvas') throw badRequest('page is not a canvas');
+    return canvasConversionReport(entry, userViewer(request.authUser!), publicUrlOrOrigin(requestOrigin(request)));
+  });
+
+  /**
+   * "Convert to Folio board": a NEW board made from the canvas, in one commit by the caller; the canvas stays as it
+   * is. Read the canvas, write where the board goes (editor+ on the space, like a copy).
+   */
+  app.post('/api/pages/:id/canvas/convert', async (request, reply): Promise<CanvasConvertResult> => {
+    const { id } = request.params as { id: string };
+    const body = parseBody(canvasConvertBodySchema, request.body ?? {});
+    const entry = await session.requirePageRole(request, id, 'viewer');
+    if (entry.kind !== 'canvas') throw badRequest('page is not a canvas');
+    await session.requireSpaceRole(request, entry.space, 'editor');
+    session.requireWriteScope(request);
+    const user = request.authUser!;
+    await session.requireAgentWriteAllowed(user, entry.space, body.parentPath ?? entry.dirPath);
+    gitSync.recordEditor(entry.space, { name: user.name, email: user.email });
+    const result = await convertCanvasPage(entry, userViewer(user), body, { name: user.name, email: user.email }, publicUrlOrOrigin(requestOrigin(request)));
+    const after = snapshotPageChange(await storage.requireEntry(result.board.id));
+    await recordPageChange(user.id, 'page.create', result.board.id, entry.space, undefined, after);
+    recordAudit(user.id, 'page.created', result.board.id, { from: 'canvas', canvas: entry.id });
+    reply.status(201);
+    return result;
   });
 
   /** Content-Type for a pdf/office page's bytes — see officeFormat's own doc comment for the extension-to-format mapping. */
@@ -1065,7 +1127,8 @@ export function registerRoutes(app: FastifyInstance): void {
       if (entry.kind === 'board') {
         if (body.order !== undefined) await storage.setBoardOrder(entry, body.order);
         if (body.icon !== undefined) await storage.setBoardIcon(entry, storage.resolveIconCoverOverride(body.icon, entry.icon));
-      } else if (entry.kind === 'pdf' || entry.kind === 'office') {
+      } else if (entry.kind === 'pdf' || entry.kind === 'office' || entry.kind === 'canvas' || entry.kind === 'base') {
+        // A canvas file is never written either: its order/icon live in the index row, like a pdf's.
         if (body.order !== undefined) await storage.setBinaryPageOrder(entry, body.order);
         if (body.icon !== undefined) await storage.setBinaryPageIcon(entry, storage.resolveIconCoverOverride(body.icon, entry.icon));
       } else {
@@ -1075,6 +1138,7 @@ export function registerRoutes(app: FastifyInstance): void {
       gitSync.noteActivity(entry.space);
       return storage.toPageMeta(await storage.requireEntry(id));
     }
+    if (entry.kind === 'base') throw badRequest('a base is edited through PUT /api/pages/:id/base');
     if (body.svg === undefined) {
       throw badRequest('svg is required for a board page');
     }
@@ -1178,6 +1242,10 @@ export function registerRoutes(app: FastifyInstance): void {
       // endpoint (which renames the file itself) is the only way to change
       // what a pdf/office page is called.
       throw badRequest('a pdf/office page has no separate title — use the slug rename to change its filename');
+    } else if (storage.isFreeNameKind(entry.kind)) {
+      // A canvas / base is named by its file, as in Obsidian (owner, 16.10.2026): the new title IS the file name
+      // (any valid one — spaces, Unicode), so renaming it is a file rename with the links, sidecar and commit of one.
+      result = await collab.renamePageSlug(id, body.title, { name: request.authUser!.name, email: request.authUser!.email });
     } else if (entry.kind === 'form') {
       // Round FORMS: a form's title is a frontmatter field, not an H1 — no
       // collab room to consult, always a direct write (storage.ts's own note).
@@ -1193,7 +1261,12 @@ export function registerRoutes(app: FastifyInstance): void {
     }
     gitSync.noteActivity(entry.space);
     const after = snapshotPageChange(await storage.requireEntry(id));
-    if (before.title !== after.title) await recordPageChange(request.authUser!.id, 'page.rename', id, entry.space, before, after);
+    // A canvas / base rename moved its file: it undoes as the slug change it is.
+    if (storage.isFreeNameKind(entry.kind)) {
+      if (before.path !== after.path) await recordPageChange(request.authUser!.id, 'page.slug', id, entry.space, before, after);
+    } else if (before.title !== after.title) {
+      await recordPageChange(request.authUser!.id, 'page.rename', id, entry.space, before, after);
+    }
     return result;
   });
 
@@ -1252,6 +1325,20 @@ export function registerRoutes(app: FastifyInstance): void {
     return { backlinks };
   });
 
+  /** Graph view: the neighbourhood of a page — `?depth=1..3&direction=both|in|out` plus the space route's options. */
+  app.get('/api/pages/:id/graph', async (request) => {
+    const { id } = request.params as { id: string };
+    const entry = await session.requirePageRole(request, id, 'viewer');
+    const q = request.query as Record<string, unknown>;
+    const response: GraphResponse = await graph.getLocalGraph({ id: entry.id, space: entry.space }, userViewer(request.authUser!), {
+      depth: graph.clampDepth(q?.depth),
+      direction: graph.parseDirection(q?.direction),
+      options: graph.parseGraphOptions(q),
+      limit: graph.clampGraphLimit(q?.limit),
+    });
+    return response;
+  });
+
   /** Index v2: the page's headings, ^blocks, tags, front matter, typed links and visible backlink count (PageMetadata). */
   app.get('/api/pages/:id/meta', async (request) => {
     const { id } = request.params as { id: string };
@@ -1308,6 +1395,8 @@ export function registerRoutes(app: FastifyInstance): void {
     const entry = await session.requirePageRole(request, id, 'editor');
     session.requireWriteScope(request);
     const user = request.authUser!;
+    // A canvas is never written by Folio — not even to restore it (git or Obsidian can).
+    if (entry.kind === 'canvas') throw badRequest('a canvas is read-only in Folio: restore it in Git or Obsidian');
     if (entry.kind === 'pdf' || entry.kind === 'office') {
       // Binary: the file at that commit is written back through the same path
       // as a replace (own commit, links rewritten if the extension differs).
@@ -1319,7 +1408,13 @@ export function registerRoutes(app: FastifyInstance): void {
     gitSync.recordEditor(entry.space, { name: user.name, email: user.email });
 
     let result: PageMeta;
-    if (entry.kind === 'board') {
+    if (entry.kind === 'base') {
+      // The `.base` file at that commit, written back as it was (one debounced commit, like any base edit).
+      if (atSha.markdown === undefined) throw badRequest('revision has no content');
+      const text = atSha.markdown;
+      await storage.writeBaseRaw(id, () => text);
+      result = storage.toPageMeta(await storage.requireEntry(id));
+    } else if (entry.kind === 'board') {
       // The normal board PUT path (never a git checkout of the file) — same
       // function, so its blank-overwrite guard is active here too by default: a
       // restore-to-blank is unusual enough to be worth the same confirmation a
@@ -1647,7 +1742,8 @@ export function registerPublicShareRoutes(app: FastifyInstance): void {
     const spaceInfo = await storage.getSpaceInfo(entry.space);
     const spaceName = spaceInfo?.name ?? entry.space;
 
-    const page: PageDoc = await buildPageDoc(entry);
+    // A canvas's file cards open what the share itself opens — its own page set.
+    const page: PageDoc = await buildPageDoc(entry, { kind: 'share', pageIds: scope.collected.ids });
 
     const payload: SharedPagePayload = { mode, page, spaceName };
     if (share.includeChildren) {

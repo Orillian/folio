@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * The Ask / Agent mode switch of the chat panel is translated (it used to show
- * the English words in uk and ru).
+ * the English words in uk).
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -82,17 +82,15 @@ function renderPanel() {
   );
 }
 
-// Written as escapes: the public repository allows Cyrillic only in data files, and ru.json is not
-// part of it at all (those cases skip themselves when the bundle is absent).
+// Written as escapes: the public repository allows Cyrillic only in data files, and a language's bundle
+// may be absent from a build (those cases skip themselves then).
 const UK_ASK = '\u0417\u0430\u043f\u0438\u0442\u0430\u0442\u0438'; // uk "Ask"
-const RU_ASK = '\u0421\u043f\u0440\u043e\u0441\u0438\u0442\u044c'; // ru "Ask"
-const AGENT = '\u0410\u0433\u0435\u043d\u0442'; // uk and ru "Agent"
+const AGENT = '\u0410\u0433\u0435\u043d\u0442'; // uk "Agent"
 
 describe('AssistantPanel mode switch labels', () => {
   it.each([
     ['en', 'Ask', 'Agent'],
     ['uk', UK_ASK, AGENT],
-    ['ru', RU_ASK, AGENT],
   ])('renders %s labels', async (lang, ask, agent) => {
     if (lang !== 'en' && !i18next.hasResourceBundle(lang, 'app')) return;
     await i18next.changeLanguage(lang);

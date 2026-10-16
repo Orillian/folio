@@ -1,3 +1,5 @@
+// Must stay the first import: error reporting is initialised before the modules it instruments (server/instrument.ts).
+import './instrument.js';
 import Fastify from 'fastify';
 // These @fastify/* plugins are CJS (`export =`); this project has no
 // esModuleInterop, so import the namespace and pull out `.default` (typed as
@@ -23,7 +25,9 @@ import { publicSiteForShell } from './publicSites.js';
 import { resolvePublicSiteHead } from './publicSiteMeta.js';
 import { registerPublicSeoRoutes } from './publicSeo.js';
 import { registerSpaceAppearanceRoutes } from './spaceAppearanceRoutes.js';
+import { registerPageTimerRoutes } from './pageTimerRoutes.js';
 import { registerPropertiesRoutes } from './propertiesRoutes.js';
+import { registerBaseRoutes } from './bases/routes.js';
 import { registerSpaceFilesRoutes } from './spaceFilesRoutes.js';
 import { registerTrashRoutes } from './trash/routes.js';
 import { registerPageChangeRoutes } from './pageChangesRoutes.js';
@@ -38,6 +42,7 @@ import { startTreeSignal, stopTreeSignal } from './treeSignal.js';
 import * as assistantRuns from './assistant/runs.js';
 import { registerMcpRoutes } from './mcpRoutes.js';
 import { registerOAuthRoutes } from './oauth/routes.js';
+import { registerChatIntegrationProtectedRoutes, registerChatIntegrationRoutes } from './integrations/chat/routes.js';
 import * as session from './auth/session.js';
 import { registerPublicAuthRoutes, registerProtectedAuthRoutes } from './auth/routes.js';
 import { registerGoogleAuthRoutes } from './auth/google.js';
@@ -59,6 +64,7 @@ import { publicUrlOrOrigin } from './publicUrl.js';
 import { runBootScan } from './bootScan.js';
 import { demoMaxUploadBytes, isDemoMode } from './demo.js';
 import { parseTrustProxy } from './trustProxy.js';
+import { flushSentry } from './sentry.js';
 
 loadEnv();
 
@@ -239,6 +245,11 @@ async function main(): Promise<void> {
   // "Connected apps". Without a login the SPA's own login screen is shown at /oauth/authorize.
   await registerOAuthRoutes(app, { serveSpa: (_request, reply) => reply.callNotFound() });
 
+  // Link previews in Slack and Microsoft Teams (16.10.2026): the platforms' webhooks (each
+  // authenticates its caller: Slack's v0 signature, the Bot Framework JWT) and the browser's
+  // "Connect Folio" flow, which goes through the OAuth routes above. See server/integrations/chat.
+  await registerChatIntegrationRoutes(app);
+
   // --- Everything else: session required ----------------------------------
   // A Fastify child scope, not registration order, is what actually exempts
   // the routes above: onRequest hooks apply to every route in this scope
@@ -269,6 +280,10 @@ async function main(): Promise<void> {
     // 14.10.2026: GET/PUT /api/spaces/:space/appearance and its assets — the space's `.folio/` folder.
     registerSpaceAppearanceRoutes(protectedScope);
     registerPropertiesRoutes(protectedScope);
+    // 16.10.2026: Obsidian Bases — a `.base` page's rows, its YAML, the visual editor's writes, ```base blocks.
+    registerBaseRoutes(protectedScope);
+    // 16.10.2026: the shared page timer — state in memory, fan-out over the /events socket (server/pageTimer.ts).
+    registerPageTimerRoutes(protectedScope);
     registerSpaceFilesRoutes(protectedScope);
     registerTrashRoutes(protectedScope);
     registerPageChangeRoutes(protectedScope);
@@ -278,6 +293,8 @@ async function main(): Promise<void> {
     // 14.10.2026 (Obsidian wave 3): tag pages + rename, and the person's saved searches.
     registerTagRoutes(protectedScope);
     registerSavedSearchRoutes(protectedScope);
+    // Chat link previews: the person's own links, and the instance admin's status page.
+    registerChatIntegrationProtectedRoutes(protectedScope);
   });
 
   // Production: the built SPA is served by this same process (Docker image has no
@@ -357,7 +374,8 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   // eslint-disable-next-line no-console
   console.error('[process] uncaught exception:', err);
-  process.exit(1);
+  // Sentry has already queued it (its own handler runs first); give it a moment to leave.
+  void flushSentry(2000).finally(() => process.exit(1));
 });
 
 let shuttingDown = false;
@@ -379,6 +397,7 @@ async function shutdown(signal: string): Promise<void> {
   await app.close();
   await closePool().catch(() => {});
   await closeRedis().catch(() => {});
+  await flushSentry(2000);
   process.exit(0);
 }
 process.on('SIGINT', () => void shutdown('SIGINT'));

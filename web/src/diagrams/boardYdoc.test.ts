@@ -184,6 +184,12 @@ describe('orderedElementsFromMap', () => {
 });
 
 describe('board fields', () => {
+  it('never carries the viewer\'s pan/zoom into the shared doc, even when it is handed the whole appState', () => {
+    const map = boardRoots(new Y.Doc()).board;
+    writeBoardFields(map, { viewBackgroundColor: '#fff', zoom: { value: 30 }, scrollX: 1, scrollY: 2, width: 800 } as never);
+    expect([...map.keys()]).toEqual(['viewBackgroundColor']);
+  });
+
   it('round-trips viewBackgroundColor', () => {
     const map = boardRoots(new Y.Doc()).board;
     writeBoardFields(map, { viewBackgroundColor: '#abcdef' });

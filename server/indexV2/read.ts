@@ -27,7 +27,7 @@ import type {
 } from '../../shared/contracts.js';
 import { query, queryOne } from '../db/pool.js';
 import { sqlParam, visiblePagesSql, type PageViewer } from '../accessSql.js';
-import { isWikiSyntax, unresolvedWikiPath } from './resolve.js';
+import { APP_LINK_SHAPE, isWikiSyntax, unresolvedWikiPath } from './resolve.js';
 
 const ORDER_SENTINEL = Number.MAX_SAFE_INTEGER;
 
@@ -138,7 +138,9 @@ export async function getPageLinks(pageId: string, viewer: PageViewer): Promise<
     return {
       // The path as written is not a leak, even for a target the caller cannot read; the reading view matches wikilinks by it.
       linkPath: l.link_path,
-      targetPath: hidden && isWikiSyntax(l.syntax) ? unresolvedWikiPath(l.link_path) : l.target_path,
+      // A hidden app link (`/s/<space>/p/<id>`) was resolved BY ID: its target_path is the closed page's path, which
+      // the link as written does not say — report the route as written instead.
+      targetPath: hidden ? (isWikiSyntax(l.syntax) ? unresolvedWikiPath(l.link_path) : APP_LINK_SHAPE.test(l.link_path) ? l.link_path : l.target_path) : l.target_path,
       targetPageId: hidden ? null : l.target_page_id,
       syntax: l.syntax,
       kind: hidden ? 'unresolved' : l.kind,
@@ -197,6 +199,39 @@ export async function listSpaceTags(space: string, viewer: PageViewer): Promise<
       WHERE p.space_slug = $1 AND ${visible}
       GROUP BY t.tag
       ORDER BY t.tag`,
+    params,
+  );
+}
+
+/** A tag with the pages that carry it exactly and the pages under it (itself or any child), as the viewer may read them. */
+export interface SpaceTagCount {
+  tag: string;
+  /** Distinct readable pages carrying this very tag — the `pages` of GET /api/spaces/:space/tags. */
+  pages: number;
+  /** Distinct readable pages carrying this tag or a child `tag/…`. */
+  total: number;
+}
+
+/**
+ * Every tag the viewer can see in a space, and every ancestor of one (`a/b` makes `a` a row too), with both counts:
+ * the same visibility rule and the same `pages` as listSpaceTags (MCP list_tags builds the tree from it).
+ */
+export async function listSpaceTagCounts(space: string, viewer: PageViewer): Promise<SpaceTagCount[]> {
+  const params: unknown[] = [space];
+  const visible = visiblePagesSql('p', viewer, params, { excludeTemplates: true });
+  return query<SpaceTagCount>(
+    `SELECT a.node AS tag,
+            COUNT(DISTINCT t.page_id) FILTER (WHERE t.tag = a.node)::int AS pages,
+            COUNT(DISTINCT t.page_id)::int AS total
+       FROM page_tags t
+       JOIN pages_index p ON p.id = t.page_id
+       CROSS JOIN LATERAL (
+         SELECT array_to_string((string_to_array(t.tag, '/'))[1:n], '/') AS node
+           FROM generate_series(1, cardinality(string_to_array(t.tag, '/'))) AS n
+       ) a
+      WHERE p.space_slug = $1 AND ${visible}
+      GROUP BY a.node
+      ORDER BY a.node`,
     params,
   );
 }

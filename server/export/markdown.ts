@@ -37,6 +37,8 @@ import { loadSpaceFiles } from '../indexV2/store.js';
 import type { FileLookup } from '../indexV2/resolve.js';
 import { resolveWikilinkPath } from '../wikilinks.js';
 import { boardStructureYaml } from './boardText.js';
+import { buildCanvasPayload } from '../canvasView.js';
+import { canvasOutline } from '../../shared/canvas/index.js';
 import type { CollectedSubtree, ExportPage } from './collect.js';
 import { byteLength, bytesTruncation, MAX_EXPORT_BYTES, truncationMarkerComment, type ExportTruncation } from './limits.js';
 import { tableDocToMarkdown } from './tableMarkdown.js';
@@ -90,7 +92,7 @@ export function headingPlainText(raw: string): string {
     .trim();
 }
 
-/** GitHub-flavoured heading slug: lowercase, punctuation dropped, spaces to hyphens. Unicode-safe (uk/ru headings must work). */
+/** GitHub-flavoured heading slug: lowercase, punctuation dropped, spaces to hyphens. Unicode-safe (uk headings must work). */
 export function slugifyHeading(text: string): string {
   const slug = text
     .trim()
@@ -334,6 +336,8 @@ export interface PageSourceOptions {
   tableViewId?: string;
   currentUser?: string;
   now?: Date;
+  /** A canvas exports as its outline; its file cards show the pages this set holds (the export's own pages), the rest as not available. */
+  canvasPageIds?: ReadonlySet<string>;
 }
 
 export interface PageSource {
@@ -372,6 +376,20 @@ export async function pageSourceMarkdown(entry: PageIndexEntry, opts: PageSource
     const ext = entry.kind === 'pdf' ? 'pdf' : (officeFormat(entry.relPath) ?? 'pdf');
     const url = withShare(`${opts.baseUrl}/files/${entry.space}/${entry.relPath}`, opts.shareToken);
     return { markdown: `# ${entry.title}\n\n[${entry.title}.${ext}](${url})`, truncation: null };
+  }
+
+  if (entry.kind === 'canvas') {
+    // A canvas exports as its readable outline (groups, cards, connections) — the same text MCP read_page returns.
+    const payload = await buildCanvasPayload(entry, { kind: 'share', pageIds: opts.canvasPageIds ?? new Set([entry.id]) });
+    const body = payload.document ? canvasOutline(entry.title, payload.document, payload.files, payload.warnings) : `# ${entry.title}\n\n${payload.error ?? ''}\n`;
+    return { markdown: body.trimEnd(), truncation: null };
+  }
+
+  if (entry.kind === 'base') {
+    // A base exports as its YAML in a ```base block — what Obsidian renders as an embedded base.
+    const { text } = await storage.readBaseRaw(entry.id);
+    const fence = text.includes('```') ? '~~~' : '```';
+    return { markdown: `# ${entry.title}\n\n${fence}base\n${text.replace(/\n?$/, '\n')}${fence}`, truncation: null };
   }
 
   if (entry.kind === 'table') {
@@ -459,6 +477,7 @@ export async function assembleMarkdown(collected: CollectedSubtree, opts: Assemb
       tableViewId: opts.tableViewId,
       currentUser: opts.currentUser,
       now: opts.now,
+      canvasPageIds: collected.ids,
     });
     if (source.truncation && !truncation) truncation = source.truncation;
 

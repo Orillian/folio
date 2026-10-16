@@ -3,7 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Check, Copy, Plus, Trash2 } from 'lucide-react';
-import type { ApiTokenInfo, ApiTokenScope, CreatedApiToken, OAuthConnectionInfo } from '@shared/contracts';
+import type { ApiTokenInfo, ApiTokenScope, ChatLinkInfo, CreatedApiToken, OAuthConnectionInfo } from '@shared/contracts';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
 import { formatRelativeDate } from '../history';
@@ -21,6 +21,7 @@ export interface ApiTokensModalProps {
 
 const TOKENS_QUERY_KEY = ['api-tokens'] as const;
 const CONNECTIONS_QUERY_KEY = ['oauth-connections'] as const;
+const CHAT_LINKS_QUERY_KEY = ['chat-links'] as const;
 
 /**
  * "API tokens" (DEV-PLAN Round 7; MCP preset tabs added Round 9).
@@ -101,6 +102,8 @@ export function ApiTokensModal({ onClose }: ApiTokensModalProps) {
           )}
 
           <ConnectedApps />
+
+          <ChatApps />
 
           <McpBlock token={justCreated?.token ?? null} />
         </div>
@@ -191,6 +194,73 @@ function ConnectedApps() {
           onConfirm={() => disconnect.mutate(disconnecting.id)}
         >
           {t('tokens.connected.confirmBody', { name: disconnecting.clientName })}
+        </ConfirmDialog>
+      )}
+    </div>
+  );
+}
+
+const CHAT_PLATFORM_LABEL: Record<ChatLinkInfo['platform'], string> = { slack: 'Slack', teams: 'Microsoft Teams' };
+
+/**
+ * "Chat apps": the Slack / Teams accounts linked to this Folio account for link previews
+ * (server/integrations/chat). Shown only when there is at least one: the link itself is made from
+ * the chat app ("Connect Folio" on a preview), never from here.
+ */
+function ChatApps() {
+  const { t } = useTranslation('app');
+  const errorText = useApiErrorText();
+  const queryClient = useQueryClient();
+  const showToast = useToast();
+  const [disconnecting, setDisconnecting] = useState<ChatLinkInfo | null>(null);
+  const links = useQuery({ queryKey: CHAT_LINKS_QUERY_KEY, queryFn: api.listChatLinks, retry: false });
+  const disconnect = useMutation({
+    mutationFn: (id: string) => api.deleteChatLink(id),
+    onSuccess: () => {
+      setDisconnecting(null);
+      void queryClient.invalidateQueries({ queryKey: CHAT_LINKS_QUERY_KEY });
+    },
+    onError: (err) => showToast(errorText(err, 'tokens.chatApps.failed')),
+  });
+
+  if (links.isError || !links.data || links.data.links.length === 0) return null;
+  return (
+    <div className="border-t border-neutral-200 pt-3 dark:border-neutral-800">
+      <div className="mb-1 text-sm font-medium text-neutral-700 dark:text-neutral-300">{t('tokens.chatApps.title')}</div>
+      <p className="mb-1.5 text-xs text-neutral-500 dark:text-neutral-400">{t('tokens.chatApps.hint')}</p>
+      <ul className="flex flex-col gap-1.5">
+        {links.data.links.map((link) => (
+          <li key={link.id} className="flex items-center gap-2 rounded-md border border-neutral-200 px-3 py-2 dark:border-neutral-800">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{CHAT_PLATFORM_LABEL[link.platform]}</div>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                {link.platformUserName && <span>{t('tokens.chatApps.as', { name: link.platformUserName })}</span>}
+                <span>{t('tokens.createdAt', { date: formatRelativeDate(link.createdAt) })}</span>
+                <span>· {link.lastUsedAt ? t('tokens.lastUsedAt', { date: formatRelativeDate(link.lastUsedAt) }) : t('tokens.neverUsed')}</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDisconnecting(link)}
+              aria-label={t('tokens.connected.disconnectNamed', { name: CHAT_PLATFORM_LABEL[link.platform] })}
+              title={t('tokens.connected.disconnect')}
+              className="shrink-0 rounded p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-red-600 dark:hover:bg-neutral-800"
+            >
+              <Trash2 size={14} />
+            </button>
+          </li>
+        ))}
+      </ul>
+      {disconnecting && (
+        <ConfirmDialog
+          title={t('tokens.chatApps.confirmTitle')}
+          destructive
+          confirmLabel={t('tokens.connected.disconnect')}
+          busy={disconnect.isPending}
+          onCancel={() => setDisconnecting(null)}
+          onConfirm={() => disconnect.mutate(disconnecting.id)}
+        >
+          {t('tokens.chatApps.confirmBody', { name: CHAT_PLATFORM_LABEL[disconnecting.platform] })}
         </ConfirmDialog>
       )}
     </div>

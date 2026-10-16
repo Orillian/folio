@@ -33,19 +33,6 @@ import { listAssistantSkillNames, readAssistantSkill } from './workspace.js';
 
 const MAX_TOOL_RESPONSE_CHARS = 120_000;
 
-/** Names hidden from the model entirely in `ask` mode — the same set the MCP server itself would refuse for a read-scoped token, kept here too so the model never even sees them as an option. */
-const WRITE_ONLY_TOOL_NAMES = new Set([
-  'create_page',
-  'update_page',
-  'create_board',
-  'update_board',
-  'folio_table_insert',
-  'folio_table_update',
-  'folio_table_delete',
-  'folio_table_add_column',
-  'folio_table_create',
-]);
-
 /**
  * MCP tools the assistant is not offered. `search` and `fetch` exist only because ChatGPT deep research accepts tools
  * with exactly those names; they are thin wrappers over `search_pages` / `read_page` (same checks), so the model
@@ -53,8 +40,8 @@ const WRITE_ONLY_TOOL_NAMES = new Set([
  */
 const MCP_ONLY_TOOL_NAMES = new Set(['search', 'fetch']);
 
-/** Not offered to a public-site run at all (the MCP server refuses them for a public actor too): history shows authors and old revisions, which a public site never does. */
-const NOT_ON_PUBLIC_SITE_TOOL_NAMES = new Set(['page_history', 'page_at_sha']);
+/** Not offered to a public-site run at all (the MCP server refuses them for a public actor too): history shows authors and old revisions, and the property list shows properties, which a public site never does. */
+const NOT_ON_PUBLIC_SITE_TOOL_NAMES = new Set(['page_history', 'page_at_sha', 'list_properties']);
 
 export interface AssistantToolsHandle {
   tools: Record<string, SDKCustomTool>;
@@ -150,7 +137,7 @@ function buildReportUnansweredTool(user: User, context: AssistantToolContext): S
 async function buildReadSkillTool(): Promise<SDKCustomTool> {
   const names = await listAssistantSkillNames();
   return {
-    description: 'Returns the working instructions of one skill (how to use the Folio tools, page syntax, boards, data tables). Call it once per conversation for the skill the task needs.',
+    description: 'Returns the working instructions of one skill (how to use the Folio tools, page syntax, boards, data tables, forms, bases). Call it once per conversation for the skill the task needs.',
     inputSchema: {
       type: 'object',
       properties: { name: { type: 'string', enum: names, description: 'Skill name.' } },
@@ -185,7 +172,10 @@ export async function buildAssistantTools(user: User, runMode: AssistantRunMode,
   const tools: Record<string, SDKCustomTool> = {};
   for (const tool of mcpTools) {
     if (MCP_ONLY_TOOL_NAMES.has(tool.name)) continue;
-    if (runMode === 'ask' && WRITE_ONLY_TOOL_NAMES.has(tool.name)) continue;
+    // Ask hides every write tool before the model sees it: exactly MCP_WRITE_TOOL_NAMES, the list mcp.test.ts checks
+    // against each tool's readOnlyHint — one list, so a new write tool cannot reach Ask by being forgotten in a copy
+    // here (board_ops once was). The Ask actor's 'read'-only scope is the second line of defence.
+    if (runMode === 'ask' && MCP_WRITE_TOOL_NAMES.has(tool.name)) continue;
     if (publicSpace !== undefined && (MCP_WRITE_TOOL_NAMES.has(tool.name) || NOT_ON_PUBLIC_SITE_TOOL_NAMES.has(tool.name))) continue;
     tools[tool.name] = {
       description: tool.description,

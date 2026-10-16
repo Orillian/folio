@@ -2,7 +2,7 @@
 
 A Claude Code plugin that connects the agent to your Folio wiki over MCP and teaches it how to work with it. It adds:
 
-- the `folio` MCP server, with all 26 Folio tools (search, pages, data tables, whiteboards, history);
+- the `folio` MCP server, with all 40 Folio tools (search, pages, data tables, forms, bases, whiteboards, history);
 - the `folio-wiki` skill: find, read, change as little as possible, re-read, link the result;
 - the `release-notes` skill (run it as `/folio:release-notes`): compare `git log` since the last tag with the wiki and write release notes.
 
@@ -35,7 +35,7 @@ You need a Folio account and your Folio address. Claude Code runs on your machin
      --config folio_token=<your-token>
    ```
 
-4. In a session run `/mcp`. `folio` should be connected, with 26 tools.
+4. In a session run `/mcp`. `folio` should be connected, with 40 tools.
 5. Ask:
 
    > In the Acme Handbook space, find the release process page and tell me which checklist items are still open. Then create a page called "Release notes" under Engineering with a short summary of the roadmap items that are Done or In review.

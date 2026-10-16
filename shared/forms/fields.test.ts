@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FormField, TableColumn } from '../contracts.js';
 import {
+  buildFormChoices,
   deriveFieldsFromColumns,
   formatSubmittedAt,
   SUBMITTED_AT_COLUMN_ID,
@@ -81,5 +82,108 @@ describe('formatSubmittedAt', () => {
 
   it('zero-pads every single-digit component', () => {
     expect(formatSubmittedAt(new Date(2026, 0, 5, 9, 3, 7))).toBe('2026-01-05T09:03:07');
+  });
+});
+
+describe('validateSubmission against the table columns', () => {
+  const columns: TableColumn[] = [
+    { id: 'size', name: 'Size', type: 'select', options: [{ value: 'S', color: 'gray' }, { value: 'M', color: 'gray' }] },
+    { id: 'tags', name: 'Tags', type: 'select', multiple: true, options: [{ value: 'a, b', color: 'gray' }, { value: 'c', color: 'gray' }] },
+    { id: 'state', name: 'State', type: 'status', options: [{ value: 'TODO', color: 'blue' }, { value: 'DONE', color: 'green' }] },
+    { id: 'owner', name: 'Owner', type: 'user' },
+    { id: 'team', name: 'Team', type: 'user', multiple: true },
+    { id: 'site', name: 'Site', type: 'link' },
+  ];
+  const fields: FormField[] = columns.map((c) => ({ columnId: c.id, label: c.name, required: false, kind: c.type }));
+  const members = new Set(['ann', 'bob']);
+  const check = (input: Record<string, unknown>, users: ReadonlySet<string> | null = members) => validateSubmission(fields, input, { columns, users });
+  const values = (input: Record<string, unknown>, users: ReadonlySet<string> | null = members) => {
+    const r = check(input, users);
+    if (!r.ok) throw new Error(JSON.stringify(r.errors));
+    return r.values;
+  };
+  const errors = (input: Record<string, unknown>, users: ReadonlySet<string> | null = members) => {
+    const r = check(input, users);
+    return r.ok ? {} : r.errors;
+  };
+
+  it('accepts an option, a list for a multiple column, and a status option', () => {
+    const v = values({ size: 'M', tags: ['a, b', 'c'], state: 'DONE' });
+    expect(v.size).toBe('M');
+    expect(v.tags).toEqual(['a, b', 'c']);
+    expect(v.state).toBe('DONE');
+  });
+
+  it('rejects a value that is not among the options', () => {
+    expect(errors({ size: 'XL' })).toEqual({ size: 'invalid' });
+    expect(errors({ state: 'LATER' })).toEqual({ state: 'invalid' });
+    expect(errors({ tags: ['c', 'nope'] })).toEqual({ tags: 'invalid' });
+  });
+
+  it('keeps the shape of the column: a list needs a multiple column, a lone value is wrapped for one', () => {
+    expect(errors({ size: ['S', 'M'] })).toEqual({ size: 'invalid' });
+    expect(values({ size: ['S'] }).size).toBe('S');
+    expect(values({ tags: 'c' }).tags).toEqual(['c']);
+  });
+
+  it('counts an empty list as empty (and the required check applies)', () => {
+    const required = fields.map((f) => (f.columnId === 'tags' ? { ...f, required: true } : f));
+    const r = validateSubmission(required, { tags: [] }, { columns, users: members });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors).toEqual({ tags: 'required' });
+  });
+
+  it('accepts members only: handles are normalised, strangers are rejected', () => {
+    expect(values({ owner: '@Ann', team: ['bob', '@ann'] })).toMatchObject({ owner: 'ann', team: ['bob', 'ann'] });
+    expect(errors({ owner: 'mallory' })).toEqual({ owner: 'invalid' });
+    expect(errors({ team: ['ann', 'mallory'] })).toEqual({ team: 'invalid' });
+  });
+
+  it('ignores user fields for an anonymous respondent, even a filled or required one', () => {
+    const required = fields.map((f) => (f.kind === 'user' ? { ...f, required: true } : f));
+    const r = validateSubmission(required, { owner: 'ann', team: ['bob'] }, { columns, users: null });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.values).toMatchObject({ owner: null, team: null });
+  });
+
+  it('keeps a link as the table stores it and rejects other schemes', () => {
+    expect(values({ site: 'https://example.com/a' }).site).toBe('https://example.com/a');
+    expect(values({ site: '[Docs](https://example.com)' }).site).toBe('[Docs](https://example.com)');
+    expect(errors({ site: 'javascript:alert(1)' })).toEqual({ site: 'invalid' });
+    expect(errors({ site: '[x](javascript:alert(1))' })).toEqual({ site: 'invalid' });
+    expect(errors({ site: 'example.com' })).toEqual({ site: 'invalid' });
+  });
+});
+
+describe('buildFormChoices', () => {
+  const columns: TableColumn[] = [
+    { id: 'size', name: 'Size', type: 'select', multiple: true, options: [{ value: 'S', color: 'red' }] },
+    { id: 'state', name: 'State', type: 'status', options: [{ value: 'TODO', color: 'blue' }] },
+    { id: 'owner', name: 'Owner', type: 'user' },
+    { id: 'secret', name: 'Not on the form', type: 'select', options: [{ value: 'hidden-option', color: 'gray' }] },
+    { id: 'note', name: 'Note', type: 'text' },
+  ];
+  const fields: FormField[] = ['size', 'state', 'owner', 'note'].map((id) => {
+    const c = columns.find((col) => col.id === id)!;
+    return { columnId: id, label: c.name, required: false, kind: c.type };
+  });
+
+  it('describes the select/status/user fields of the form only, with options and multiple', () => {
+    const choices = buildFormChoices(fields, columns, [{ username: 'ann', name: 'Ann' }]);
+    expect(Object.keys(choices).sort()).toEqual(['owner', 'size', 'state']);
+    expect(choices.size).toEqual({ options: [{ value: 'S', color: 'red' }], multiple: true });
+    expect(choices.state.options).toEqual([{ value: 'TODO', color: 'blue' }]);
+    expect(choices.owner).toEqual({ users: [{ username: 'ann', name: 'Ann' }] });
+  });
+
+  it('gives an anonymous reader no member list: the user field is hidden', () => {
+    const choices = buildFormChoices(fields, columns, null);
+    expect(choices.owner).toEqual({ hidden: true });
+    expect(JSON.stringify(choices)).not.toContain('ann');
+  });
+
+  it('skips a field whose column is gone or changed type', () => {
+    expect(buildFormChoices(fields, columns.filter((c) => c.id !== 'size'), [])).not.toHaveProperty('size');
+    expect(buildFormChoices(fields, columns.map((c) => (c.id === 'state' ? { ...c, type: 'text' as const } : c)), [])).not.toHaveProperty('state');
   });
 });

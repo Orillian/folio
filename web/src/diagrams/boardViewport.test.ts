@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createViewportPersister, readStoredViewport, storeViewport, type BoardViewport } from './boardViewport';
+import { createViewportPersister, isUsableViewport, readStoredViewport, storeViewport, type BoardViewport } from './boardViewport';
 
 const VIEWPORT: BoardViewport = { scrollX: 12.5, scrollY: -40, zoom: 1.25 };
 
@@ -45,6 +45,24 @@ describe('readStoredViewport', () => {
     expect(readStoredViewport('board-1')).toBeNull();
   });
 
+  // Prod, 16.10.2026: boards stored at 0.1 (the library's floor) and opened at 3000% (its ceiling).
+  // A viewport sitting on either clamp is a leftover of a broken fit, not a place somebody chose.
+  it.each([
+    ['the minimum clamp (0.1)', { scrollX: 1312, scrollY: 2889, zoom: 0.1 }],
+    ['below the minimum clamp', { scrollX: 1, scrollY: 2, zoom: 0.05 }],
+    ['the maximum clamp (30)', { scrollX: 1, scrollY: 2, zoom: 30 }],
+    ['an implausible zoom (5)', { scrollX: 1, scrollY: 2, zoom: 5 }],
+    ['a corrupted scroll', { scrollX: 1e12, scrollY: 2, zoom: 1 }],
+  ])('drops a stored viewport with %s so the board is fitted afresh', (_label, bad) => {
+    localStorage.setItem('folio.board.viewport:board-1', JSON.stringify(bad));
+    expect(readStoredViewport('board-1')).toBeNull();
+  });
+
+  it('keeps an ordinary zoom just above the floor and at the plausible ceiling', () => {
+    expect(isUsableViewport({ scrollX: 0, scrollY: 0, zoom: 0.11 })).toBe(true);
+    expect(isUsableViewport({ scrollX: 0, scrollY: 0, zoom: 4 })).toBe(true);
+  });
+
   it('falls back to null when storage.getItem throws (private browsing / disabled storage)', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
       throw new DOMException('storage disabled');
@@ -78,6 +96,23 @@ describe('storeViewport', () => {
       throw new DOMException('quota exceeded');
     });
     expect(() => storeViewport('board-1', VIEWPORT)).not.toThrow();
+  });
+});
+
+describe('storeViewport range', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it.each([0.1, 30, NaN, 0])('never writes a viewport with zoom %s', (zoom) => {
+    storeViewport('board-1', { scrollX: 1, scrollY: 2, zoom });
+    expect(localStorage.getItem('folio.board.viewport:board-1')).toBeNull();
+  });
+
+  it('a later unusable viewport does not overwrite a good stored one', () => {
+    storeViewport('board-1', VIEWPORT);
+    storeViewport('board-1', { scrollX: 0, scrollY: 0, zoom: 0.1 });
+    expect(readStoredViewport('board-1')).toEqual(VIEWPORT);
   });
 });
 

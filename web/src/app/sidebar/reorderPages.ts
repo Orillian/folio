@@ -289,6 +289,8 @@ function pageStem(node: TreeNode): string {
   // above already exists to avoid).
   if (node.kind === 'form') return base.slice(0, -'.form.md'.length);
   if (node.kind === 'pdf') return base.slice(0, -'.pdf'.length);
+  if (node.kind === 'canvas') return base.slice(0, -'.canvas'.length);
+  if (node.kind === 'base') return base.slice(0, -'.base'.length);
   if (node.kind === 'office') {
     const fmt = officeFormat(base);
     if (fmt) return base.slice(0, -(fmt.length + 1));
@@ -306,7 +308,7 @@ function pageStem(node: TreeNode): string {
 function childContainerPath(node: TreeNode): string | undefined {
   if (node.kind === 'folder') return node.path;
   if (isIndexPath(node.path)) return dirname(node.path);
-  if (node.kind === 'pdf' || node.kind === 'office') return undefined;
+  if (node.kind === 'pdf' || node.kind === 'office' || node.kind === 'canvas' || node.kind === 'base') return undefined;
   const dir = dirname(node.path);
   const stem = pageStem(node);
   return dir ? `${dir}/${stem}` : stem;

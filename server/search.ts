@@ -1,7 +1,7 @@
 /**
  * Search — PostgreSQL FTS + pg_trgm (round 4; replaces round 2's in-memory
  * substring index, which is now deleted). Config 'simple' + unaccent (no
- * stemming — DEV-PLAN's explicit, fixed ru/uk/en compromise). Title carries
+ * stemming — DEV-PLAN's explicit, fixed uk/en compromise). Title carries
  * tsvector weight 'A', body 'B' (set at write time in storage.ts), so
  * ts_rank_cd alone already ranks title matches first; pg_trgm's `%`
  * similarity operator on title additionally catches a typo that wouldn't
@@ -58,7 +58,7 @@ interface SearchRow {
 
 /** The grammar in one paragraph, for the MCP tool descriptions (docs/AGENT-API.md has the table). */
 export const SEARCH_GRAMMAR_NOTE =
-  'The query takes words (all must match), "an exact phrase", -excluded words and these filters, ANDed together: tag:name (tag:a also matches a/b), kind:doc|table|board|form|pdf|office, status:draft|published|archived, in:folder/ (path prefix), prop:key=value or prop:key (front matter). A query of filters alone lists the matching pages, most recently changed first.';
+  'The query takes words (all must match), "an exact phrase", -excluded words and these filters, ANDed together: tag:name (tag:a also matches a/b), kind:doc|table|board|form|pdf|office|canvas|base, status:draft|published|archived, in:folder/ (path prefix), prop:key=value or prop:key (front matter). A query of filters alone lists the matching pages, most recently changed first.';
 
 export const SEARCH_DEFAULT_LIMIT = 50;
 export const SEARCH_MAX_LIMIT = 100;

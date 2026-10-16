@@ -34,7 +34,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { propertyTypeSchema, type PropertyType, type SpacePropertyTypesResponse } from '../shared/contracts.js';
-import { visiblePagesSql, type PageViewer } from './accessSql.js';
+import { sqlParam, visiblePagesSql, type PageViewer } from './accessSql.js';
 import { query } from './db/pool.js';
 import type { GitIdentity } from './git.js';
 import { readFolioSettingsFile, writeFolioSettingsFile } from './spaceAppearance.js';
@@ -167,6 +167,47 @@ export async function listKnownProperties(space: string, viewer: PageViewer): Pr
     known.push({ key, inferred: ranked[0]?.[0] ?? 'text', pages: entry.pages });
   }
   return known.sort((a, b) => b.pages - a.pages || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+/** Sample values per key: a value longer than this (as JSON) is cut. */
+const SAMPLE_MAX_CHARS = 80;
+
+/** A value for a sample list: short enough to read in a table of keys; a long text is cut, a big list or map becomes its (cut) JSON text. */
+function sampleOf(value: unknown): unknown {
+  if (typeof value === 'string') return value.length > SAMPLE_MAX_CHARS ? `${value.slice(0, SAMPLE_MAX_CHARS)}…` : value;
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
+  const text = JSON.stringify(value);
+  return text.length > SAMPLE_MAX_CHARS ? `${text.slice(0, SAMPLE_MAX_CHARS)}…` : value;
+}
+
+/**
+ * Up to `perKey` of the most common non-empty values of each key, over the pages `viewer` may read — the same pages
+ * as `listKnownProperties` (a value that sits only on a page the viewer cannot open is never returned).
+ */
+export async function listPropertySamples(space: string, viewer: PageViewer, perKey = 3): Promise<Map<string, unknown[]>> {
+  const params: unknown[] = [space];
+  const visible = visiblePagesSql('p', viewer, params, { excludeTemplates: true });
+  const limit = sqlParam(params, Math.max(1, Math.floor(perKey)));
+  const rows = await query<{ key: string; value: unknown }>(
+    `SELECT key, value FROM (
+       SELECT e.key, e.value, ROW_NUMBER() OVER (PARTITION BY e.key ORDER BY COUNT(DISTINCT p.id) DESC, e.value::text) AS rn
+         FROM pages_index p
+         CROSS JOIN LATERAL jsonb_each(CASE WHEN jsonb_typeof(p.frontmatter) = 'object' THEN p.frontmatter ELSE '{}'::jsonb END) AS e
+        WHERE p.space_slug = $1 AND p.kind <> 'folder' AND (p.kind <> 'doc' OR e.key <> 'id') AND ${visible}
+          AND jsonb_typeof(e.value) <> 'null' AND e.value <> '""'::jsonb AND e.value <> '[]'::jsonb
+        GROUP BY e.key, e.value
+     ) ranked
+     WHERE rn <= ${limit}
+     ORDER BY key, rn`,
+    params,
+  );
+  const out = new Map<string, unknown[]>();
+  for (const row of rows) {
+    const list = out.get(row.key) ?? [];
+    list.push(sampleOf(row.value));
+    out.set(row.key, list);
+  }
+  return out;
 }
 
 /** GET /api/spaces/:space/property-types. `types` are the DECLARED types only (what a PUT writes back); inference is in `known`. */

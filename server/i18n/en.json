@@ -10,6 +10,7 @@
   "oauth.willOpen": "After you decide, you will be sent back to {host}.",
   "oauth.unverifiedDcr": "This app registered itself automatically; Folio has not verified who runs it. Allow only if you just started connecting it yourself.",
   "oauth.unverifiedCimd": "This app is identified by {host}. Allow only if you just started connecting it yourself.",
+  "oauth.internalClient": "This is the {app} integration of this Folio instance, set up by its administrator. It shows previews of Folio links in chat, built with your access.",
   "oauth.canDo": "It will be able to:",
   "oauth.read": "Read the pages, tables and boards you can access",
   "oauth.write": "Create and change pages, tables and boards as you (every change is saved in Git history)",
@@ -25,5 +26,16 @@
   "gitRepos.ssoRequiredUrl": "The organization behind some repositories requires SAML single sign-on. Authorize the token here, then try again: {url}",
   "gitRepos.forbidden": "{host} refused the request. The token may lack the permission to list repositories.",
   "gitRepos.unreachable": "Could not reach {host}. Check the address and your network, then try again.",
-  "gitRepos.failed": "{host} returned an unexpected response (HTTP {status})."
+  "gitRepos.failed": "{host} returned an unexpected response (HTTP {status}).",
+  "chat.title": "Folio link previews",
+  "chat.connectedHeading": "{platform} is connected",
+  "chat.connectedBody": "Folio links you share in {platform} now show a preview, built with what you can see in Folio. You can close this tab. To disconnect: Folio, API tokens, Chat apps.",
+  "chat.teamsFinishing": "Finishing the connection in Teams. If this window does not close by itself, close it and paste the link again.",
+  "chat.failedHeading": "Could not connect",
+  "chat.notConfigured": "Link previews for {platform} are not set up on this Folio instance.",
+  "chat.expired": "This connection request has expired or was opened in another browser. Start again from the chat app.",
+  "chat.wrongWorkspace": "This Folio instance previews links for a different {platform} workspace.",
+  "chat.denied": "The connection was cancelled.",
+  "chat.failed": "Something went wrong while connecting. Start again from the chat app.",
+  "chat.teamsPasteAgain": "To connect Folio to Teams, paste a Folio link into a Teams message and choose Connect Folio on the preview."
 }

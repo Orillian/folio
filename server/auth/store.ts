@@ -68,7 +68,7 @@ function rowToStoredUser(row: UserRow): StoredUser {
     isAdmin: row.is_admin,
     disabled: row.disabled,
     createdAt: new Date(row.created_at).toISOString(),
-    // DB CHECK constraint already guarantees this is 'uk'|'en'|'ru'|null; the
+    // DB CHECK constraint already guarantees this is 'uk'|'en'|null; the
     // cast just tells TS what the CHECK already enforces at the DB layer.
     lang: (row.lang as UiLanguage | null) ?? undefined,
     username: row.username ?? undefined,

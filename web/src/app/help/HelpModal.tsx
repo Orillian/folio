@@ -25,6 +25,8 @@ const SHORTCUT_KEYS: ReadonlyArray<readonly [triggerKey: string, descKey: string
 
 export interface HelpModalProps {
   onClose: () => void;
+  /** Given only while error reporting is switched on (SENTRY_DSN): adds a "Report a problem" link under the list. */
+  onReportProblem?: () => void;
 }
 
 /**
@@ -34,7 +36,7 @@ export interface HelpModalProps {
  * own open/close boolean and renders this when true; no shared state needed
  * for a dialog this simple. Esc-to-close comes from ui/Modal.tsx itself.
  */
-export function HelpModal({ onClose }: HelpModalProps) {
+export function HelpModal({ onClose, onReportProblem }: HelpModalProps) {
   const { t } = useTranslation('app');
   return (
     <Modal title={t('help.title')} onClose={onClose}>
@@ -48,6 +50,11 @@ export function HelpModal({ onClose }: HelpModalProps) {
           </div>
         ))}
       </dl>
+      {onReportProblem && (
+        <button type="button" onClick={onReportProblem} className="mt-4 text-xs text-neutral-500 underline underline-offset-2 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+          {t('auth.userMenu.reportProblem')}
+        </button>
+      )}
     </Modal>
   );
 }

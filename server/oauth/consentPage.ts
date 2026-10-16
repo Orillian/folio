@@ -52,7 +52,7 @@ function shell(lang: Lang, title: string, body: string): string {
 export interface ConsentView {
   lang: Lang;
   clientName: string;
-  clientSource: 'dcr' | 'cimd';
+  clientSource: 'dcr' | 'cimd' | 'internal';
   /** For CIMD, the host serving the metadata document; shown so the user can see who vouches for the name. */
   clientIdHost: string;
   redirectHost: string;
@@ -64,7 +64,11 @@ export interface ConsentView {
 export function renderConsentPage(v: ConsentView): string {
   const wantsWrite = v.requestedScopes.includes('write');
   const warning =
-    v.clientSource === 'dcr' ? t(v.lang, 'unverifiedDcr') : t(v.lang, 'unverifiedCimd', { host: v.clientIdHost });
+    v.clientSource === 'internal'
+      ? t(v.lang, 'internalClient')
+      : v.clientSource === 'dcr'
+        ? t(v.lang, 'unverifiedDcr')
+        : t(v.lang, 'unverifiedCimd', { host: v.clientIdHost });
   const body = `
 <h1>${t(v.lang, 'heading', { app: v.clientName })}</h1>
 <p class="muted">${t(v.lang, 'signedInAs', { user: v.userLabel })}</p>

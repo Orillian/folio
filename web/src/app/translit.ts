@@ -1,6 +1,6 @@
 /**
  * Client-side port of server/translit.ts's `translitSlug` — DEV-PLAN "Round
- * 2": ru+uk Cyrillic -> latin, then lowercase/non-alnum-to-dash/collapse.
+ * 2": Cyrillic -> latin, then lowercase/non-alnum-to-dash/collapse.
  * Duplicated rather than imported: server/ is a separate Node runtime, never
  * bundled into the browser (same reasoning as every other app/<->markdown/
  * duplication this codebase already has — see e.g. treeUtils.ts's dirname).

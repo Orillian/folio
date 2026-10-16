@@ -73,7 +73,7 @@ describe('exportUrl', () => {
 });
 
 describe('filenameFromDisposition', () => {
-  it('prefers the RFC 5987 filename* over the ASCII fallback (uk/ru titles survive only there)', () => {
+  it('prefers the RFC 5987 filename* over the ASCII fallback (uk titles survive only there)', () => {
     // Exactly the header shape server/export/routes.ts emits.
     const header = `attachment; filename="_____.md"; filename*=UTF-8''${encodeURIComponent('résumé.md')}`;
     expect(filenameFromDisposition(header)).toBe('résumé.md');

@@ -54,6 +54,13 @@ export const boardSketchNodeSchema = z.object({
   fontSize: z.union([z.literal(16), z.literal(20), z.literal(28)]).optional(),
   /** id of a `type: 'frame'` node this node is a member of. */
   frame: z.string().optional(),
+  /** A URL (or an app path) the element links to — excalidraw's own element link. */
+  link: z.string().optional(),
+  /** Label placement inside a shape: default center / middle. */
+  align: z.enum(['left', 'center']).optional(),
+  valign: z.enum(['top', 'middle']).optional(),
+  /** A label too tall for its shape: 'grow' the shape (default) or 'clip' the label to the shape, ending in "…" (the shape keeps its size). */
+  overflow: z.enum(['grow', 'clip']).optional(),
 });
 export type BoardSketchNode = z.infer<typeof boardSketchNodeSchema>;
 
@@ -67,6 +74,9 @@ export const boardSketchEdgeSchema = z.object({
   start: z.literal('arrow').nullable().optional(),
   end: z.literal('arrow').nullable().optional(),
   color: z.string().optional(),
+  /** The side the arrow leaves `from` / reaches `to` at; default: the facing sides of the two boxes. */
+  fromSide: z.enum(['left', 'right', 'top', 'bottom']).optional(),
+  toSide: z.enum(['left', 'right', 'top', 'bottom']).optional(),
 });
 export type BoardSketchEdge = z.infer<typeof boardSketchEdgeSchema>;
 
@@ -76,6 +86,34 @@ export const boardSketchSchema = z.object({
   edges: z.array(boardSketchEdgeSchema).default([]),
 });
 export type BoardSketch = z.infer<typeof boardSketchSchema>;
+
+/**
+ * An image node — not part of the MCP DSL (a model never hands over image
+ * bytes): the canvas conversion (server/canvasToBoard.ts) passes the picture
+ * itself through BuildSceneOptions.images, keyed by the node id.
+ */
+export interface BoardSketchImageNode {
+  id: string;
+  type: 'image';
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  frame?: string;
+  link?: string;
+}
+export interface BoardSketchImage {
+  mimeType: string;
+  dataURL: string;
+}
+export interface BuildSceneOptions {
+  /** The pictures of the sketch's image nodes, by node id. */
+  images?: ReadonlyMap<string, BoardSketchImage>;
+  /** Filled with the ids of the nodes whose label was clipped (`overflow: 'clip'`). */
+  clipped?: string[];
+}
+/** A sketch that may hold image nodes (internal callers only). */
+export type BoardSketchWithImages = Omit<BoardSketch, 'nodes'> & { nodes: Array<BoardSketchNode | BoardSketchImageNode> };
 
 /**
  * Small deterministic-enough PRNG for `seed`/`versionNonce` — those two
@@ -123,26 +161,62 @@ function growForText(container: ExcalidrawElement, textHeight: number): void {
   container.height += delta;
 }
 
+/**
+ * `m` cut to the lines that fit `maxHeight`, the last one ending in "…" (shortened until it fits `maxWidth`).
+ * Null when everything fits already.
+ */
+function clipToHeight(m: ReturnType<typeof textMetrics>, fontSize: number, maxWidth: number, maxHeight: number): ReturnType<typeof textMetrics> | null {
+  if (m.height <= maxHeight) return null;
+  const lines = m.text.split('\n');
+  const lineHeight = m.height / Math.max(1, lines.length);
+  const keep = Math.max(1, Math.floor(maxHeight / lineHeight));
+  const kept = lines.slice(0, keep);
+  let last = kept[kept.length - 1] ?? '';
+  while (last && textMetrics(`${last}…`, fontSize).width > maxWidth) last = Array.from(last).slice(0, -1).join('');
+  kept[kept.length - 1] = `${last.replace(/\s+$/u, '')}…`;
+  const text = kept.join('\n');
+  const clipped = textMetrics(text, fontSize);
+  return { text, width: Math.min(clipped.width, maxWidth), height: kept.length * lineHeight };
+}
+
+interface LabelLayout {
+  align?: 'left' | 'center';
+  valign?: 'top' | 'middle';
+  overflow?: 'grow' | 'clip';
+}
+
+/** Returns true when the label was clipped (`overflow: 'clip'`). */
 function attachContainerLabel(
   elements: ExcalidrawElement[],
   seed: () => number,
   container: ExcalidrawElement,
   label: string,
   fontSize: number,
-): void {
+  layout: LabelLayout = {},
+): boolean {
   const maxW = boundTextMaxWidth(container, fontSize);
-  const m = textMetrics(label, fontSize, maxW);
-  growForText(container, m.height);
+  let m = textMetrics(label, fontSize, maxW);
+  let clipped = false;
+  if (layout.overflow === 'clip') {
+    const cut = clipToHeight(m, fontSize, maxW, boundTextMaxHeight(container));
+    if (cut) {
+      m = cut;
+      clipped = true;
+    }
+  } else {
+    growForText(container, m.height);
+  }
   const tel = textEl(seed, `t-${container.id}`, m.text, 0, 0, Math.min(m.width, maxW), m.height, fontSize, DEFAULT_LABEL_COLOR, {
-    align: 'center',
-    valign: 'middle',
+    align: layout.align ?? 'center',
+    valign: layout.valign ?? 'middle',
     container: container.id,
-    original: label,
+    original: clipped ? m.text : label,
   });
   placeBoundText(container, tel);
   tel.frameId = container.frameId;
   container.boundElements = [...(container.boundElements ?? []), { id: tel.id, type: 'text' }];
   elements.push(tel);
+  return clipped;
 }
 
 /**
@@ -151,13 +225,15 @@ function attachContainerLabel(
  * missing frame size) so the MCP tool can turn it into a clear errorResult
  * instead of writing a broken board.
  */
-export function buildSceneFromSketch(sketch: BoardSketch): ExcalidrawScene {
+export function buildSceneFromSketch(sketch: BoardSketch | BoardSketchWithImages, options: BuildSceneOptions = {}): ExcalidrawScene {
   const seed = makeSeeder();
+  const files: Record<string, unknown> = {};
   const elements: ExcalidrawElement[] = [];
   const byId = new Map<string, ExcalidrawElement>();
 
-  const frameNodes = sketch.nodes.filter((n) => n.type === 'frame');
-  const otherNodes = sketch.nodes.filter((n) => n.type !== 'frame');
+  const allNodes: Array<BoardSketchNode | BoardSketchImageNode> = sketch.nodes;
+  const frameNodes = allNodes.filter((n): n is BoardSketchNode => n.type === 'frame');
+  const otherNodes = allNodes.filter((n) => n.type !== 'frame');
 
   for (const node of frameNodes) {
     if (byId.has(node.id)) throw new Error(`duplicate node id "${node.id}"`);
@@ -178,6 +254,23 @@ export function buildSceneFromSketch(sketch: BoardSketch): ExcalidrawScene {
       if (!parent || parent.type !== 'frame') throw new Error(`node "${node.id}" references unknown frame "${node.frame}"`);
       frameId = parent.id;
     }
+    if (node.type === 'image') {
+      const picture = options.images?.get(node.id);
+      if (!picture) throw new Error(`image node "${node.id}" has no picture`);
+      const fileId = `f-${node.id}`;
+      const el = baseEl(seed, node.id, 'image', node.x, node.y, node.w, node.h);
+      el.strokeColor = 'transparent';
+      el.fileId = fileId;
+      el.status = 'saved';
+      el.scale = [1, 1];
+      el.crop = null;
+      el.frameId = frameId;
+      el.link = node.link ?? null;
+      files[fileId] = { mimeType: picture.mimeType, id: fileId, dataURL: picture.dataURL, created: 1 };
+      elements.push(el);
+      byId.set(node.id, el);
+      continue;
+    }
     const color = node.color ?? DEFAULT_STROKE;
     const fontSize = node.fontSize ?? DEFAULT_FONT_SIZE;
 
@@ -192,6 +285,7 @@ export function buildSceneFromSketch(sketch: BoardSketch): ExcalidrawScene {
       });
       tel.autoResize = maxW === undefined;
       tel.frameId = frameId;
+      tel.link = node.link ?? null;
       elements.push(tel);
       byId.set(node.id, tel);
       continue;
@@ -205,10 +299,13 @@ export function buildSceneFromSketch(sketch: BoardSketch): ExcalidrawScene {
     el.backgroundColor = node.background ?? 'transparent';
     el.roundness = node.type === 'rectangle' ? { type: 3 } : null;
     el.frameId = frameId;
+    el.link = node.link ?? null;
     elements.push(el);
     byId.set(node.id, el);
 
-    if (node.label) attachContainerLabel(elements, seed, el, node.label, fontSize);
+    if (node.label && attachContainerLabel(elements, seed, el, node.label, fontSize, { align: node.align, valign: node.valign, overflow: node.overflow })) {
+      options.clipped?.push(node.id);
+    }
   }
 
   sketch.edges.forEach((edge, index) => {
@@ -220,7 +317,9 @@ export function buildSceneFromSketch(sketch: BoardSketch): ExcalidrawScene {
     if (byId.has(arrowId)) throw new Error(`edge id "${arrowId}" collides with a node id`);
 
     const elbowed = edge.elbowed !== false;
-    const [fromSide, toSide] = pickSides(fromEl, toEl);
+    const [autoFrom, autoTo] = pickSides(fromEl, toEl);
+    const fromSide = edge.fromSide ?? autoFrom;
+    const toSide = edge.toSide ?? autoTo;
     const fromFrac = SIDE_FRACTION[fromSide];
     const toFrac = SIDE_FRACTION[toSide];
     const sx = fromEl.x + fromEl.width * fromFrac.left;
@@ -250,7 +349,7 @@ export function buildSceneFromSketch(sketch: BoardSketch): ExcalidrawScene {
     // Frames and free text are not good binding anchors (same rule
     // confluenceWhiteboard.ts's converter uses) — the arrow still visually
     // terminates at the right point, it just isn't a live excalidraw binding.
-    const bindable = (e: ExcalidrawElement) => e.type !== 'frame' && e.type !== 'text';
+    const bindable = (e: ExcalidrawElement) => e.type !== 'frame' && e.type !== 'text' && e.type !== 'image';
     if (bindable(fromEl)) {
       el.startBinding = { elementId: fromEl.id, focus: 0, gap: 4, ...fixedPointOf(elbowed, fromFrac) };
       fromEl.boundElements = [...(fromEl.boundElements ?? []), { id: el.id, type: 'arrow' }];
@@ -293,5 +392,5 @@ export function buildSceneFromSketch(sketch: BoardSketch): ExcalidrawScene {
     appState = { viewBackgroundColor: bg, gridSize: null };
   }
 
-  return { type: 'excalidraw', version: 2, source: 'folio-ai-board', elements, appState, files: {} };
+  return { type: 'excalidraw', version: 2, source: 'folio-ai-board', elements, appState, files };
 }

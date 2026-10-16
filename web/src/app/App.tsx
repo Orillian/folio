@@ -16,6 +16,7 @@ import { PageView } from './routes/PageView';
 import { FolderView } from './routes/FolderView';
 import { AccessAdmin } from './admin/access/AccessAdmin';
 import { AssistantAnalytics } from './admin/assistant/AssistantAnalytics';
+import { ChatIntegrationsAdmin } from './admin/integrations/ChatIntegrationsAdmin';
 import { TrashPage } from './trash/TrashPage';
 import { NotFound } from './routes/NotFound';
 import { OAuthResume } from './routes/OAuthResume';
@@ -23,11 +24,14 @@ import { SharedPageView } from './share/SharedPageView';
 import { AcceptInviteView } from './invites/AcceptInviteView';
 import { PublicHostRoutes, PublicPathRoutes } from './public/PublicSiteRoutes';
 import { readHostSiteSlug } from './public/publicSite';
+import { SentryHost } from '../sentry/SentryHost';
 import './i18n/register';
 
 // The settings page carries the CodeMirror CSS/HTML modes and the CSS sanitizer; only space admins ever open it, so it is a chunk of its own
 // (the public sites share this bundle with the app and should not pay for it).
 const SpaceSettingsPage = lazy(() => import('./settings/SpaceSettingsPage').then((m) => ({ default: m.SpaceSettingsPage })));
+// Graph view (16.10.2026): its own chunk — d3-force and the canvas load only when a graph is opened.
+const GraphPage = lazy(() => import('./graph/GraphPage').then((m) => ({ default: m.GraphPage })));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -66,6 +70,7 @@ export function App() {
       <SettingsProvider>
         <ToastProvider>
           <BrowserRouter>
+            <SentryHost />
             <AppRoutes />
           </BrowserRouter>
         </ToastProvider>
@@ -135,6 +140,14 @@ function AppRoutes() {
           <Route index element={<SpaceHome />} />
           <Route path="p/:id" element={<PageView />} />
           <Route path="d/*" element={<FolderView />} />
+          <Route
+            path="graph"
+            element={
+              <Suspense fallback={<div className="p-8 text-sm text-neutral-400">{t('ui.loading')}</div>}>
+                <GraphPage />
+              </Suspense>
+            }
+          />
           {/* 14.10.2026: "Site & PDF" — SEO, the public site's CSS and the PDF header/footer, kept in .folio/ in the repository (space admins). */}
           <Route
             path="settings"
@@ -147,6 +160,7 @@ function AppRoutes() {
         </Route>
         <Route path="/admin/access" element={<AccessAdmin />} />
         <Route path="/admin/assistant" element={<AssistantAnalytics />} />
+        <Route path="/admin/integrations" element={<ChatIntegrationsAdmin />} />
         {/* Trash round: the trash list — server-scoped (space admins see their spaces, instance admin everything), so no client role guard here. */}
         <Route path="/trash" element={<TrashPage />} />
         {/* QA-3: `/login` is not a route — AuthProvider swaps the login screen in

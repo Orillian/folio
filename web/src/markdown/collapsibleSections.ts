@@ -20,7 +20,7 @@ const HEADING_RANK: Record<string, number> = { h1: 1, h2: 2, h3: 3, h4: 4, h5: 5
  * — see alerts.ts's own doc comment for why). The stub count goes through
  * i18next's count-based plural key selection (`collapsible.hiddenBlocks_one`
  * / `_few` / `_many` / `_other` in i18n/*.json) rather than one fixed
- * string, since ru/uk need up to four distinct plural forms.
+ * string, since uk needs up to four distinct plural forms.
  *
  * The stub's count is baked in at render time; CSS alone (markdown.css)
  * shows either the body or the stub based on a `folio-collapsible--collapsed`

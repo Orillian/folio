@@ -52,6 +52,18 @@ function relativeHref(fromDir: string, toPath: string): string {
   return [...Array(ups).fill('..'), ...downParts].join('/');
 }
 
+/**
+ * A new href written the way the old one was: percent-encoded. Non-ASCII letters are escaped only when the old
+ * href escaped them too (`%D0%9C…`); otherwise they stay readable, with just the characters that break a link escaped.
+ */
+function escapeHrefLike(href: string, like: string): string {
+  const full = /%[89a-f][0-9a-f]/i.test(like);
+  return href
+    .split('/')
+    .map((seg) => (seg === '..' || seg === '.' ? seg : full ? encodeURIComponent(seg) : seg.replace(/[%\s()#?<>]/g, (c) => encodeURIComponent(c).replace(/\(/g, '%28').replace(/\)/g, '%29'))))
+    .join('/');
+}
+
 const LINK_RE_CAPTURED = /(\[[^\]]*\])\(([^)]+)\)/gd;
 
 /**
@@ -149,8 +161,11 @@ export function rewriteRelativeLinks(
 
   const rewritten = mapMarkdownLinks(body, (full: string, bracketText: string, hrefRaw: string) => {
     const trimmed = hrefRaw.trim();
-    const spaceIdx = trimmed.search(/\s/);
-    const pathPart = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
+    // `[x](<My file.canvas> "title")`: the angle brackets carry a space (CommonMark); otherwise the path ends at the first space.
+    const angleClose = trimmed.startsWith('<') ? trimmed.indexOf('>') : -1;
+    const angle = angleClose > 0;
+    const spaceIdx = angle ? angleClose + 1 : trimmed.search(/\s/);
+    const pathPart = angle ? trimmed.slice(1, angleClose) : spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
     const titleSuffix = spaceIdx === -1 ? '' : trimmed.slice(spaceIdx); // leading space + any "title", kept as-is
 
     if (/^[a-z][a-z0-9+.-]*:/i.test(pathPart) || pathPart.startsWith('/')) return full; // external/absolute — never touched
@@ -173,10 +188,24 @@ export function rewriteRelativeLinks(
     const hadTrailingSlash = p.endsWith('/');
     const resolved = resolveRelative(sourceDir, p);
     if (resolved === null) return full;
+    // `My%20base.base`: the same file as `My base.base` (what the index resolves too).
+    let escaped = false;
+    let resolvedTarget = resolved;
+    if (resolved !== oldTargetRelPath && p.includes('%')) {
+      try {
+        resolvedTarget = resolveRelative(sourceDir, decodeURIComponent(p)) ?? resolved;
+        escaped = resolvedTarget === oldTargetRelPath;
+      } catch {
+        /* a malformed escape: the link stays as written */
+      }
+    }
 
     let newHrefPath: string | null = null;
-    if (resolved === oldTargetRelPath) {
+    if (resolvedTarget === oldTargetRelPath) {
       newHrefPath = relativeHref(sourceDir, newTargetRelPath);
+      if (escaped) newHrefPath = escapeHrefLike(newHrefPath, p);
+      else if (angle) newHrefPath = `<${newHrefPath}>`;
+      else if (/[\s()]/.test(newHrefPath)) newHrefPath = newHrefPath.replace(/ /g, '%20').replace(/\(/g, '%28').replace(/\)/g, '%29');
     } else if (oldDirForImplicit !== null && newDirForImplicit !== null && resolved === oldDirForImplicit) {
       newHrefPath = relativeHref(sourceDir, newDirForImplicit) + (hadTrailingSlash ? '/' : '');
     }
@@ -320,17 +349,21 @@ export async function getAssetLinkSources(space: string, dir: string): Promise<s
 }
 
 /**
- * Every page that links TO `targetPageId` (resolved page links only), one entry
- * per page. INTERNAL: no visibility filtering — the rename/move orchestration
- * uses it to pick the documents to rewrite. Anything shown to a caller goes
- * through indexV2/read.ts getVisibleBacklinks (the SQL ACL fragment).
+ * Every page OF THE TARGET'S SPACE that links TO `targetPageId` (resolved page
+ * links only), one entry per page. INTERNAL: no visibility filtering — the
+ * rename/move orchestration uses it to pick the documents whose relative links
+ * it rewrites against that space's paths. A page of another space can link here
+ * only by app URL (`/s/<space>/p/<id>`, which a move never breaks) and must not
+ * be rewritten with this space's paths. Anything shown to a caller goes through
+ * indexV2/read.ts getVisibleBacklinks (the SQL ACL fragment).
  */
 export async function getBacklinks(targetPageId: string): Promise<PageMeta[]> {
   const rows = await query<BacklinkRow>(
     `SELECT DISTINCT p.id, p.space_slug, p.path, p.kind, p.title, p.sort_order, p.status, p.updated_at
        FROM page_links l
        JOIN pages_index p ON p.id = l.source_page_id
-      WHERE l.target_page_id = $1 AND l.kind = 'page'
+       JOIN pages_index t ON t.id = l.target_page_id
+      WHERE l.target_page_id = $1 AND l.kind = 'page' AND p.space_slug = t.space_slug
       ORDER BY p.title`,
     [targetPageId],
   );

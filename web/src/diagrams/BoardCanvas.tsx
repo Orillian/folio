@@ -75,6 +75,16 @@ import {
   topOffsetClearing,
 } from './boardChromeLayout';
 import { readStoredViewport, createViewportPersister, type ViewportPersister } from './boardViewport';
+import {
+  FIT_FILL,
+  FIT_MAX_ZOOM,
+  FIT_MIN_ZOOM,
+  computeFitViewport,
+  isCanvasMeasured,
+  sceneBounds,
+  viewportShowsContent,
+  type CanvasSize,
+} from './boardFit';
 import { BoardExportMenu } from './BoardExportMenu';
 import { downloadBlob } from './download';
 import { exportFilename } from './exportFilename';
@@ -118,6 +128,14 @@ const CHROME_ROW_FALLBACK_HEIGHT = 32;
 export const CHROME_MEASURE_FALLBACK_MS = 120;
 /** Debounce for viewport (pan/zoom) persistence — shorter than autosave: there's no server round-trip, no scene-version gate, and nothing bad happens if the last write lands a bit more eagerly. */
 const VIEWPORT_SAVE_DELAY_MS = 500;
+
+/**
+ * After the automatic fit the board keeps following canvas size changes (the app sidebar
+ * finishing its open/close, a panel appearing) until the viewer touches the canvas or this
+ * window ends — otherwise a board framed for a canvas that was still settling stays framed
+ * for the wrong size.
+ */
+const AUTO_FIT_SETTLE_MS = 2000;
 /**
  * Collab path only — same interval the official multiplayer client uses for
  * its periodic full-scene resync (SYNC_FULL_SCENE_INTERVAL_MS). A pure
@@ -141,6 +159,19 @@ const SYNC_FULL_SCENE_INTERVAL_MS = 20_000;
  * land as a SINGLE transaction instead of a burst.
  */
 const ELEMENTS_WRITE_THROTTLE_MS = 250;
+
+/** The canvas container's size when it has been laid out, else null (jsdom, a hidden or collapsed container). */
+function measuredCanvasSize(container: HTMLElement | null): CanvasSize | null {
+  if (!container) return null;
+  const rect = container.getBoundingClientRect();
+  const size = { width: rect.width, height: rect.height };
+  return isCanvasMeasured(size) ? size : null;
+}
+
+/** Best guess for the canvas before it exists: the window. Only used to judge whether a saved viewport still looks at the content. */
+function windowCanvasSize(): CanvasSize {
+  return { width: window.innerWidth || 1280, height: window.innerHeight || 800 };
+}
 
 /**
  * Merges a saved viewport (if any) into an initialData appState. A stored
@@ -419,6 +450,10 @@ export default function BoardCanvas({ pageId, shareToken, shareMode, onEditingCh
   // Consumed by the effect below once excalidrawApi is available, then reset
   // to false so it never re-fires from an unrelated re-render.
   const fitToScreenPendingRef = useRef(false);
+  /** The last scene and canvas size Excalidraw reported through onChange — what the resize observer re-fits when onChange itself is silent. */
+  const latestSceneRef = useRef<{ elements: readonly unknown[]; size: CanvasSize }>({ elements: [], size: { width: 0, height: 0 } });
+  /** Follow canvas size changes right after the automatic fit, until the viewer touches the canvas — see AUTO_FIT_SETTLE_MS. */
+  const autoFitSettleRef = useRef<{ until: number; touched: boolean }>({ until: 0, touched: false });
   // One persister per mounted instance — safe because BoardCanvas is scoped
   // to exactly one pageId for its whole lifetime (see the module docblock);
   // pageId never changes under an existing instance, only reloadTick does,
@@ -598,6 +633,7 @@ export default function BoardCanvas({ pageId, shareToken, shareMode, onEditingCh
     setLoad({ status: 'loading' });
     setShowNewHint(false);
     fitToScreenPendingRef.current = false;
+    autoFitSettleRef.current = { until: 0, touched: false };
     metaRef.current = { path: '', title: '' };
     setPageSpace(undefined);
     setShareAccess(null);
@@ -799,12 +835,19 @@ export default function BoardCanvas({ pageId, shareToken, shareMode, onEditingCh
     const elements = orderedElementsFromMap(session.elements);
     const boardFields = boardFieldsFromMap(session.board);
     const files = filesFromMap(session.files);
-    const storedViewport = readStoredViewport(pageId);
+    // A saved viewport that looks at empty space (the board was rearranged or emptied since,
+    // or it was saved for another window size) frames nothing — fit afresh instead.
+    const savedViewport = readStoredViewport(pageId);
+    const storedViewport =
+      savedViewport &&
+      viewportShowsContent(savedViewport, sceneBounds(elements), measuredCanvasSize(containerRef.current) ?? windowCanvasSize())
+        ? savedViewport
+        : null;
     const appState = applyStoredViewport(
       boardFields.viewBackgroundColor !== undefined ? { viewBackgroundColor: boardFields.viewBackgroundColor } : {},
       storedViewport,
     );
-    fitToScreenPendingRef.current = !storedViewport && elements.length > 0;
+    fitToScreenPendingRef.current = !storedViewport && sceneBounds(elements) !== null;
     // Fix/share-identity: a real granted role (mySessionRole is 'viewer'/
     // 'editor'/'admin', not null) means the SESSION has actual access to
     // this page — it governs editability outright, exactly as
@@ -1079,8 +1122,17 @@ export default function BoardCanvas({ pageId, shareToken, shareMode, onEditingCh
   function fitBoardToScreen(): void {
     const api = apiRef.current;
     if (!api || load.status !== 'ready') return;
-    if (api.getSceneElements().length === 0) return; // nothing to fit — avoid feeding zoomToFit an empty scene
-    api.scrollToContent(undefined, { fitToViewport: true, animate: true });
+    // Only elements with real geometry go to the library: it has no guard of its own against an empty
+    // or degenerate set (Infinity -> its 3000% ceiling), and `fitToViewport` has no upper cap of its own.
+    const fittable = api.getSceneElements().filter((el) => sceneBounds([el]) !== null);
+    if (fittable.length === 0) return; // nothing to fit
+    api.scrollToContent(fittable, {
+      fitToViewport: true,
+      viewportZoomFactor: FIT_FILL,
+      minZoom: FIT_MIN_ZOOM,
+      maxZoom: FIT_MAX_ZOOM,
+      animate: true,
+    });
   }
 
   /**
@@ -1177,17 +1229,73 @@ export default function BoardCanvas({ pageId, shareToken, shareMode, onEditingCh
    *
    * A stored viewport still wins outright — the load effects only ever arm
    * fitToScreenPendingRef when there is none (see applyStoredViewport).
+   *
+   * 16.10.2026 (prod: a shared board opened at 3000% for everyone, at 10% for
+   * the owner): the frame is no longer `scrollToContent({ fitToViewport })`
+   * but boardFit.ts's own arithmetic — that call has no upper cap, turns a
+   * zero-size scene into the library's 3000% ceiling and floors a 17% fit to
+   * 10%. The canvas is measured on our own container (Excalidraw's reported
+   * size is the window until it has measured itself), the fit waits for a
+   * real layout (a ResizeObserver retries), and it is never above 100%.
    */
   function autoFitOnFirstScene(elements: readonly unknown[], appState: { width: number; height: number }): void {
+    latestSceneRef.current = { elements, size: { width: appState.width, height: appState.height } };
     if (!fitToScreenPendingRef.current) return;
-    if (elements.length === 0) return; // scene hasn't landed yet (or is genuinely empty) — keep waiting
-    if (appState.width <= 0 || appState.height <= 0) return; // canvas not measured yet — zoomToFit would divide by nothing
+    if (sceneBounds(elements as never) === null) return; // scene hasn't landed yet (or is genuinely empty) — keep waiting
+    if (canvasSizeNow() === null) return; // canvas not laid out yet — the resize observer retries when it is
     fitToScreenPendingRef.current = false;
+    autoFitSettleRef.current = { until: Date.now() + AUTO_FIT_SETTLE_MS, touched: false };
     requestAnimationFrame(() => {
-      // `animate: false` (unlike the button): this is first paint, not a
-      // deliberate user action — the board should simply already be framed.
-      apiRef.current?.scrollToContent(undefined, { fitToViewport: true, animate: false });
+      // Silent (unlike the button): this is first paint, not a deliberate user action — the
+      // board should simply already be framed. If the canvas collapsed in the meantime, wait again.
+      if (!applyAutoFit()) fitToScreenPendingRef.current = true;
     });
+  }
+
+  /**
+   * The canvas size to fit into: our container once the browser has laid it out. Excalidraw's own
+   * `appState.width/height` cannot be trusted for that — before its first measurement they hold the
+   * window size. Without a layout engine at all (jsdom) there is nothing to contradict, so the
+   * size Excalidraw reported stands.
+   */
+  function canvasSizeNow(): CanvasSize | null {
+    const measured = measuredCanvasSize(containerRef.current);
+    if (measured) return measured;
+    if (typeof ResizeObserver === 'function') return null;
+    const reported = latestSceneRef.current.size;
+    return isCanvasMeasured(reported) ? reported : null;
+  }
+
+  /** Frames the last reported scene in the canvas as it is now. False when there is nothing computable to frame yet. */
+  function applyAutoFit(): boolean {
+    const api = apiRef.current;
+    if (!api) return false;
+    const viewport = computeFitViewport(sceneBounds(latestSceneRef.current.elements as never), canvasSizeNow());
+    if (!viewport) return false;
+    api.updateScene({
+      appState: {
+        scrollX: viewport.scrollX,
+        scrollY: viewport.scrollY,
+        zoom: { value: viewport.zoom as NormalizedZoomValue },
+      },
+      captureUpdate: CaptureUpdateAction.NEVER,
+    });
+    return true;
+  }
+
+  /** The viewer took the canvas into their own hands — the automatic fit stops following size changes. */
+  function touchCanvas(): void {
+    autoFitSettleRef.current.touched = true;
+  }
+
+  /** Resize observer callback: a fit that was waiting for a layout can go now; a fit that just happened follows the canvas while it settles. */
+  function onCanvasResized(): void {
+    if (fitToScreenPendingRef.current) {
+      autoFitOnFirstScene(latestSceneRef.current.elements, latestSceneRef.current.size);
+      return;
+    }
+    const settle = autoFitSettleRef.current;
+    if (!settle.touched && Date.now() < settle.until) applyAutoFit();
   }
 
   /**
@@ -1323,6 +1431,20 @@ export default function BoardCanvas({ pageId, shareToken, shareMode, onEditingCh
       }
     };
   }, []);
+
+  // Automatic fit, part two: it needs a laid-out canvas, and onChange is silent when the container
+  // grows from nothing to its real size after Excalidraw's last state update (a hidden tab that
+  // becomes visible, a panel finishing its transition). The observer is what gets the fit done then,
+  // and keeps it following the canvas for AUTO_FIT_SETTLE_MS while the layout settles.
+  useEffect(() => {
+    if (load.status !== 'ready') return;
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(() => onCanvasResized());
+    observer.observe(container);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onCanvasResized only reads refs
+  }, [load.status]);
 
   // Round 25b-1 §1: keep `compact` in step with the viewport. Guarded for
   // environments without matchMedia at all (jsdom), where isCompactViewport()
@@ -1542,7 +1664,15 @@ export default function BoardCanvas({ pageId, shareToken, shareMode, onEditingCh
   //     just as much (arguably more, since they have no toolbar of their own
   //     to work around a bad initial zoom with).
   return (
-    <div ref={containerRef} className="relative h-full w-full" onDragOver={handleStickyDragOver} onDrop={handleStickyDrop}>
+    <div
+      ref={containerRef}
+      className="relative h-full w-full"
+      onDragOver={handleStickyDragOver}
+      onDrop={handleStickyDrop}
+      onPointerDownCapture={touchCanvas}
+      onWheelCapture={touchCanvas}
+      onKeyDownCapture={touchCanvas}
+    >
       <Excalidraw
         excalidrawAPI={(api) => {
           apiRef.current = api;
@@ -1610,11 +1740,16 @@ export default function BoardCanvas({ pageId, shareToken, shareMode, onEditingCh
           // scheduler, there is no scene-version gate to skip these; see
           // boardViewport.ts). Applies — and is harmless to call — in both
           // view and edit mode, on both paths.
-          viewportPersisterRef.current?.notifyChange({
-            scrollX: appState.scrollX,
-            scrollY: appState.scrollY,
-            zoom: appState.zoom.value,
-          });
+          // Not while the automatic fit is still due: what Excalidraw reports until then is its
+          // default (100% at the origin), not something the viewer looked at — saving it would
+          // restore an unframed board next time. The persister itself refuses unusable values.
+          if (!fitToScreenPendingRef.current) {
+            viewportPersisterRef.current?.notifyChange({
+              scrollX: appState.scrollX,
+              scrollY: appState.scrollY,
+              zoom: appState.zoom.value,
+            });
+          }
         }}
       />
       {/* Reactions are written into the room's own Y.Map over the same socket, so they need the

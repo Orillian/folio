@@ -233,7 +233,7 @@ describe('ExportMenu — outcomes that must never look like a clean success', ()
     const alert = await screen.findByRole('alert');
     // errorText.ts turns a 403 with no more specific wording into the generic
     // permission message for the current UI language; the raw server string
-    // must not appear on top of a Russian/Ukrainian UI. It still reaches the
+    // must not appear on top of a Ukrainian UI. It still reaches the
     // console — see the next test.
     expect(alert.textContent).toContain("You don't have permission");
     expect(alert.textContent).not.toContain('insufficient role');

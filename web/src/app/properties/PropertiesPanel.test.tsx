@@ -83,7 +83,7 @@ afterEach(() => {
 });
 
 async function openPanel() {
-  const toggle = await screen.findByRole('button', { name: /^Properties \(\d+\)$/ });
+  const toggle = await screen.findByRole('button', { name: /^(Properties \(\d+\)|Add property)$/ });
   await userEvent.click(toggle);
   return toggle;
 }
@@ -265,6 +265,17 @@ describe('PagePropertiesPopover (tables, forms, boards, files)', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByTestId('page').textContent).toBe('');
+  });
+
+  it('says "Add property" when the page has none and the user may edit; a reader sees no toggle', async () => {
+    stubNetwork({ ...TABLE, properties: {} });
+    const { unmount } = renderPopover(true);
+    const toggle = await screen.findByRole('button', { name: 'Add property' });
+    expect(screen.getByTestId('slot').contains(toggle)).toBe(true);
+    unmount();
+    stubNetwork({ ...TABLE, properties: {}, canEdit: false });
+    renderPopover(false);
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Properties|Add property/ })).toBeNull());
   });
 
   it('opens a popover under the toggle with the editors; a save sends the page\'s own keys only', async () => {

@@ -13,6 +13,8 @@ function filenameStem(node: TreeNode): string {
   if (node.kind === 'table' && base.endsWith('.table.md')) return base.slice(0, -'.table.md'.length);
   if (node.kind === 'form' && base.endsWith('.form.md')) return base.slice(0, -'.form.md'.length);
   if (node.kind === 'pdf' && base.endsWith('.pdf')) return base.slice(0, -'.pdf'.length);
+  if (node.kind === 'canvas' && base.toLowerCase().endsWith('.canvas')) return base.slice(0, -'.canvas'.length);
+  if (node.kind === 'base' && base.toLowerCase().endsWith('.base')) return base.slice(0, -'.base'.length);
   if (node.kind === 'office') {
     const fmt = officeFormat(base);
     if (fmt) return base.slice(0, -(fmt.length + 1));
@@ -88,7 +90,11 @@ export function childDirOf(node: TreeNode): string {
           ? base.slice(0, -'.form.md'.length)
           : node.kind === 'pdf' && base.endsWith('.pdf')
             ? base.slice(0, -'.pdf'.length)
-            : officeFmt
+            : node.kind === 'canvas' && base.toLowerCase().endsWith('.canvas')
+              ? base.slice(0, -'.canvas'.length)
+              : node.kind === 'base' && base.toLowerCase().endsWith('.base')
+              ? base.slice(0, -'.base'.length)
+              : officeFmt
               ? base.slice(0, -(officeFmt.length + 1))
               : base.replace(/\.md$/, '');
   return dir ? `${dir}/${stem}` : stem;

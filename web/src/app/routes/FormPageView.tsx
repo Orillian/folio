@@ -2,13 +2,16 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router';
-import type { SubmitFormBody } from '@shared/contracts';
+import type { FormFieldChoices, SubmitFormBody } from '@shared/contracts';
 import { isFormParseError, parseFormFile } from '@shared/forms/codec';
 import { FormRenderer } from '../../forms/FormRenderer';
 import type { FormSubmitOutcome } from '../../forms/FormRenderer';
 import { api, ApiError } from '../api';
 import { useApiErrorText } from '../errorText';
 import { FormDefinitionEditor } from './FormDefinitionEditor';
+import { loadBuilderDraft } from './formBuilderDraft';
+import { useAuthOptional } from '../auth/AuthProvider';
+import { answersDraftKey, builderDraftKey } from '../../forms/draftStorage';
 import { track } from '../../analytics';
 import '../i18n/register';
 
@@ -18,6 +21,8 @@ export interface FormPageViewProps {
   space?: string;
   /** The raw `.form.md` file, exactly as GET /api/pages/:id (or /api/share/:token) hands it back — parsed here with the same shared/forms/codec.ts the server itself uses. */
   markdown: string;
+  /** The fields' options / members for THIS reader (`PageDoc.formChoices`); undefined renders every choice field as a plain input. */
+  choices?: Record<string, FormFieldChoices>;
   canEdit: boolean;
   /** Present only for an anonymous share-link guest — forwarded to POST /api/forms/:id/submit. */
   shareToken?: string;
@@ -33,12 +38,17 @@ export interface FormPageViewProps {
  * worth adding: the generic page routes already hand back the whole file
  * for a table, and a form rides the same "content is `markdown`" contract.
  */
-export function FormPageView({ pageId, space, markdown, canEdit, shareToken, submitDisabled }: FormPageViewProps) {
+export function FormPageView({ pageId, space, markdown, choices, canEdit, shareToken, submitDisabled }: FormPageViewProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
   const queryClient = useQueryClient();
-  const [editing, setEditing] = useState(false);
+  const auth = useAuthOptional();
+  const userId = auth?.user.id;
   const parsed = useMemo(() => parseFormFile(markdown), [markdown]);
+  // An editor who reloaded (or lost the tab) mid-edit lands straight back in
+  // the dialog, where a banner offers the unsaved draft — the lost half hour
+  // this exists for. Read once on mount; the dialog owns the draft from there.
+  const [editing, setEditing] = useState(() => canEdit && !isFormParseError(parsed) && loadBuilderDraft(builderDraftKey(pageId, userId), parsed) !== null);
 
   // Editor-only: resolves the paired table's page id so "View the
   // table" can link straight to it and so FormDefinitionEditor can create
@@ -61,6 +71,10 @@ export function FormPageView({ pageId, space, markdown, canEdit, shareToken, sub
     return <div className="p-8 text-sm text-red-600 dark:text-red-400">{t('routes.form.invalid', { message: parsed.message })}</div>;
   }
   const form = parsed;
+  // Whose answers these are: a share-link guest (the token), a signed-in user,
+  // or nobody in particular. A public site's anonymous reader can't send the
+  // form at all, so there is nothing worth keeping for them.
+  const answersKey = submitDisabled ? undefined : answersDraftKey(pageId, shareToken ? `t:${shareToken}` : userId ? `u:${userId}` : 'anon');
 
   async function handleSubmit(values: Record<string, unknown>): Promise<FormSubmitOutcome> {
     // FormRenderer's local state is intentionally untyped (a checkbox's bool,
@@ -103,9 +117,11 @@ export function FormPageView({ pageId, space, markdown, canEdit, shareToken, sub
         title={form.title}
         description={form.description}
         fields={form.fields}
+        choices={choices}
         submitButtonLabel={form.submitButton}
         onSubmit={handleSubmit}
         submitDisabled={submitDisabled}
+        draftKey={answersKey}
       />
 
       {editing && (

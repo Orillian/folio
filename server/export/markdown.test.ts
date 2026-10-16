@@ -498,7 +498,7 @@ describe('R23 export — markdown assembly (real PG + real files)', () => {
   // -------------------------------------------------------------------------
 
   describe('pure helpers', () => {
-    it('slugifyHeading keeps unicode letters (uk/ru headings must anchor)', () => {
+    it('slugifyHeading keeps unicode letters (uk headings must anchor)', () => {
       expect(slugifyHeading('Hello, World!')).toBe('hello-world');
       expect(slugifyHeading('Übersicht des Systems')).toBe('übersicht-des-systems');
       expect(slugifyHeading('!!!')).toBe('section');

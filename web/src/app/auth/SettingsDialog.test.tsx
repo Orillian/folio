@@ -25,7 +25,7 @@ import { AuthProvider } from './AuthProvider';
 import { UserMenu } from './UserMenu';
 import '../i18n/register';
 
-// The whole app is Russian-language today (see pipeline.test.ts's own note)
+// The app speaks two languages
 // — pin the test's i18next instance so string assertions check real copy.
 beforeEach(async () => {
   await i18next.changeLanguage('en');

@@ -26,10 +26,11 @@ import {
   Trash2,
   Upload,
   Users,
+  Database,
 } from 'lucide-react';
 import type { PageKind, PageMeta } from '@shared/contracts';
 import { emptySearchQuery, formatSearchQuery } from '@shared/searchQuery';
-import { api } from '../api';
+import { api, type TreeResponse } from '../api';
 import { useApiErrorText } from '../errorText';
 import { useActiveFolderPath, useActivePageId, useLocalStorage } from '../hooks';
 import { useSpaceRole } from '../auth/AuthProvider';
@@ -47,6 +48,7 @@ import { PageTree } from './PageTree';
 import { StarredSection } from './StarredSection';
 import { AgentSection } from './AgentSection';
 import { TagsSection } from './TagsSection';
+import { GraphLink } from './GraphLink';
 import { MembersDialog } from './MembersDialog';
 import { ConnectGitDialog } from './ConnectGitDialog';
 import { ImageStorageDialog } from './ImageStorageDialog';
@@ -118,6 +120,9 @@ export interface SidebarProps {
   onOpenSwitcher?: (query?: string) => void;
 }
 
+// Obsidian Bases: the "New base" dialog (name, location, starting point) — lazy, its YAML writer stays out of the main chunk.
+import { NewBaseDialog, preloadNewBaseDialog } from '../../bases/lazyNewBase';
+
 /** Resizable (round 8 follow-up), collapsible (by the parent Shell) left sidebar: space switcher + page tree. */
 export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, onOpenSwitcher }: SidebarProps) {
   const { t } = useTranslation('app');
@@ -133,6 +138,8 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
   const [managingMembers, setManagingMembers] = useState(false);
   const [editingAssistantKey, setEditingAssistantKey] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  // "New base" dialog: the directory it opens on (the current context, like every other «+» item), or null when closed.
+  const [newBaseDir, setNewBaseDir] = useState<string | null>(null);
   // Space setting: where pasted/uploaded images go (Folio storage vs. assets/ in the repository).
   const [editingImageStorage, setEditingImageStorage] = useState(false);
   const [editingScanSettings, setEditingScanSettings] = useState(false);
@@ -175,6 +182,12 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
     // next to (or inside) THAT page.
     const tree = mergeLocalPages(await treeOfflineAware(queryClient, space), listLocalPages(), space);
     return resolvePlusTargetDir(tree.tree, id, folderPath);
+  }
+
+  /** The same target from the tree already in the cache (null when there is none): for a dialog that must open at once. */
+  function cachedPlusTargetDir(): string | null {
+    const cached = queryClient.getQueryData<TreeResponse>(['tree', space]);
+    return cached ? resolvePlusTargetDir(mergeLocalPages(cached, listLocalPages(), space).tree, id, folderPath) : null;
   }
 
   /**
@@ -506,6 +519,21 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
                   >
                     {t('sidebar.newForm')}
                   </MenuItem>
+                  {/* Obsidian Bases — a view over pages (`.base`), opened in its editor-less starter view. */}
+                  <MenuItem
+                    icon={<Database size={14} />}
+                    onPreload={() => void preloadNewBaseDialog()}
+                    onSelect={() => {
+                      close();
+                      // Same current-context target as the other items, shown in the dialog (and changeable there).
+                      // The dialog opens at once: from the cached tree when there is one, else after the fetch.
+                      const cached = cachedPlusTargetDir();
+                      if (cached !== null) setNewBaseDir(cached);
+                      else void currentPlusTargetDir().then(setNewBaseDir, () => setNewBaseDir(''));
+                    }}
+                  >
+                    {t('sidebar.newBase')}
+                  </MenuItem>
                   <MenuItem
                     icon={<Upload size={14} />}
                     onSelect={() => {
@@ -583,6 +611,7 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
               onOpenSwitcher?.(formatSearchQuery({ ...emptySearchQuery(), tags: [tag] }));
             }}
           />
+          <GraphLink space={space} onNavigate={onMobileClose} />
         </nav>
 
         {canEditContent(role) && <RecentChangesButton space={space} />}
@@ -604,6 +633,7 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
         {editingAssistantKey && <SpaceAssistantKeyDialog space={space} onClose={() => setEditingAssistantKey(false)} />}
 
         {publishing && <PublishSpaceDialog space={space} onClose={() => setPublishing(false)} />}
+        {newBaseDir !== null && <NewBaseDialog space={space} initialParentPath={newBaseDir} onClose={() => setNewBaseDir(null)} />}
         {editingImageStorage && <ImageStorageDialog space={space} onClose={() => setEditingImageStorage(false)} />}
         {editingScanSettings && <ScanSettingsDialog space={space} onClose={() => setEditingScanSettings(false)} />}
 

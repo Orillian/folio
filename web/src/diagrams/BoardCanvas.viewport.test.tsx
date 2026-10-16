@@ -227,11 +227,22 @@ async function flushAll() {
   }
 }
 
+/** The automatic fit's own write: an updateScene call that sets a zoom (the remote-sync path never does). */
+function fitCalls(): Array<{ appState: { scrollX: number; scrollY: number; zoom: { value: number } } }> {
+  return state.fakeApi.updateScene.mock.calls
+    .map((call) => call[0] as { appState?: { zoom?: unknown } })
+    .filter((arg) => !!arg?.appState?.zoom) as never;
+}
+
 interface SceneElementFixture {
   id: string;
   version?: number;
   versionNonce?: number;
   index?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
 }
 
 /** Seeds the fake session's `elements` Y.Map — the collab-path equivalent of the old loadFromBlob-mocked "restored scene". Call BEFORE mountReady(). */
@@ -281,7 +292,7 @@ describe('BoardCanvas viewport restore (a saved viewport always wins over fit-to
 
   it('folds a stored viewport into initialData.appState (restored-scene branch) and never calls scrollToContent', async () => {
     state.viewport.stored = { scrollX: 111, scrollY: -222, zoom: 1.5 };
-    seedScene('board-1', [{ id: 'a' }]);
+    seedScene('board-1', [{ id: 'a', x: 100, y: 300 }]); // inside what that viewport shows
 
     await mountReady();
 
@@ -323,8 +334,11 @@ describe('BoardCanvas fit-to-screen on first open (no stored viewport yet)', () 
 
     await mountReady();
 
-    expect(state.fakeApi.scrollToContent).toHaveBeenCalledTimes(1);
-    expect(state.fakeApi.scrollToContent).toHaveBeenCalledWith(undefined, { fitToViewport: true, animate: false });
+    // 1x1 element in a 1200x800 canvas: nothing to shrink, so it opens at 100%, centred — and never
+    // goes through the library's scrollToContent({ fitToViewport }), which has no upper cap.
+    expect(fitCalls()).toHaveLength(1);
+    expect(fitCalls()[0].appState).toEqual({ zoom: { value: 1 }, scrollX: 599.5, scrollY: 399.5 });
+    expect(state.fakeApi.scrollToContent).not.toHaveBeenCalled();
   });
 
   it('fits exactly once, however many onChange events follow', async () => {
@@ -340,7 +354,7 @@ describe('BoardCanvas fit-to-screen on first open (no stored viewport yet)', () 
       );
     });
 
-    expect(state.fakeApi.scrollToContent).toHaveBeenCalledTimes(1);
+    expect(fitCalls()).toHaveLength(1);
   });
 
   it('waits for a measured canvas — an onChange carrying a 0x0 appState never triggers a fit', async () => {
@@ -350,15 +364,15 @@ describe('BoardCanvas fit-to-screen on first open (no stored viewport yet)', () 
 
     await mountReady();
 
-    expect(state.fakeApi.scrollToContent).not.toHaveBeenCalled();
+    expect(fitCalls()).toHaveLength(0);
   });
 
-  it('never calls scrollToContent for a genuinely empty/new board (nothing in the Y.Doc at all)', async () => {
+  it('never fits a genuinely empty/new board (nothing in the Y.Doc at all)', async () => {
     state.viewport.stored = null;
 
     await mountReady();
 
-    expect(state.fakeApi.scrollToContent).not.toHaveBeenCalled();
+    expect(fitCalls()).toHaveLength(0);
   });
 
   it('never calls scrollToContent when the restored scene has zero elements — an empty canvas is never fed to fit-to-screen', async () => {
@@ -368,7 +382,7 @@ describe('BoardCanvas fit-to-screen on first open (no stored viewport yet)', () 
 
     await mountReady();
 
-    expect(state.fakeApi.scrollToContent).not.toHaveBeenCalled();
+    expect(fitCalls()).toHaveLength(0);
   });
 
   it('a stored viewport still wins: content loads through onChange and no fit happens', async () => {
@@ -377,7 +391,135 @@ describe('BoardCanvas fit-to-screen on first open (no stored viewport yet)', () 
 
     await mountReady();
 
+    expect(fitCalls()).toHaveLength(0);
     expect(state.fakeApi.scrollToContent).not.toHaveBeenCalled();
+  });
+});
+
+describe('BoardCanvas initial framing is robust (prod, 16.10.2026: 3000% for everyone, 10% for the owner)', () => {
+  /** jsdom has no layout; these tests give the container a size on demand and a controllable ResizeObserver. */
+  const observers: Array<() => void> = [];
+  let containerSize = { width: 0, height: 0 };
+
+  function installLayout(size: { width: number; height: number }) {
+    containerSize = size;
+    observers.length = 0;
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          observers.push(cb);
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      () => ({ x: 0, y: 0, top: 0, left: 0, right: containerSize.width, bottom: containerSize.height, ...containerSize, toJSON: () => ({}) }) as DOMRect,
+    );
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    observers.length = 0;
+  });
+
+  it('does not fit into a container that has no layout yet, and fits as soon as it gets one (resize observer)', async () => {
+    installLayout({ width: 0, height: 0 }); // hidden tab / collapsed container: Excalidraw still reports the window size
+    state.viewport.stored = null;
+    seedScene('board-1', [
+      { id: 'a', x: 0, y: 0, width: 2000, height: 500 },
+      { id: 'b', x: 2000, y: 0, width: 2000, height: 500 },
+    ]);
+
+    await mountReady();
+    expect(fitCalls()).toHaveLength(0);
+
+    containerSize = { width: 800, height: 600 };
+    act(() => observers.forEach((cb) => cb()));
+
+    expect(fitCalls()).toHaveLength(1);
+    const { zoom, scrollX, scrollY } = fitCalls()[0].appState;
+    expect(zoom.value).toBeCloseTo((800 * 0.92) / 4000, 6); // exact fit, not floored to a 10% step
+    expect(scrollX).toBeCloseTo(400 / zoom.value - 2000, 6);
+    expect(scrollY).toBeCloseTo(300 / zoom.value - 250, 6);
+  });
+
+  it('keeps following the canvas while it settles after the fit, and stops once the viewer touches it', async () => {
+    installLayout({ width: 700, height: 600 });
+    state.viewport.stored = null;
+    seedScene('board-1', [{ id: 'a', x: 0, y: 0, width: 3000, height: 500 }]);
+    const container = await mountReady();
+    expect(fitCalls()).toHaveLength(1);
+
+    containerSize = { width: 1200, height: 600 }; // e.g. the app sidebar finished closing
+    act(() => observers.forEach((cb) => cb()));
+    expect(fitCalls()).toHaveLength(2);
+    expect(fitCalls()[1].appState.zoom.value).toBeCloseTo((1200 * 0.92) / 3000, 6);
+
+    act(() => {
+      container.firstElementChild!.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    });
+    containerSize = { width: 900, height: 600 };
+    act(() => observers.forEach((cb) => cb()));
+    expect(fitCalls()).toHaveLength(2); // the viewer's own framing is left alone
+  });
+
+  it('opens a degenerate scene (everything at one point, zero-size shapes) at 100%, never at the library maximum', async () => {
+    installLayout({ width: 1000, height: 700 });
+    state.viewport.stored = null;
+    seedScene('board-1', [
+      { id: 'a', x: 1535, y: 327, width: 0, height: 0 },
+      { id: 'b', x: 1535, y: 327, width: 0, height: 0 },
+    ]);
+
+    await mountReady();
+
+    expect(fitCalls()).toHaveLength(1);
+    expect(fitCalls()[0].appState.zoom.value).toBe(1);
+  });
+
+  it('a very wide board opens at the exact fit, bounded below by 10%', async () => {
+    installLayout({ width: 744, height: 712 });
+    state.viewport.stored = null;
+    seedScene('board-1', [{ id: 'a', x: 0, y: 0, width: 4364, height: 1055 }]);
+
+    await mountReady();
+
+    expect(fitCalls()[0].appState.zoom.value).toBeCloseTo((744 * 0.92) / 4364, 6); // 0.157; the library would floor it to 0.1
+  });
+
+  it('does not save the viewport before the automatic fit has happened', async () => {
+    installLayout({ width: 0, height: 0 });
+    state.viewport.stored = null;
+    seedScene('board-1', [{ id: 'a', x: 0, y: 0, width: 100, height: 100 }]);
+
+    await mountReady();
+    expect(state.viewport.persisterNotifyChange).not.toHaveBeenCalled();
+
+    containerSize = { width: 800, height: 600 };
+    act(() => observers.forEach((cb) => cb()));
+    act(() => {
+      state.lastExcalidrawProps.onChange?.(
+        [{ id: 'a' }],
+        { scrollX: 1, scrollY: 2, zoom: { value: 1 }, width: 800, height: 600 },
+        {},
+      );
+    });
+    expect(state.viewport.persisterNotifyChange).toHaveBeenCalledWith({ scrollX: 1, scrollY: 2, zoom: 1 });
+  });
+
+  it('ignores a saved viewport that looks at empty space and fits the board instead', async () => {
+    installLayout({ width: 800, height: 600 });
+    state.viewport.stored = { scrollX: -90000, scrollY: 40000, zoom: 1 };
+    seedScene('board-1', [{ id: 'a', x: 0, y: 0, width: 400, height: 300 }]);
+
+    await mountReady();
+
+    const appState = state.lastExcalidrawProps.initialData?.appState as Record<string, unknown>;
+    expect(appState.zoom).toBeUndefined();
+    expect(fitCalls()).toHaveLength(1);
   });
 });
 
@@ -424,13 +566,42 @@ describe('BoardCanvas explicit fit-to-screen button (owner report: no such contr
     expect(fitToScreenButton(container)).not.toBeNull();
   });
 
-  it('clicking it calls scrollToContent(undefined, { fitToViewport: true, animate: true }) — animated, unlike the silent on-load fit', async () => {
-    state.fakeApi.getSceneElements.mockReturnValue([{ id: 'a' }]);
+  it('clicking it fits the scene with zoom bounds — animated, unlike the silent on-load fit', async () => {
+    const el = { id: 'a', x: 0, y: 0, width: 100, height: 50 };
+    state.fakeApi.getSceneElements.mockReturnValue([el]);
     const container = await mountReady();
 
     act(() => fitToScreenButton(container).click());
 
-    expect(state.fakeApi.scrollToContent).toHaveBeenCalledWith(undefined, { fitToViewport: true, animate: true });
+    // The library's fitToViewport has no upper cap and turns a degenerate scene into its 3000% ceiling,
+    // so the button always passes explicit minZoom/maxZoom.
+    expect(state.fakeApi.scrollToContent).toHaveBeenCalledWith([el], {
+      fitToViewport: true,
+      viewportZoomFactor: 0.92,
+      minZoom: 0.1,
+      maxZoom: 1,
+      animate: true,
+    });
+  });
+
+  it('hands the library only elements with real geometry', async () => {
+    const good = { id: 'a', x: 0, y: 0, width: 100, height: 50 };
+    const broken = { id: 'b', x: NaN, y: 0, width: 10, height: 10 };
+    state.fakeApi.getSceneElements.mockReturnValue([good, broken]);
+    const container = await mountReady();
+
+    act(() => fitToScreenButton(container).click());
+
+    expect(state.fakeApi.scrollToContent.mock.calls[0][0]).toEqual([good]);
+  });
+
+  it('is a no-op when nothing in the scene has usable geometry', async () => {
+    state.fakeApi.getSceneElements.mockReturnValue([{ id: 'b', x: NaN, y: 0, width: 10, height: 10 }]);
+    const container = await mountReady();
+
+    act(() => fitToScreenButton(container).click());
+
+    expect(state.fakeApi.scrollToContent).not.toHaveBeenCalled();
   });
 
   it('is a no-op on an empty scene — never feeds zoomToFit an empty scene', async () => {

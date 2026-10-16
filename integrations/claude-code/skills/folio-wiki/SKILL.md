@@ -1,6 +1,6 @@
 ---
 name: folio-wiki
-description: "Search, read and update the team's Folio wiki (pages, data tables, whiteboards) through the Folio MCP tools. Use when the task mentions the wiki, Folio, team conventions, runbooks, decisions, release notes or a Folio link, or when you should write something down for the team."
+description: "Search, read and update the team's Folio wiki (pages, data tables, whiteboards, forms, bases) through the Folio MCP tools. Use when the task mentions the wiki, Folio, team conventions, runbooks, decisions, release notes or a Folio link, or when you should write something down for the team."
 ---
 
 # Working with Folio
@@ -18,9 +18,9 @@ Write only when the user asked for a change in the current message. Reading is a
 
 ## Tools
 
-Reading: `list_spaces`, `list_tree`, `search_pages`, `read_page`, `resolve_folio_url`, `get_backlinks`, `page_history`, `page_at_sha`, `folio_table_list`, `folio_table_schema`, `folio_table_query`. `search` and `fetch` are read-only aliases made for ChatGPT's deep research. Prefer `search_pages` and `read_page` unless your client asks for `search` and `fetch`.
+Reading: `list_spaces`, `list_tree`, `search_pages`, `read_page`, `resolve_folio_url`, `get_backlinks`, `page_history`, `page_at_sha`, `folio_table_list`, `folio_table_schema`, `folio_table_query`, `get_page_metadata` (a page's outline, tags, properties, links), `list_tags` (the tag tree with page counts), `list_properties` (property keys in use, with type and sample values), `query_base` (the rows of a base). `search` and `fetch` are read-only aliases made for ChatGPT's deep research. Prefer `search_pages` and `read_page` unless your client asks for `search` and `fetch`.
 
-Writing (needs a token with the `write` scope): `create_page`, `update_page`, `create_board`, `update_board`, `board_ops`, `folio_table_create`, `folio_table_add_column`, `folio_table_insert`, `folio_table_update`, `folio_table_delete`.
+Writing (needs a token with the `write` scope): `create_page`, `update_page`, `create_board`, `update_board`, `board_ops`, `convert_canvas_to_board`, `folio_table_create`, `folio_table_add_column`, `folio_table_update_column`, `folio_table_delete_column`, `folio_table_save_view`, `folio_table_delete_view`, `folio_table_insert`, `folio_table_update`, `folio_table_delete`, `create_form`, `update_form`, `rename_tag`, `set_page_properties`, `save_base`.
 
 If a write tool is refused, the token is read-only. Say so. Do not look for a workaround.
 
@@ -40,10 +40,25 @@ If a write tool is refused, the token is read-only. Say so. Do not look for a wo
 - Values: `date` is ISO 8601 (`2026-10-20`), `checkbox` is a boolean, `select` with `multiple` and `user` with `multiple` take an array of strings, a `user` cell is a member's handle.
 - `folio_table_update` by filter requires `limit`. Prefer `rowId` for a single row.
 - A table is its own kind of page. Use the `folio_table_*` tools for it, never `update_page`.
+- Columns: `folio_table_update_column` renames a column or changes its type or options (`options` is the whole list; a type change reports how many values were cleared); `folio_table_delete_column` removes a column and its values, so confirm first. Views (tabs with their own filter, sort and hidden columns): `folio_table_save_view` adds one, or changes one by `viewId`; `folio_table_delete_view` removes one.
+
+## Forms
+
+- A form is a page of questions; each answer becomes a row of a data table paired with the form, and each field fills one column. `read_page` on a form shows its fields, the paired table's id and an `etag`.
+- `create_form(space, title, fields)` creates the form and a new table for its answers. Each field is `{label, type?, required?, help?, options?}` (types as for table columns). With `table` (a table id) the form is made on that existing table instead.
+- `update_form(id, etag, …)` changes the title, description, submit label, `public`, or the whole ordered `fields` list: keep a field by its `columnId`, add one without `columnId`. A field left out leaves the form only; its column and the answers stay.
 
 ## Whiteboards
 
 - `create_board` builds a board from a short `sketch` of boxes and arrows. `update_board` replaces a board's scene. `board_ops` aligns, distributes, moves or auto-lays-out the elements of an existing board by their ids, keeping labels and arrows. Use it for "tidy this up".
+- An Obsidian canvas is read-only; `convert_canvas_to_board` makes an editable board from it and leaves the canvas as it is.
+
+## Tags, properties and bases
+
+- `list_tags` and `list_properties` show what the space already uses. Look there before inventing a new tag or property name.
+- `rename_tag(space, from, to)` renames a tag across the whole space (bodies, front matter, tables, boards, files) in one Git commit. It touches many pages, so confirm with the user first. Pages you cannot edit are skipped and counted in `pagesSkipped`.
+- `set_page_properties(id, properties, etag?, merge?)` writes front matter for any kind of page. To set one key, pass `merge: true` with only that key (`null` removes a key). Without `merge`, `properties` is the whole map and keys you leave out are removed. A conflict error names the current etag: re-read and retry.
+- `save_base(space, yaml, path?, id?, etag?)` creates a `.base` file (`path` such as `views/tasks.base`) or replaces one (`id`). Invalid YAML is refused with a line number. The reply previews the first view.
 
 ## Things to know
 

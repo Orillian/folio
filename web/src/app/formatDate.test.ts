@@ -28,8 +28,7 @@ describe('formatDateTime', () => {
     expect(en.startsWith(US_DATE)).toBe(true);
   });
 
-  it('formats ru and en distinctly too (all three UI languages are wired)', () => {
-    expect(formatDateTime(AT, 'ru').startsWith(UK_DATE)).toBe(true);
+  it('formats en too (both UI languages are wired)', () => {
     expect(formatDateTime(AT, 'en')).toContain(US_DATE);
   });
 

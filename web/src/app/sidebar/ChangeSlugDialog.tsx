@@ -5,7 +5,7 @@ import type { PageMeta } from '@shared/contracts';
 import { api, ApiError } from '../api';
 import { useApiErrorText } from '../errorText';
 import { Modal } from '../ui/Modal';
-import { getPageSlugInfo, isValidSlug, previewSlugPath } from './slugUtils';
+import { extensionForKind, getPageSlugInfo, isFreeNameKind, isValidFileName, isValidSlug, normalizeFileName, previewSlugPath } from './slugUtils';
 import '../i18n/register';
 
 export interface ChangeSlugDialogProps {
@@ -22,15 +22,21 @@ export interface ChangeSlugDialogProps {
  * in parallel, slug-api). Distinct from the existing rename flow (which
  * edits the H1/display title, not the URL-facing path segment); `id` never
  * changes either way.
+ *
+ * A canvas / base is named by its file, as in Obsidian (owner, 16.10.2026): for
+ * those the same dialog is "Rename" and takes any valid file name — spaces and
+ * any script — the extension kept; the server renames the file, moves its
+ * property sidecar and rewrites the links to it (commit included).
  */
 export function ChangeSlugDialog({ page, onClose, onChanged, onError }: ChangeSlugDialogProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
   const info = getPageSlugInfo(page.path, page.kind);
   const [slug, setSlug] = useState(info.slug);
+  const freeName = isFreeNameKind(page.kind);
 
-  const trimmed = slug.trim();
-  const valid = isValidSlug(trimmed);
+  const trimmed = freeName ? normalizeFileName(slug, page.kind) : slug.trim();
+  const valid = freeName ? isValidFileName(slug, page.kind) : isValidSlug(trimmed);
   const unchanged = trimmed === info.slug;
   const preview = previewSlugPath(page.path, page.kind, valid ? trimmed : info.slug);
 
@@ -42,7 +48,7 @@ export function ChangeSlugDialog({ page, onClose, onChanged, onError }: ChangeSl
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
-        onError(t('sidebar.slug.conflict'));
+        onError(t(freeName ? 'sidebar.slug.nameConflict' : 'sidebar.slug.conflict'));
         return;
       }
       // Endpoint not live yet (SERVER's parallel slug-api work) — same
@@ -53,7 +59,7 @@ export function ChangeSlugDialog({ page, onClose, onChanged, onError }: ChangeSl
         onError(t('sidebar.slug.notLive'));
         return;
       }
-      onError(errorText(err, 'sidebar.slug.failed'));
+      onError(errorText(err, freeName ? 'sidebar.slug.nameFailed' : 'sidebar.slug.failed'));
     },
   });
 
@@ -64,7 +70,7 @@ export function ChangeSlugDialog({ page, onClose, onChanged, onError }: ChangeSl
 
   return (
     <Modal
-      title={t('sidebar.slug.title', { title: page.title })}
+      title={t(freeName ? 'sidebar.slug.renameTitle' : 'sidebar.slug.title', { title: page.title })}
       onClose={onClose}
       footer={
         <>
@@ -81,15 +87,15 @@ export function ChangeSlugDialog({ page, onClose, onChanged, onError }: ChangeSl
             onClick={submit}
             className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
           >
-            {change.isPending ? t('sidebar.slug.changing') : t('sidebar.slug.action')}
+            {change.isPending ? t('sidebar.slug.changing') : freeName ? t('header.breadcrumbs.rename') : t('sidebar.slug.action')}
           </button>
         </>
       }
     >
       <div className="flex flex-col gap-3">
-        <p className="text-neutral-500 dark:text-neutral-400">{t('sidebar.slug.current', { slug: info.slug })}</p>
+        <p className="text-neutral-500 dark:text-neutral-400">{freeName ? t('sidebar.slug.currentName', { name: info.slug }) : t('sidebar.slug.current', { slug: info.slug })}</p>
         <label className="flex flex-col gap-1 text-sm">
-          <span className="text-neutral-600 dark:text-neutral-400">{t('sidebar.slug.label')}</span>
+          <span className="text-neutral-600 dark:text-neutral-400">{freeName ? t('sidebar.slug.nameLabel') : t('sidebar.slug.label')}</span>
           <input
             autoFocus
             value={slug}
@@ -108,13 +114,13 @@ export function ChangeSlugDialog({ page, onClose, onChanged, onError }: ChangeSl
             }`}
           />
           <span className={valid ? 'text-xs text-neutral-400 dark:text-neutral-500' : 'text-xs text-red-600 dark:text-red-400'}>
-            {valid ? t('sidebar.slug.hint') : t('sidebar.slug.invalid')}
+            {valid ? (freeName ? t('sidebar.slug.nameHint', { ext: extensionForKind(page.kind) }) : t('sidebar.slug.hint')) : freeName ? t('sidebar.slug.nameInvalid') : t('sidebar.slug.invalid')}
           </span>
         </label>
         <p className="truncate text-xs text-neutral-500 dark:text-neutral-400" title={preview}>
           {t('sidebar.slug.preview', { path: preview })}
         </p>
-        <p className="text-xs text-amber-700 dark:text-amber-400">{t('sidebar.slug.warning')}</p>
+        <p className="text-xs text-amber-700 dark:text-amber-400">{freeName ? t('sidebar.slug.renameWarning') : t('sidebar.slug.warning')}</p>
       </div>
     </Modal>
   );

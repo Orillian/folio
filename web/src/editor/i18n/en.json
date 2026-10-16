@@ -353,6 +353,10 @@
       "description": "A coloured status badge, like a Confluence lozenge"
     }
   },
+  "base": {
+    "editHint": "Base view — edit its YAML in the source",
+    "badge": "BASE"
+  },
   "pagetree": {
     "placeholder": "Page tree (depth {{depth}})",
     "badge": "TREE",

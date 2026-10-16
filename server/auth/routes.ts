@@ -25,6 +25,7 @@ import type { ConfluenceCredentialInfo } from '../userConfluenceCredentials.js';
 import { recordAudit } from '../audit.js';
 import { assertNotDemo, assertNotDemoAccount, demoInfoFor, isDemoAccountEmail } from '../demo.js';
 import { VISITOR_HEADER, analyticsConfig, rememberVisitor } from '../analytics.js';
+import { sentryWebConfig } from '../sentry.js';
 
 
 async function toAuthState(user: User): Promise<AuthState> {
@@ -52,6 +53,8 @@ export function registerPublicAuthRoutes(app: FastifyInstance): void {
       demo: demoInfoFor(Boolean(user)),
       // Optional analytics (server/analytics.ts); undefined — and so absent from the JSON — unless the operator switched it on.
       analytics: analyticsConfig(),
+      // Optional error reporting (server/sentry.ts); undefined — and so absent from the JSON — unless the operator set SENTRY_DSN.
+      sentry: sentryWebConfig(),
     };
     if (user) rememberVisitor(request.cookies?.[session.SESSION_COOKIE_NAME], request.headers[VISITOR_HEADER]);
     return state;

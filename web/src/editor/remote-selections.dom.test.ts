@@ -13,6 +13,8 @@
  * real awareness updates, and check: nothing throws, no decoration restyles a
  * whole line, the text is all still in the lines, and nothing is written.
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { EditorSelection, EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { yCollab } from 'y-codemirror.next';
@@ -234,5 +236,20 @@ describe('the presence fade', () => {
       if (!/cm-ySelection(?!Caret|Info)|cm-yLineSelection/.test(selector)) continue;
       expect(body, selector.trim()).not.toMatch(/(?<![-\w])(opacity|visibility|display|color)\s*:/);
     }
+  });
+});
+
+describe('the cursor name tag inside a list item', () => {
+  // Owner report: in a bullet / numbered item the remote cursor's name lost its first letters, because the tag
+  // inherited the list line's hanging `text-indent: -1.5em`. The tag and its caret must reset it.
+  it('resets the inherited hanging indent on the tag, the caret and the dot', () => {
+    // Read from disk: `editor.css?raw` comes back empty under vitest's CSS handling.
+    const editorCss = readFileSync(resolve(process.cwd(), 'web/src/editor/editor.css'), 'utf8');
+    expect(editorCss).toMatch(/\.cm-md-li\s*\{[^}]*text-indent:\s*-1\.5em/);
+    const rule = (editorCss.match(/[^{}]*\{[^{}]*\}/g) ?? []).find((r) => /\.cm-ySelectionInfo/.test(r.split('{')[0]) && /text-indent/.test(r));
+    expect(rule, 'a rule resetting text-indent for .cm-ySelectionInfo').toBeDefined();
+    const [selector, body] = rule!.split('{');
+    expect(body).toMatch(/text-indent:\s*0\s*;/);
+    expect(selector).toMatch(/\.cm-ySelectionCaret\b/);
   });
 });

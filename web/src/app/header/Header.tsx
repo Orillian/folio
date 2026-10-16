@@ -15,6 +15,7 @@ import { PageAccessButton } from './PageAccessButton';
 import { ReplaceFileButton } from '../files/ReplaceFileButton';
 import { PagePresenceIndicator } from './PagePresence';
 import { NotificationsBell } from './NotificationsBell';
+import { PageTimer } from './PageTimer';
 import { ConnectivityIndicator } from './ConnectivityIndicator';
 import { useIsLocalPage } from '../offline/localPages';
 import type { ExportMenuTableInfo } from '../export/ExportMenu';
@@ -109,8 +110,8 @@ export function Header({ space, pageId, pagePath, title, icon, table, fileAction
         {pagePath !== undefined && title !== undefined ? (
           // `!fileActions`: a pdf/office page's title is its filename (extension included) and the
           // server refuses a title rename for those kinds — see TreeRow's own note. The file is
-          // renamed through the slug dialog instead.
-          <Breadcrumbs space={space} pagePath={pagePath} title={title} icon={icon} pageId={serverPageId} canRename={canEdit && !fileActions} />
+          // renamed through the slug dialog instead. A canvas (`.canvas`) likewise: its title is its file name.
+          <Breadcrumbs space={space} pagePath={pagePath} title={title} icon={icon} pageId={serverPageId} canRename={canEdit && !fileActions && !/\.canvas$/i.test(pagePath)} />
         ) : (
           <span className="text-sm text-neutral-400">{space}</span>
         )}
@@ -128,6 +129,12 @@ export function Header({ space, pageId, pagePath, title, icon, table, fileAction
       <ConnectivityIndicator />
 
       <PagePresenceIndicator people={presence} />
+
+      {/* 16.10.2026: the shared timer (header/PageTimer.tsx) — a compact icon, a countdown pill while one runs.
+          Before the bell, outside the `md:flex` block: a meeting is as likely to be run from a phone. A page
+          that exists only on this device has no server state to share, so no timer there. On a folder listing
+          (no page id) it is the space's own timer; the space home is an ordinary page with its own. */}
+      {!isLocal && <PageTimer space={space} pageId={serverPageId} />}
 
       {/* Round 31 (notifications): next to the presence indicator and to the
           LEFT of the group of page icons — and likewise outside the `md:flex`

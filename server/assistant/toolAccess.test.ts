@@ -63,6 +63,7 @@ const authStore = await import('../auth/store.js');
 const storage = await import('../storage.js');
 const pageAccess = await import('../pageAccess.js');
 const { buildAssistantTools, READ_SKILL_TOOL } = await import('./tools.js');
+const { MCP_WRITE_TOOL_NAMES } = await import('../mcp.js');
 const { runCursorAssistant, ASSISTANT_BUILTIN_TOOLS } = await import('./cursorRuntime.js');
 const assistantStore = await import('./store.js');
 
@@ -229,19 +230,26 @@ describe('assistant tools only return what the user may read (real PG, in-proces
     expectNoSecretsOfB((await call(await tools(alice), 'folio_table_list', {})).text);
   });
 
-  it('write tools cannot reach B either, in agent mode: create_page, update_page, create_board, folio_table_insert are refused', async () => {
+  it('write tools cannot reach B either, in agent mode: pages, tables, columns, views, forms and bases are refused', async () => {
     const t = await tools(alice, 'agent');
     const attempts: Array<[string, Record<string, unknown>]> = [
       ['create_page', { space: slugB, parentPath: '', title: 'Planted', markdown: 'x' }],
       ['update_page', { id: ids.b, markdown: '# changed' }],
       ['folio_table_create', { space: slugB, parentPath: '', title: 'Planted table' }],
       ['folio_table_insert', { id: ids.bTable, rows: [{ who: 'x' }] }],
+      ['create_form', { space: slugB, title: 'Planted form', fields: [{ label: 'Q' }] }],
+      ['create_form', { space: slugA, title: 'Planted form', table: ids.bTable }],
+      ['folio_table_update_column', { id: ids.bTable, columnId: 'who', name: 'Planted' }],
+      ['folio_table_save_view', { id: ids.bTable, name: 'Planted view' }],
+      ['save_base', { space: slugB, path: 'planted.base', yaml: 'views:\n  - type: table\n    name: T\n' }],
     ];
     for (const [name, args] of attempts) {
       const out = await call(t, name, args);
       expect(out.isError, name).toBe(true);
+      expectNoSecretsOfB(out.text.split(slugB).join('').split(ids.bTable).join(''));
     }
-    expect((await storage.listEntries(slugB)).some((e) => e.title === 'Planted' || e.title === 'Planted table')).toBe(false);
+    expect((await storage.listEntries(slugB)).some((e) => e.title.startsWith('Planted'))).toBe(false);
+    expect((await storage.listEntries(slugA)).some((e) => e.title === 'Planted form')).toBe(false);
     expect((await call(await tools(bob), 'read_page', { id: ids.b })).text).toContain(markerB);
   });
 
@@ -335,16 +343,60 @@ describe('assistant tools only return what the user may read (real PG, in-proces
     const names = Object.keys((await tools(bob, 'agent')).tools);
     expect(names.sort()).toEqual(
       [
-        'board_ops', 'create_board', 'create_page', 'folio_table_add_column', 'folio_table_create', 'folio_table_delete', 'folio_table_insert',
-        'folio_table_list', 'folio_table_query', 'folio_table_schema', 'folio_table_update', 'get_backlinks', 'get_page_metadata', 'list_orphans', 'list_spaces',
-        'list_tree', 'list_unresolved_links', 'page_at_sha', 'page_history', 'read_page', 'read_skill', 'report_unanswered_question', 'resolve_folio_url',
-        'search_pages', 'update_board', 'update_page',
+        'board_ops', 'convert_canvas_to_board', 'create_board', 'create_form', 'create_page', 'folio_table_add_column', 'folio_table_create', 'folio_table_delete',
+        'folio_table_delete_column', 'folio_table_delete_view', 'folio_table_insert', 'folio_table_list', 'folio_table_query', 'folio_table_save_view', 'folio_table_schema',
+        'folio_table_update', 'folio_table_update_column', 'get_backlinks', 'get_graph', 'get_page_metadata', 'list_orphans', 'list_properties', 'list_spaces', 'list_tags',
+        'list_tree', 'list_unresolved_links', 'page_at_sha', 'page_history', 'query_base', 'read_page', 'read_skill', 'rename_tag', 'report_unanswered_question',
+        'resolve_folio_url', 'save_base', 'search_pages', 'set_page_properties', 'update_board', 'update_form', 'update_page',
       ].sort(),
     );
     // `search` / `fetch` are the ChatGPT-named MCP wrappers; the assistant has search_pages / read_page instead, in either mode.
     const askNames = Object.keys((await tools(bob, 'ask')).tools);
     expect(askNames).not.toContain('search');
     expect(askNames).not.toContain('fetch');
+    // Ask mode reads tags and properties but offers no tool that edits them or a base.
+    for (const name of ['list_tags', 'list_properties']) expect(askNames).toContain(name);
+    for (const name of ['rename_tag', 'set_page_properties', 'save_base']) expect(askNames).not.toContain(name);
+  });
+
+  it('Ask offers exactly the read tools and Agent adds exactly the write tools: one list (MCP_WRITE_TOOL_NAMES), forms, tables, bases and board_ops included', async () => {
+    const agentNames = Object.keys((await tools(bob, 'agent')).tools).sort();
+    const askNames = Object.keys((await tools(bob, 'ask')).tools).sort();
+    expect(agentNames.filter((name) => !MCP_WRITE_TOOL_NAMES.has(name))).toEqual(askNames);
+    for (const name of MCP_WRITE_TOOL_NAMES) {
+      expect(agentNames, name).toContain(name);
+      expect(askNames, name).not.toContain(name);
+    }
+    // Reading a form, a table's views, a base and the tags stays available in Ask.
+    for (const name of ['read_page', 'folio_table_schema', 'folio_table_query', 'query_base', 'list_tags', 'list_properties']) expect(askNames).toContain(name);
+    // board_ops used to slip into Ask through a hand-kept copy of the write list.
+    expect(askNames).not.toContain('board_ops');
+  });
+
+  it('a write tool reaching an Ask actor anyway is still refused by the MCP server: the actor holds only the read scope', async () => {
+    const ask = await tools(alice, 'ask');
+    expect(ask.tools.create_form).toBeUndefined();
+    const { buildFolioMcpServer } = await import('../mcp.js');
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+    const server = buildFolioMcpServer({ user: alice, scopes: ['read'], tokenId: 'assistant' });
+    const [c, s] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 't', version: '1' });
+    await Promise.all([client.connect(c), server.connect(s)]);
+    try {
+      for (const [name, args] of [
+        ['create_form', { space: slugA, title: 'Nope', fields: [{ label: 'Q' }] }],
+        ['update_form', { id: ids.a, title: 'Nope' }],
+        ['folio_table_save_view', { id: ids.a, name: 'Nope' }],
+        ['convert_canvas_to_board', { id: ids.a }],
+      ] as const) {
+        const r = await client.callTool({ name, arguments: args });
+        expect(r.isError, name).toBe(true);
+        expect((r.content as Array<{ text?: string }>)[0]?.text, name).toContain('write scope');
+      }
+    } finally {
+      await client.close();
+    }
   });
 
   it('read_skill returns a shipped skill and nothing else: a path is not a skill name', async () => {
@@ -352,6 +404,9 @@ describe('assistant tools only return what the user may read (real PG, in-proces
     const ok = await call(t, READ_SKILL_TOOL, { name: 'folio-mcp' });
     expect(ok.isError).toBe(false);
     expect(ok.text).toContain('list_spaces');
+    // The builders' skills ship too: forms (create_form/update_form) and bases (save_base syntax with an example).
+    expect((await call(t, READ_SKILL_TOOL, { name: 'folio-forms' })).text).toContain('create_form');
+    expect((await call(t, READ_SKILL_TOOL, { name: 'folio-bases' })).text).toContain('save_base');
     for (const name of ['../../../.env', '/etc/passwd', 'folio-mcp/../folio-tables', '..', '', 'FOLIO-MCP']) {
       const out = await call(t, READ_SKILL_TOOL, { name });
       expect(out.isError, name).toBe(true);

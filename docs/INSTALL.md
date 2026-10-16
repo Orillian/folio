@@ -90,6 +90,7 @@ All settings live in the `.env` file next to `docker-compose.yml`. Copy
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | Turn on "Sign in with Google". |
 | `GOOGLE_ALLOWED_DOMAINS` | empty | Email domains allowed to sign in with Google, comma-separated. Empty means nobody. |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | — | Turn on "Connect with GitHub" in "Git access" (a GitHub OAuth App). See below. |
+| `FOLIO_SLACK_*`, `FOLIO_TEAMS_*` | — | Link previews in Slack and Microsoft Teams. See [CHAT-PREVIEWS.md](CHAT-PREVIEWS.md). |
 | `CURSOR_API_KEY` | — | Server-wide fallback key for the AI assistant, used when neither the person, the space nor the instance has a key of their own. Administrators can also set an instance key and per-space keys in the interface; those win over this variable. |
 | `PUBLIC_SITES_DOMAIN` | — | Parent domain for the subdomains of public sites, for example `sites.example.com`. See [Public sites](#public-sites). |
 | `PUBLIC_EXPORT_PER_MINUTE` | `6` | PDF and DOCX downloads one address may start per minute on public sites. |
@@ -121,6 +122,10 @@ Any of them left empty keeps the default. The bundled pictures
 installation. Set `PUBLIC_URL` to the public address: the card's links are
 built from it, and behind a proxy the address the server sees may be internal.
 
+These cards are the same for everyone. For previews that show the page itself
+(title, text, headings) to the people who may read it, connect Folio to Slack or
+Microsoft Teams: [CHAT-PREVIEWS.md](CHAT-PREVIEWS.md).
+
 ### Optional analytics hook (off by default)
 
 Folio sends no telemetry. Nothing in it contacts the Folio authors or anyone
@@ -144,6 +149,53 @@ storage, not in a cookie. Session recordings, if you enable them in PostHog,
 mask all inputs and the content of pages, tables, boards, forms and files. The
 browser's Do Not Track setting turns it off. In PostHog, also enable "Discard
 client IP data" for the project.
+
+### Optional error reporting (off by default)
+
+Folio can report its own errors to a [Sentry](https://sentry.io) project that
+you own, and show a "Report a problem" item in the user menu that sends a
+message (and an optional screenshot) to the same project. Nothing is reported to
+the Folio authors. It stays off until you set a DSN:
+
+| Setting | What it does |
+|---|---|
+| `SENTRY_DSN` | The DSN of your Sentry project (a public key). Empty means off: the browser never loads the Sentry library, the server never opens a connection and the menu item is not shown. |
+| `SENTRY_ENVIRONMENT` | The environment tag. Default `production` when `NODE_ENV=production`, otherwise `development`. |
+| `SENTRY_TRACES_SAMPLE_RATE` | Share of requests traced for performance, 0 to 1. Default `0.1`; `0` turns tracing off. |
+| `SENTRY_RELEASE` | The release name shown in Sentry. Default: the build's `FOLIO_RELEASE` (the image tag or short git sha when you build it with `--build-arg FOLIO_RELEASE=...`), or none. |
+| `SENTRY_PROFILES` | `1` adds CPU profiles to the traced requests. Default off. Uses the optional `@sentry/profiling-node` package; if it cannot load on your platform, profiling is skipped. |
+
+What is sent: unhandled errors in the server and in the browser, server
+requests that end in a 5xx, a sample of performance traces, and the internal id
+of the signed-in user (no name, no e-mail). When a person uses "Report a
+problem": the message they typed, a screenshot only if they attach or paste
+one, the page address without its query string, the page id and kind, the
+release and the browser.
+
+What is never sent: page content or titles, search words, text typed in forms
+and editors, request bodies, cookies, `Authorization` headers, query strings
+(share links and tokens ride in them; a share token in a path is replaced by
+`[token]`) and Session Replay is not used. Expected 4xx answers (not found,
+forbidden, validation, rate limits) are not reported. Sentry itself derives a
+country from the visitor's IP address when an event arrives; turn on "Prevent
+Storing of IP Addresses" in the project's Security & Privacy settings if you do
+not want that.
+
+Readable stack traces for the web app need source maps. A build that is given
+`SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_URL` (for a
+non-US region, for example `https://de.sentry.io`) and `FOLIO_RELEASE`
+uploads them to Sentry and deletes the `.map` files from the output, so they
+are never served. Without the token the build makes no source maps at all. In a
+Docker build pass the token as a secret, not an argument:
+
+```bash
+docker build \
+  --build-arg FOLIO_RELEASE=$(git rev-parse --short HEAD) \
+  --build-arg SENTRY_ORG=my-org --build-arg SENTRY_PROJECT=my-project \
+  --build-arg SENTRY_URL=https://de.sentry.io \
+  --secret id=sentry_auth_token,src=./sentry-token.txt \
+  -t folio .
+```
 
 ### The secret
 

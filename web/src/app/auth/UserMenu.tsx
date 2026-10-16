@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Bot, Building2, ChartColumn, CircleHelp, Compass, GitBranch, HardDriveDownload, KeyRound, LogOut, SlidersHorizontal, Trash2, Users } from 'lucide-react';
+import { Bot, Building2, ChartColumn, CircleHelp, Bug, Compass, GitBranch, HardDriveDownload, KeyRound, LogOut, MessageSquare, SlidersHorizontal, Trash2, Users } from 'lucide-react';
 import { useAuth } from './AuthProvider';
 import { Menu, MenuItem } from '../ui/Menu';
 import { SettingsDialog } from './SettingsDialog';
 import { HelpModal } from '../help/HelpModal';
+import { ReportProblemDialog } from '../feedback/ReportProblemDialog';
+import { isSentryEnabled } from '../../sentry';
 import { ApiTokensModal } from '../tokens/ApiTokensModal';
 import { GitCredentialsSettings } from '../git/GitCredentialsSettings';
 import { clearGitConnectResult, peekGitConnectResult, stripGitConnectParam } from '../git/gitConnectReturn';
@@ -40,6 +42,7 @@ export function UserMenu({ space = '' }: UserMenuProps) {
   const navigate = useNavigate();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const [tokensOpen, setTokensOpen] = useState(false);
   // Back from "Connect with GitHub" (?gitConnect=<result>): open "Git access", which shows the result.
   const [gitConnectResult, setGitConnectResult] = useState(peekGitConnectResult);
@@ -178,6 +181,17 @@ export function UserMenu({ space = '' }: UserMenuProps) {
                 {t('auth.userMenu.assistantAnalytics')}
               </MenuItem>
             )}
+            {user.isAdmin && (
+              <MenuItem
+                icon={<MessageSquare size={14} />}
+                onSelect={() => {
+                  close();
+                  navigate('/admin/integrations');
+                }}
+              >
+                {t('auth.userMenu.chatIntegrations')}
+              </MenuItem>
+            )}
             {/* Trash round: instance-wide trash. Space admins reach the same
                 page scoped to their space via the space menu (Sidebar.tsx). */}
             {user.isAdmin && (
@@ -220,6 +234,18 @@ export function UserMenu({ space = '' }: UserMenuProps) {
               >
                 {t('auth.userMenu.help')}
               </MenuItem>
+              {/* Only while the operator has switched error reporting on (SENTRY_DSN): the report goes to Sentry and nowhere else. */}
+              {isSentryEnabled() && (
+                <MenuItem
+                  icon={<Bug size={14} />}
+                  onSelect={() => {
+                    close();
+                    setReportOpen(true);
+                  }}
+                >
+                  {t('auth.userMenu.reportProblem')}
+                </MenuItem>
+              )}
               <MenuItem
                 icon={<LogOut size={14} />}
                 destructive
@@ -249,7 +275,20 @@ export function UserMenu({ space = '' }: UserMenuProps) {
       </Menu>
 
       {settingsOpen && <SettingsDialog user={user} onClose={() => setSettingsOpen(false)} />}
-      {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {helpOpen && (
+        <HelpModal
+          onClose={() => setHelpOpen(false)}
+          onReportProblem={
+            isSentryEnabled()
+              ? () => {
+                  setHelpOpen(false);
+                  setReportOpen(true);
+                }
+              : undefined
+          }
+        />
+      )}
+      {reportOpen && <ReportProblemDialog onClose={() => setReportOpen(false)} />}
       {tokensOpen && <ApiTokensModal onClose={() => setTokensOpen(false)} />}
       {gitCredentialsOpen && (
         <GitCredentialsSettings

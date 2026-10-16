@@ -4,6 +4,9 @@
     "empty": "No child pages",
     "fallback": "page tree"
   },
+  "base": {
+    "unavailable": "A base view is shown to signed-in readers in Folio only"
+  },
   "form": {
     "loading": "Loading form…",
     "notFound": "Form not found",

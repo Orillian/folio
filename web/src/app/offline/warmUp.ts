@@ -29,9 +29,9 @@ export type BuildManifest = Record<string, ManifestChunk>;
 
 const MANIFEST_URL = '/assets/manifest.json';
 const BOARD_ENTRY = /(^|\/)diagrams\/BoardCanvas\.tsx$/;
-/** Excalidraw's interface languages: `uk-UA-QMV73CPH-<hash>.js`. Folio itself speaks three. */
+/** Excalidraw's interface languages: `uk-UA-QMV73CPH-<hash>.js`. Folio itself speaks two. */
 const LOCALE_FILE = /^(?:[a-z]{2,3}(?:-[A-Z][A-Za-z]{1,3})?)-[A-Z0-9]{8}-[\w-]+\.js$/;
-const KEPT_LOCALE = /^(?:en|uk-UA|ru-RU)-/;
+const KEPT_LOCALE = /^(?:en|uk-UA)-/;
 const CONCURRENCY = 4;
 
 /**

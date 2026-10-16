@@ -285,7 +285,7 @@ describe('PageTree drag and drop', () => {
 
     // QA-3 #9: the server's own wording still reaches the user, but now inside a
     // localized frame (errorText.ts -> errors.status.badRequest) instead of being
-    // pasted raw into a Russian/Ukrainian UI — hence a substring match.
+    // pasted raw into a Ukrainian UI — hence a substring match.
     await waitFor(() => expect(screen.getByText(/the server refused/)).toBeTruthy());
     await waitFor(() => expect(calls.filter((c) => c.url.includes('/tree')).length).toBeGreaterThan(treeReadsBefore));
   });

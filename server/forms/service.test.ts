@@ -8,6 +8,8 @@ import { setUpTestSchema, deleteTestSpace } from '../db/testSchema.js';
 import * as storage from '../storage.js';
 import * as tables from '../tables/service.js';
 import { FormValidationError, renamePairedTableBestEffort, resolvePairedTableId, submitForm } from './service.js';
+import { buildPageDoc } from '../pageDoc.js';
+import * as authStore from '../auth/store.js';
 import type { TableColumn } from '../../shared/contracts.js';
 
 describe('server/forms (real fs + real PG)', () => {
@@ -321,5 +323,120 @@ describe('server/forms (real fs + real PG)', () => {
     } finally {
       await deleteTestSpace(space.slug);
     }
+  });
+
+  // The questionnaire case: select/status/user/link fields must carry what the
+  // table's column knows (options, multiple, members) to whoever renders the
+  // form — but the member list only to a signed-in reader.
+  describe('choice fields (options, members, link)', () => {
+    async function questionnaire(label: string) {
+      const space = await storage.createSpace(`Forms Choices ${label} ${Date.now()}`, null);
+      const columns: TableColumn[] = [
+        { id: 'name', name: 'Name', type: 'text' },
+        { id: 'size', name: 'Size', type: 'select', options: [{ value: 'S', color: 'gray' }, { value: 'M', color: 'blue' }, { value: 'L', color: 'gray' }] },
+        { id: 'tags', name: 'Tags', type: 'select', multiple: true, options: [{ value: 'a', color: 'gray' }, { value: 'b', color: 'gray' }, { value: 'c', color: 'gray' }] },
+        { id: 'state', name: 'State', type: 'status', options: [{ value: 'TODO', color: 'blue' }, { value: 'DONE', color: 'green' }] },
+        { id: 'owner', name: 'Owner', type: 'user' },
+        { id: 'site', name: 'Site', type: 'link' },
+        { id: 'other', name: 'Not on the form', type: 'select', options: [{ value: 'private-option', color: 'gray' }] },
+      ];
+      const table = await storage.createPage({ space: space.slug, parentPath: '', title: 'Poll', kind: 'table', columns });
+      const formMeta = await storage.createFormFromTable(table.id);
+      const form = await storage.readFreshFormDoc(formMeta.id);
+      await storage.writeFormDoc(formMeta.id, { ...form, fields: form.fields.filter((f) => f.columnId !== 'other') });
+      return { space, table, formEntry: await storage.requireEntry(formMeta.id) };
+    }
+
+    it('the form payload carries each choice field\'s options and multiple — and nothing about columns outside the form', async () => {
+      const { space, formEntry } = await questionnaire('payload');
+      try {
+        const doc = await buildPageDoc(formEntry, { kind: 'share', pageIds: new Set([formEntry.id]) });
+        const choices = doc.formChoices!;
+        expect(choices.size.options?.map((o) => [o.value, o.color])).toEqual([['S', 'gray'], ['M', 'blue'], ['L', 'gray']]);
+        expect(choices.size.multiple).toBeUndefined();
+        expect(choices.tags.multiple).toBe(true);
+        expect(choices.state.options?.map((o) => o.value)).toEqual(['TODO', 'DONE']);
+        expect(choices).not.toHaveProperty('other');
+        expect(choices).not.toHaveProperty('name');
+        expect(JSON.stringify(doc)).not.toContain('private-option');
+      } finally {
+        await deleteTestSpace(space.slug);
+      }
+    });
+
+    it('a signed-in member gets the member list; a share guest and the public site never do', async () => {
+      const { space, formEntry } = await questionnaire('members');
+      try {
+        const stamp = Date.now();
+        const ann = await authStore.createUser({ email: `ann-${stamp}@forms-test.local`, name: 'Ann Member', passwordHash: 'x', isAdmin: false });
+        await authStore.updateUsername(ann.id, `ann${stamp}`);
+        await authStore.setMembership(space.slug, ann.id, 'viewer');
+
+        const asMember = await buildPageDoc(formEntry, { kind: 'user', userId: ann.id, isInstanceAdmin: false });
+        expect(asMember.formChoices!.owner.users).toEqual([{ username: `ann${stamp}`, name: 'Ann Member' }]);
+        expect(asMember.formChoices!.owner.hidden).toBeUndefined();
+
+        for (const reader of [{ kind: 'share', pageIds: new Set([formEntry.id]) } as const, { kind: 'public', space: space.slug } as const]) {
+          const doc = await buildPageDoc(formEntry, reader);
+          expect(doc.formChoices!.owner).toEqual({ hidden: true });
+          expect(JSON.stringify(doc)).not.toContain('Ann Member');
+          expect(JSON.stringify(doc)).not.toContain(`ann${stamp}`);
+        }
+      } finally {
+        await deleteTestSpace(space.slug);
+      }
+    });
+
+    it('submit stores option values (an array for a multiple column) and a link as the table writes it', async () => {
+      const { space, table, formEntry } = await questionnaire('submit');
+      try {
+        await submitForm(formEntry, 'anonymous', { size: 'M', tags: ['a', 'c'], state: 'DONE', site: 'https://example.com' });
+        const row = (await storage.readFreshTableDoc(table.id)).rows[0];
+        expect(row.values.size).toBe('M');
+        expect(row.values.tags).toEqual(['a', 'c']);
+        expect(row.values.state).toBe('DONE');
+        expect(row.values.site).toBe('https://example.com');
+      } finally {
+        await deleteTestSpace(space.slug);
+      }
+    });
+
+    it('submit rejects a value that is not among the options, a list for a single column and a bad link — without writing a row', async () => {
+      const { space, table, formEntry } = await questionnaire('reject');
+      try {
+        for (const [values, field] of [
+          [{ size: 'XL' }, 'size'],
+          [{ state: 'LATER' }, 'state'],
+          [{ tags: ['a', 'zzz'] }, 'tags'],
+          [{ size: ['S', 'M'] }, 'size'],
+          [{ site: 'javascript:alert(1)' }, 'site'],
+        ] as const) {
+          const error = await submitForm(formEntry, 'anonymous', { ...values }).catch((e: unknown) => e);
+          expect(error, field).toBeInstanceOf(FormValidationError);
+          expect((error as FormValidationError).errors[field]).toBe('invalid');
+        }
+        expect((await storage.readFreshTableDoc(table.id)).rows).toHaveLength(0);
+      } finally {
+        await deleteTestSpace(space.slug);
+      }
+    });
+
+    it('a user field: a member\'s handle is stored, a stranger\'s is rejected, and an anonymous answer to it is ignored', async () => {
+      const { space, table, formEntry } = await questionnaire('user');
+      try {
+        const stamp = Date.now();
+        const bob = await authStore.createUser({ email: `bob-${stamp}@forms-test.local`, name: 'Bob', passwordHash: 'x', isAdmin: false });
+        await authStore.updateUsername(bob.id, `bob${stamp}`);
+        await authStore.setMembership(space.slug, bob.id, 'viewer');
+
+        await submitForm(formEntry, 'Bob', { owner: `@bob${stamp}` }, { anonymous: false });
+        await expect(submitForm(formEntry, 'Bob', { owner: 'mallory' }, { anonymous: false })).rejects.toBeInstanceOf(FormValidationError);
+        await submitForm(formEntry, 'anonymous', { owner: `bob${stamp}` }, { anonymous: true });
+        const rows = (await storage.readFreshTableDoc(table.id)).rows;
+        expect(rows.map((r) => r.values.owner)).toEqual([`bob${stamp}`, null]);
+      } finally {
+        await deleteTestSpace(space.slug);
+      }
+    });
   });
 });

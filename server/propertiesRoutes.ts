@@ -24,8 +24,7 @@ import { recordAudit } from './audit.js';
 import * as session from './auth/session.js';
 import { assertNotDemoAccount } from './demo.js';
 import { badRequest } from './errors.js';
-import * as gitSync from './gitSync.js';
-import { PropertiesConflictError, propertiesStoreOf, readPageProperties, updatePageProperties } from './properties.js';
+import { PropertiesConflictError, propertiesStoreOf, readPageProperties, savePageProperties } from './properties.js';
 import { readSpacePropertyTypes, writeSpacePropertyTypes } from './propertyTypes.js';
 import type { PageIndexEntry } from './storage.js';
 import { parseBody } from './validate.js';
@@ -50,16 +49,8 @@ export function registerPropertiesRoutes(app: FastifyInstance): void {
     const entry = await session.requirePageRole(request, id, 'editor');
     session.requireWriteScope(request);
     if (propertiesStoreOf(entry.kind) === 'none') throw badRequest('this page has no properties');
-    const user = request.authUser!;
-    gitSync.recordEditor(entry.space, { name: user.name, email: user.email });
     try {
-      // A board's / file's sidecar is committed by the write itself (attributed to the caller); a document's,
-      // table's or form's file rides the debounced auto-commit like any page save.
-      const result = await updatePageProperties(id, body, true, { name: user.name, email: user.email });
-      if (result.written) {
-        gitSync.noteActivity(entry.space); // the debounced auto-commit, like any page save
-        recordAudit(user.id, 'page.properties', id, { keys: result.keys });
-      }
+      const result = await savePageProperties(entry, request.authUser!, body);
       return result.response;
     } catch (err) {
       if (err instanceof PropertiesConflictError) return reply.status(409).send({ error: err.message, ...err.current });

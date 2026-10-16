@@ -13,7 +13,11 @@ export const SERVER_PORT = 4870;
 // "fill this table in" UI paired 1:1 with a data table (spec: fields[]
 // mirror the table's own columns). See shared/forms/codec.ts for the file
 // format and server/forms/** for the submit path.
-export const pageKindSchema = z.enum(['doc', 'board', 'folder', 'table', 'pdf', 'office', 'form']);
+// Obsidian canvas (16.10.2026): 'canvas' is a `*.canvas` file (JSON Canvas 1.0),
+// shown read-only and never written by Folio — see shared/canvas/** and
+// CanvasPayload below; "Convert to Folio board" makes a separate board from it.
+// Obsidian Bases (16.10.2026): 'base' is a `*.base` file — a view over the pages of the space (shared/bases/**).
+export const pageKindSchema = z.enum(['doc', 'board', 'folder', 'table', 'pdf', 'office', 'form', 'canvas', 'base']);
 export type PageKind = z.infer<typeof pageKindSchema>;
 
 /** The three formats a kind:'office' page can be — never a fourth. */
@@ -106,6 +110,21 @@ export const pageDocSchema = pageMetaSchema.extend({
    * neither inserts nor guards an H1 there. Absent otherwise.
    */
   lightFootprint: z.literal(true).optional(),
+  /**
+   * A canvas page (kind 'canvas'): the parsed `.canvas` file with its file
+   * cards resolved for THIS reader (server/canvasView.ts). Absent for every
+   * other kind. Typed by CanvasPayload; kept loose here so the schema does not
+   * have to mirror the whole JSON Canvas model.
+   */
+  canvas: z.custom<CanvasPayload>().optional(),
+  /**
+   * A form page (kind 'form'): what each field needs to be rendered as the
+   * right control, by columnId — the select/status choices, `multiple`, the
+   * members a `user` field can pick — read live from the paired table and
+   * resolved for THIS reader (server/forms/service.ts buildFormChoices).
+   * Absent for every other kind.
+   */
+  formChoices: z.custom<Record<string, FormFieldChoices>>().optional(),
 });
 export type PageDoc = z.infer<typeof pageDocSchema>;
 
@@ -469,7 +488,8 @@ export type AppearanceRoutes = never;
 // path from the source folder → path from the space root → unique basename
 // (nearest folder wins) → unresolved; `#heading` by heading slug, `#^id` by block.
 
-export type LinkSyntax = 'md' | 'wikilink' | 'embed' | 'image' | 'html' | 'reference';
+/** 'canvas': a file card of a `.canvas` page — its `file` path, always from the space root, matched exactly (no name lookup). */
+export type LinkSyntax = 'md' | 'wikilink' | 'embed' | 'image' | 'html' | 'reference' | 'canvas';
 export type LinkKind = 'page' | 'asset' | 'external' | 'unresolved';
 export type LinkFragmentKind = 'heading' | 'block';
 
@@ -568,6 +588,84 @@ export interface OrphanPage {
 export interface OrphansResponse {
   pages: OrphanPage[];
 }
+// ---------- Graph view (16.10.2026) ----------
+// GET /api/spaces/:space/graph and GET /api/pages/:id/graph (server/graph.ts), MCP get_graph. Built from the
+// page index with the same SQL ACL as search (accessSql.ts): a node is a page the caller may open; a link to a
+// page they may not open is left out altogether — no node, no ghost, no edge, not counted in any degree.
+// `_templates/` and folder rows are never nodes.
+
+/** A page kind, or a node that is not a page: a tag, a space file (attachment), an unresolved link target. */
+export type GraphNodeKind = PageKind | 'tag' | 'file' | 'unresolved';
+
+export interface GraphNode {
+  /** A page id; `tag:<tag>`, `file:<path>`, `ghost:<path>` for the others. */
+  id: string;
+  title: string;
+  kind: GraphNodeKind;
+  /** Space-relative path (pages, files, unresolved targets); absent for tags. */
+  path?: string;
+  /** A page's tags (normalized, as the index stores them). */
+  tags?: string[];
+  status?: PageStatus;
+  /** Number of distinct neighbours in THIS answer (edges both ways, after the ACL and the options). */
+  degree: number;
+  /** Pages only, ISO timestamp. */
+  updatedAt?: string;
+  /**
+   * Set only on a page of ANOTHER space than the graph's (16.10.2026): a page an app link
+   * (`/s/<space>/p/<id>`) reaches across spaces, which the caller may open. Its path is in that space.
+   */
+  space?: string;
+  /** That space's name, with `space`. */
+  spaceName?: string;
+}
+
+/**
+ * A link between two nodes, directed source → target; `count` links of the source to it, any syntax. Tag edges: page → tag.
+ * `kind: 'tree'` (option `tree`): parent page → child page in the page tree, `count` 1 — not a link.
+ */
+export interface GraphEdge {
+  source: string;
+  target: string;
+  count: number;
+  kind?: 'tree';
+}
+
+export interface GraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  /** Readable pages in scope before the cap (the space, or the local neighbourhood). */
+  totalPages: number;
+  /** True when more readable pages exist than `limit`: the most recently changed `limit` are kept. */
+  truncated: boolean;
+  limit: number;
+  /** Local graph: the page in the centre. */
+  center?: string;
+}
+
+/** Query options of both graph routes (`?tags=1&files=1&unresolved=1&orphans=0`), and of MCP get_graph. */
+export interface GraphOptions {
+  /** Tags as nodes (page → tag edges). Default false. */
+  tags: boolean;
+  /** Space files (attachments) linked from pages as nodes. Default false. */
+  files: boolean;
+  /** Link targets that do not exist as ghost nodes. Default false. */
+  unresolved: boolean;
+  /** Keep nodes without any edge. Default true. */
+  orphans: boolean;
+  /**
+   * Parent → child edges of the page tree (`kind: 'tree'`), so a hierarchical space is not a cloud of dots; in the
+   * local graph the parent, the children (and, a hop further, the siblings) are neighbours too. Default false in the
+   * API and MCP; the web app turns it on unless the reader switched it off.
+   */
+  tree: boolean;
+}
+
+export type GraphDirection = 'both' | 'in' | 'out';
+
+/** Readable pages one graph answer holds at most. */
+export const GRAPH_PAGE_LIMIT = 10_000;
+
 /**
  * MCP (read-only, annotated like the other read tools, NOT in MCP_WRITE_TOOL_NAMES):
  *   get_page_metadata { id } → PageMetadata
@@ -614,7 +712,149 @@ export interface PublicPageLinks {
   links: PageLinkRef[];
 }
 
-export const INDEX_META_VERSION = 2;
+// ---------- Obsidian canvas (`.canvas`, JSON Canvas 1.0), 16.10.2026 ----------
+// Owner's decision (16.10.2026): a canvas is shown as it is (read-only, the
+// file is never written while viewing or indexing) and can be converted into a
+// separate Folio board. The document model below is JSON Canvas 1.0
+// (jsoncanvas.org/spec/1.0) after shared/canvas/parse.ts: unknown keys dropped,
+// bad nodes/edges skipped with a warning, defaults filled in (fromEnd 'none',
+// toEnd 'arrow').
+//
+//   GET  /api/pages/:id                  → PageDoc with `canvas: CanvasPayload` (viewer+)
+//   GET  /api/pages/:id/canvas           → CanvasPayload (viewer+; the same object)
+//   POST /api/pages/:id/canvas/convert   → CanvasConvertResult (editor+ on the space; body CanvasConvertBody)
+//   GET  /api/pages/:id/canvas/convert   → CanvasConversionReport (viewer+: what the conversion would lose)
+// Share links and public sites carry `canvas` in their PageDoc too, resolved for that reader.
+export type CanvasSide = 'top' | 'right' | 'bottom' | 'left';
+export type CanvasEnd = 'none' | 'arrow';
+export type CanvasBackgroundStyle = 'cover' | 'ratio' | 'repeat';
+interface CanvasNodeBase {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** A preset "1".."6" (red, orange, yellow, green, cyan, purple) or a hex colour; absent = default. */
+  color?: string;
+}
+export interface CanvasTextNode extends CanvasNodeBase {
+  type: 'text';
+  /** Markdown. */
+  text: string;
+}
+export interface CanvasFileNode extends CanvasNodeBase {
+  type: 'file';
+  /** Path from the space root, as written in the file — '' in a payload when the reader may not open the target (CanvasFileTarget 'noAccess'). */
+  file: string;
+  /** `#Heading` or `#^block`, as written. */
+  subpath?: string;
+}
+export interface CanvasLinkNode extends CanvasNodeBase {
+  type: 'link';
+  url: string;
+}
+export interface CanvasGroupNode extends CanvasNodeBase {
+  type: 'group';
+  label?: string;
+  /** Path of a background image from the space root. */
+  background?: string;
+  backgroundStyle?: CanvasBackgroundStyle;
+}
+export type CanvasNode = CanvasTextNode | CanvasFileNode | CanvasLinkNode | CanvasGroupNode;
+export interface CanvasEdge {
+  id: string;
+  fromNode: string;
+  fromSide?: CanvasSide;
+  fromEnd: CanvasEnd;
+  toNode: string;
+  toSide?: CanvasSide;
+  toEnd: CanvasEnd;
+  color?: string;
+  label?: string;
+}
+/** Nodes in file order = z-order (first is drawn lowest). */
+export interface CanvasDocument {
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
+}
+/** What a file card (or a group background) points at, resolved BY PATH when the canvas is read, for this reader. */
+export type CanvasFileTarget =
+  | {
+      status: 'page';
+      pageId: string;
+      kind: PageKind;
+      title: string;
+      path: string;
+      icon?: string;
+      /** A document: the start of the note, or the `subpath` section/block, as Markdown (cut at CANVAS_EXCERPT_MAX_CHARS). */
+      excerpt?: string;
+      /** The excerpt was cut. */
+      excerptTruncated?: boolean;
+      /** The `subpath` names a heading or block the note does not have (the card then shows the note's start). */
+      subpathMissing?: boolean;
+    }
+  | {
+      /** A file of the space that is not a page (an image, audio, video, any attachment). */
+      status: 'file';
+      path: string;
+      media: 'image' | 'audio' | 'video' | 'other';
+    }
+  /** Nothing at that path now (deleted, or moved outside Folio — a canvas is not rewritten in a light-footprint space). */
+  | { status: 'missing'; path: string }
+  /** A page this reader may not open: no title, no path. */
+  | { status: 'noAccess' };
+export interface CanvasPayload {
+  /** null when the file is not a readable JSON Canvas — `error` says why, in English. */
+  document: CanvasDocument | null;
+  error?: string;
+  /** Things skipped or cut while reading (bad nodes, unknown types, the size cap) — shown in a collapsible note. */
+  warnings: string[];
+  /** File cards by node id. */
+  files: Record<string, CanvasFileTarget>;
+  /** Group background images by group node id. */
+  backgrounds: Record<string, CanvasFileTarget>;
+}
+export const CANVAS_EXCERPT_MAX_CHARS = 2000;
+
+export const canvasConvertBodySchema = z.object({
+  /** The new board's title; default "<canvas title> (board)". */
+  title: z.string().trim().min(1).max(200).optional(),
+  /** Folder for the board, from the space root; default the canvas's own folder. */
+  parentPath: z.string().optional(),
+});
+export type CanvasConvertBody = z.infer<typeof canvasConvertBodySchema>;
+/** One kind of loss the conversion has, with how many cards/edges it touches. `code` is stable (the UI translates it). */
+export interface CanvasConversionLoss {
+  code:
+    | 'markdownFlattened'
+    | 'textCut'
+    | 'noteContentNotEmbedded'
+    | 'imageAsCard'
+    | 'mediaAsCard'
+    | 'linkPreview'
+    | 'groupBackground'
+    | 'nestedGroups'
+    | 'edgeRouting'
+    | 'noAccessCards'
+    | 'missingCards'
+    | 'skippedInvalid';
+  count: number;
+}
+export interface CanvasConversionReport {
+  losses: CanvasConversionLoss[];
+  nodes: number;
+  edges: number;
+}
+export interface CanvasConvertResult {
+  board: PageMeta;
+  report: CanvasConversionReport;
+}
+
+/**
+ * 3 (16.10.2026): Folio's own app URLs (`/s/<space>/p/<id>`, the space home, absolute on PUBLIC_URL's host, bare
+ * pasted ones) are page links, across spaces too — every document is parsed again once.
+ */
+export const INDEX_META_VERSION = 3;
 
 // ---------- Obsidian brief, wave 3 (14.10.2026) — the orchestrator's contract ----------
 // Owner's decisions (14.10.2026): (1) files of a space (assets/, attachments, any
@@ -720,7 +960,7 @@ export interface TagPagesResponse {
 /**
  * POST /api/spaces/:space/tags/rename — editor+ on the space; rewrites `#from` (and `#from/…` children) in
  * bodies and `from` in `tags:`/`labels:` front matter of every page the caller may edit, ONE commit
- * `docs: rename tag #from -> #to`; pages the caller cannot edit are skipped and counted.
+ * `docs: rename tag #from -> #to`; pages the caller can open but not edit are skipped and counted; pages they cannot open are neither changed nor counted.
  */
 export const renameTagBodySchema = z.object({
   from: z.string().trim().min(1).max(200),
@@ -903,6 +1143,8 @@ export const createPageBodySchema = z.object({
    * `[`, `]`, `%`, no leading dot; made unique like any name.
    */
   fileStem: z.string().min(1).max(200).optional(),
+  /** Obsidian Bases: the `.base` YAML of a new kind:'base' page (from "Save as base" or the editor); the starter view when absent. Ignored for other kinds. */
+  base: z.string().max(256 * 1024).optional(),
   /**
    * Round 26 (DATA TABLES), spec §8: "Creating a table is the existing
    * POST /api/pages with kind: 'table' (+ optionally columns for a template)".
@@ -1039,7 +1281,7 @@ export interface ErrorResponse {
 // this module) before this move — the block used to sit at the bottom of
 // the file, after userSchema.
 
-export const uiLanguageSchema = z.enum(['uk', 'en', 'ru']);
+export const uiLanguageSchema = z.enum(['uk', 'en']);
 export type UiLanguage = z.infer<typeof uiLanguageSchema>;
 export const DEFAULT_UI_LANGUAGE: UiLanguage = 'uk';
 
@@ -1254,6 +1496,21 @@ export interface AuthState {
    * Optional product analytics (server/analytics.ts): present ONLY when the operator set FOLIO_POSTHOG_KEY. Absent on every ordinary instance, which then never loads or contacts anything.
    */
   analytics?: AnalyticsConfig;
+  /**
+   * Optional error reporting and the "Report a problem" dialog (server/sentry.ts): present ONLY when the operator set SENTRY_DSN.
+   * Absent on every ordinary instance, which then never loads or contacts anything.
+   */
+  sentry?: SentryWebConfig;
+}
+
+/** The public part of the Sentry setup, handed to the web app by GET /api/auth/state. The DSN is a public key by design. */
+export interface SentryWebConfig {
+  dsn: string;
+  environment: string;
+  /** The build (short git sha) when the image was built with FOLIO_RELEASE; the same value the server reports. */
+  release?: string;
+  /** 0..1, from SENTRY_TRACES_SAMPLE_RATE. */
+  tracesSampleRate: number;
 }
 
 /** PostHog project token (a public "phc_" key) and ingestion host, handed to the web app by GET /api/auth/state. */
@@ -1476,6 +1733,45 @@ export interface OAuthConnectionInfo {
   lastUsedAt: string | null;
 }
 
+// ---------- chat link previews: Slack, Microsoft Teams (16.10.2026) ----------
+// A chat user linked to a Folio user through Folio's own OAuth (server/integrations/chat).
+// GET/DELETE /api/me/chat-links(/:id) — the person's own, cookie session only.
+// GET /api/admin/integrations/chat, GET/DELETE /api/admin/integrations/chat/links(/:id) — instance admin, cookie only.
+
+export type ChatPlatform = 'slack' | 'teams';
+
+export interface ChatLinkInfo {
+  id: string;
+  platform: ChatPlatform;
+  /** The chat user's display name as the platform reported it at connection time; null when unknown. */
+  platformUserName: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+export interface AdminChatLinkInfo extends ChatLinkInfo {
+  userId: string;
+  userName: string;
+  userEmail: string;
+}
+
+export interface ChatPlatformStatus {
+  /** Every required variable is present (and FOLIO_SECRET, which encrypts the tokens). */
+  configured: boolean;
+  /** Variable name → present. Never a value. */
+  env: Record<string, boolean>;
+  /** URLs to paste into the platform's app settings. */
+  endpoints: Record<string, string>;
+  /** Hosts link previews are registered for (unfurl domains / Teams messageHandlers domains). */
+  domains: string[];
+  linkedUsers: number;
+}
+
+export interface ChatIntegrationsAdminInfo {
+  slack: ChatPlatformStatus;
+  teams: ChatPlatformStatus;
+}
+
 /** The response of creation — the token is shown exactly once. */
 export interface CreatedApiToken extends ApiTokenInfo {
   token: string; // folio_pat_<random>; only the sha256 is stored
@@ -1684,7 +1980,7 @@ export interface SubtreeNode {
 // ---------- trash — DEV-PLAN "Round 27 — trash", normative ----------
 
 /** 'space' — a whole space was deleted (the root index.md); 'folder' — a directory with its subtree. */
-export type TrashKind = 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'folder' | 'space';
+export type TrashKind = 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'folder' | 'space';
 
 export interface TrashItemInfo {
   id: string;
@@ -2347,7 +2643,61 @@ export type NotificationSocketEvent =
   | { type: 'notification'; item: NotificationItem }
   | { type: 'refresh' }
   | { type: 'tree'; space: string; v: number }
+  | { type: 'timer'; key: string; timer: PageTimerState | null; rev: number; serverNow: number }
   | { type: 'ping' };
+
+// ---------- the shared page timer (16.10.2026) ----------
+// A countdown that belongs to a PAGE (or to a folder listing of a space): everybody who has
+// that page open sees the same one. Server-authoritative, in memory, never in
+// the page file / git / Yjs / audit (server/pageTimer.ts explains the whole
+// mechanism). The wire speaks in SERVER epoch milliseconds so that every
+// client can correct for its own clock (`serverNow` rides on each response and
+// frame) and all of them reach 00:00 together.
+
+/** The longest a timer may run or be topped up to — 3 hours. */
+export const PAGE_TIMER_MAX_MS = 180 * 60_000;
+/** The shortest custom timer. */
+export const PAGE_TIMER_MIN_MS = 1000;
+/** How long a timer that has run out stays visible before it clears itself (server prunes it, clients stop showing it). */
+export const PAGE_TIMER_FINISHED_LINGER_MS = 5 * 60_000;
+
+/** `key` of a timer: the page id, or `space:<slug>` for the timer of a folder listing of a space. */
+export const SPACE_TIMER_KEY_PREFIX = 'space:';
+
+export interface PageTimerState {
+  /** The length the timer was started with (grows with «+1 min») — for a progress display. */
+  durationMs: number;
+  /** Server epoch ms the countdown reaches zero; null while paused. */
+  endsAt: number | null;
+  /** The time left, frozen, while paused; null while running. */
+  pausedRemainingMs: number | null;
+  /** Display name of the person who started it (never an id or an e-mail). */
+  startedByName: string;
+  /** Server epoch ms of the last change. */
+  updatedAt: number;
+}
+
+/**
+ * GET/POST /api/pages/:id/timer and /api/spaces/:space/timer. `rev` is a
+ * per-process counter that only grows: a response or frame older than what a
+ * client already holds is dropped (two quick clicks can fan out out of order).
+ */
+export interface PageTimerResponse {
+  timer: PageTimerState | null;
+  rev: number;
+  serverNow: number;
+  /** The caller may start/pause/reset (editor+ on the page, and not a read-only token). */
+  canControl: boolean;
+}
+
+export const pageTimerActionBodySchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('start'), durationMs: z.number().int().min(PAGE_TIMER_MIN_MS).max(PAGE_TIMER_MAX_MS) }),
+  z.object({ action: z.literal('pause') }),
+  z.object({ action: z.literal('resume') }),
+  z.object({ action: z.literal('add'), ms: z.number().int().min(PAGE_TIMER_MIN_MS).max(PAGE_TIMER_MAX_MS) }),
+  z.object({ action: z.literal('reset') }),
+]);
+export type PageTimerActionBody = z.infer<typeof pageTimerActionBodySchema>;
 
 /**
  * `.agent/**` — the per-space folder of admin-only pages that tell the AI
@@ -2378,6 +2728,28 @@ export const formFieldSchema = z.object({
   kind: tableColumnTypeSchema,
 });
 export type FormField = z.infer<typeof formFieldSchema>;
+
+/**
+ * What a form field needs beyond `FormField` to render as the right control,
+ * taken live from the bound column of the paired table (so the choices a
+ * form shows never go stale against the table). Sent per field, keyed by
+ * columnId, in `PageDoc.formChoices` — and only the fields OF THE FORM, so a
+ * form's reader learns nothing about the table's other columns.
+ */
+export interface FormFieldChoices {
+  /** select | status: the allowed values, with their colours. */
+  options?: NonNullable<TableColumn['options']>;
+  /** select | user: the answer is a list. */
+  multiple?: boolean;
+  /**
+   * user: the members the respondent can pick — present ONLY for a signed-in
+   * member (the same list as GET /api/spaces/:space/mentionable). Never sent
+   * to a share-link guest or the public site.
+   */
+  users?: MentionableUser[];
+  /** The field cannot be answered by this reader (a `user` field for an anonymous respondent): the form leaves it out. */
+  hidden?: boolean;
+}
 
 /**
  * `<slug>.form.md` — frontmatter (schema) + free prose (`body`, preserved

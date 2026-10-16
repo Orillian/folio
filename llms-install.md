@@ -29,7 +29,7 @@ Cline's setting file is `cline_mcp_settings.json` (MCP Servers icon, then Config
 
 The same thing through the interface: MCP Servers, **Remote Servers** tab, server name `folio`, server URL `https://wiki.example.com/mcp`, transport **Streamable HTTP**, then **Add Server**. Cline's UI does not add the Authorization header; use the JSON above for a token.
 
-Leave `autoApprove` empty. Tools that change content (`create_page`, `update_page`, `create_board`, `update_board`, `board_ops`, `folio_table_insert`, `folio_table_update`, `folio_table_delete`, `folio_table_add_column`, `folio_table_create`) should keep asking the user for approval.
+Leave `autoApprove` empty. Tools that change content (`create_page`, `update_page`, `create_board`, `update_board`, `board_ops`, `folio_table_insert`, `folio_table_update`, `folio_table_delete`, `folio_table_add_column`, `folio_table_update_column`, `folio_table_delete_column`, `folio_table_save_view`, `folio_table_delete_view`, `folio_table_create`, `create_form`, `update_form`, `convert_canvas_to_board`, `rename_tag`, `set_page_properties`, `save_base`) should keep asking the user for approval.
 
 ## 3. Sign in with OAuth instead of a token
 
@@ -41,7 +41,7 @@ The public demo is at `https://demo.foliowiki.online`. It does not issue persona
 
 ## 5. Check that it works
 
-1. In Cline's MCP Servers list, `folio` should be connected with 26 tools.
+1. In Cline's MCP Servers list, `folio` should be connected with 40 tools.
 2. Call `list_spaces`. It returns the spaces the token can see (slug, name, page count, role).
 3. Call `search_pages` with a word from the wiki, then `read_page` with an id from the result.
 

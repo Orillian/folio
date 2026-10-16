@@ -10,7 +10,7 @@
  * - select/status sort by OPTION ORDER (`col.options[].value` index), not
  *   alphabetically;
  * - empty values always sort last, in both asc and desc;
- * - search is case- and diacritic-insensitive, and must handle uk/ru text
+ * - search is case- and diacritic-insensitive, and must handle uk text
  *   where the "same" letter can arrive precomposed or decomposed (e.g. Cyrillic
  *   letters with a breve or a diaeresis vs their base letter + combining mark) — handled via NFD
  *   normalization + stripping combining marks, which folds both forms to the

@@ -69,6 +69,8 @@ import { serveHeadersForPath } from './safeServe.js';
 import * as storage from './storage.js';
 import type { PageIndexEntry } from './storage.js';
 import { queryString } from './validate.js';
+import { setSentryUser } from './sentry.js';
+import { CANVAS_MAX_BYTES, parseJsonCanvas } from '../shared/canvas/index.js';
 
 const fastifyStatic = fastifyStaticModule.default;
 
@@ -87,8 +89,8 @@ type PageKind = PageIndexEntry['kind'];
 /** What reading a page's references needs — a full PageIndexEntry fits, and so does a light row. */
 type PageSource = Pick<PageIndexEntry, 'id' | 'space' | 'relPath' | 'kind' | 'absPath'>;
 
-/** Kinds whose source is text that can link to or embed other files. */
-const REFERENCING_KINDS: ReadonlySet<PageKind> = new Set(['doc', 'table', 'form']);
+/** Kinds whose source is text that can link to or embed other files (a canvas: its file cards, group backgrounds and the links in its text cards). */
+const REFERENCING_KINDS: ReadonlySet<PageKind> = new Set(['doc', 'table', 'form', 'canvas']);
 /** Page kinds that are a file to look at, not a source to read — embeddable/linkable by another page. */
 const FILE_LIKE_KINDS: ReadonlySet<PageKind> = new Set(['board', 'pdf', 'office']);
 
@@ -175,6 +177,29 @@ export function referencedFiles(text: string, pagePath: string, space: string): 
   return out;
 }
 
+/**
+ * The files a `.canvas` file references: its file cards and group backgrounds
+ * (paths from the space root, exactly as written — JSON Canvas paths are never
+ * relative), plus what its text cards link to or embed (relative to the
+ * canvas's folder, like a note's). A file that is not a readable canvas
+ * references nothing.
+ */
+export function canvasReferencedFiles(text: string, pagePath: string, space: string): Set<string> {
+  const out = new Set<string>();
+  if (text.length > CANVAS_MAX_BYTES) return out;
+  const parsed = parseJsonCanvas(text);
+  if (!parsed.ok) return out;
+  for (const node of parsed.document.nodes) {
+    const rootPath = node.type === 'file' ? node.file : node.type === 'group' ? node.background : undefined;
+    if (rootPath) {
+      const normalized = normalizeFilePath(rootPath);
+      if (normalized) out.add(normalized);
+    }
+    if (node.type === 'text') for (const ref of referencedFiles(node.text, pagePath, space)) out.add(ref);
+  }
+  return out;
+}
+
 /** pageId -> references parsed from its file, keyed by that file's mtime+size. */
 const referenceCache = new Map<string, { key: string; refs: Set<string> }>();
 const REFERENCE_CACHE_MAX = 5000;
@@ -190,7 +215,8 @@ async function pageReferences(page: PageSource): Promise<Set<string>> {
     if (cached?.key === key) {
       refs = cached.refs;
     } else {
-      refs = referencedFiles(await fs.readFile(page.absPath, 'utf8').catch(() => ''), page.relPath, page.space);
+      const text = await fs.readFile(page.absPath, 'utf8').catch(() => '');
+      refs = page.kind === 'canvas' ? canvasReferencedFiles(text, page.relPath, page.space) : referencedFiles(text, page.relPath, page.space);
       referenceCache.delete(page.id);
       referenceCache.set(page.id, { key, refs });
       if (referenceCache.size > REFERENCE_CACHE_MAX) referenceCache.delete(referenceCache.keys().next().value!);
@@ -396,6 +422,7 @@ export async function registerFileRoutes(app: FastifyInstance): Promise<void> {
         if (resolved) {
           request.authUser = resolved.user;
           request.tokenScopes = resolved.tokenScopes;
+          setSentryUser(resolved.user.id);
           await requireSessionFileAccess(request, space, relPath);
         } else if (await getPublicSpace(space)) {
           // No session, but the space is published (public sites): its public

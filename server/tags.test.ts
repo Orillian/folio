@@ -304,8 +304,8 @@ describe('tag pages and the space-wide rename (real PG, real git)', () => {
     const commitsBefore = Number((await git('rev-list', '--count', 'HEAD')).trim());
     const res = await rename('#Work', 'Projects');
     expect(res.statusCode).toBe(200);
-    // a, b, c, d, crlf, and the template are changed; readonly (viewer grant) and hidden (no access) are skipped; .agent is not counted for an editor.
-    expect(res.json<RenameTagResult>()).toEqual({ pagesChanged: 6, pagesSkipped: 2 });
+    // a, b, c, d, crlf, and the template are changed; readonly (viewer grant) is skipped and counted; hidden (no access) and .agent are untouched and NOT counted.
+    expect(res.json<RenameTagResult>()).toEqual({ pagesChanged: 6, pagesSkipped: 1 });
 
     // Bodies: tokens only.
     expect(await read('a.md')).toBe(
@@ -356,7 +356,7 @@ describe('tag pages and the space-wide rename (real PG, real git)', () => {
 
     // Renaming it again finds nothing: no change, no commit.
     const again = await rename('work', 'projects');
-    expect(again.json<RenameTagResult>()).toEqual({ pagesChanged: 0, pagesSkipped: 2 });
+    expect(again.json<RenameTagResult>()).toEqual({ pagesChanged: 0, pagesSkipped: 1 });
     expect(Number((await git('rev-list', '--count', 'HEAD')).trim())).toBe(commitsBefore + 1);
   });
 

@@ -63,7 +63,8 @@
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
-import type { PageKind, PagePropertiesResponse, PropertyType, UpdatePagePropertiesBody } from '../shared/contracts.js';
+import type { PageKind, PagePropertiesResponse, PropertyType, UpdatePagePropertiesBody, User } from '../shared/contracts.js';
+import { recordAudit } from './audit.js';
 import { query, queryOne } from './db/pool.js';
 import { badRequest, HttpError } from './errors.js';
 import {
@@ -77,6 +78,7 @@ import {
   type FrontmatterKeyEdit,
 } from './frontmatter.js';
 import type { GitIdentity } from './git.js';
+import * as gitSync from './gitSync.js';
 import * as pageIndex from './indexV2/store.js';
 import { inferPropertyType, readDeclaredTypes } from './propertyTypes.js';
 import { editSidecarText, parseSidecar, readSidecarText, sidecarRelPath, SIDECAR_SUFFIX, usesSidecar } from './propsSidecar.js';
@@ -455,7 +457,7 @@ export interface PropertiesWriteResult {
 }
 
 /** A key of the table's / form's own definition sent as a property: refused, never written. */
-function assertNoReservedKey(kind: PageKind, sent: Record<string, unknown>): void {
+export function assertNoReservedKey(kind: PageKind, sent: Record<string, unknown>): void {
   const reserved = reservedKeysOf(kind);
   if (!reserved) return;
   const key = Object.keys(sent).find((k) => reserved.has(k));
@@ -548,7 +550,46 @@ async function updateSidecarProperties(entry: PageIndexEntry, body: UpdatePagePr
   });
   if (written) {
     await query('UPDATE pages_index SET updated_at = $2 WHERE id = $1', [entry.id, new Date().toISOString()]);
-    await pageIndex.reindexSavedPage({ id: entry.id, space: entry.space, relPath: entry.relPath }, '', data);
+    await storage.reindexSidecarProperties(entry, data);
   }
   return { response: await readPageProperties(entry, roleCanEdit), written, keys: written ? keys : [] };
+}
+
+/**
+ * PUT /api/pages/:id/properties and MCP set_page_properties for a page the caller may edit (the caller has checked the
+ * role and the token scope): records the editor, writes, nudges the debounced auto-commit and audits the changed keys.
+ * Throws PropertiesConflictError (409) on an etag mismatch and a 400 HttpError for a refused value or key.
+ */
+export async function savePageProperties(entry: PageIndexEntry, user: Pick<User, 'id' | 'name' | 'email'>, body: UpdatePagePropertiesBody, audit: Record<string, unknown> = {}): Promise<PropertiesWriteResult> {
+  if (propertiesStoreOf(entry.kind) === 'none') throw badRequest('this page has no properties');
+  gitSync.recordEditor(entry.space, { name: user.name, email: user.email });
+  // A board's / file's sidecar is committed by the write itself (attributed to the caller); a document's,
+  // table's or form's file rides the debounced auto-commit like any page save.
+  const result = await updatePageProperties(entry.id, body, true, { name: user.name, email: user.email });
+  if (result.written) {
+    gitSync.noteActivity(entry.space);
+    recordAudit(user.id, 'page.properties', entry.id, { keys: result.keys, ...audit });
+  }
+  return result;
+}
+
+/**
+ * A PATCH of a page's properties as the whole map PUT wants it: `current` (what the page has) with the keys of
+ * `patch` set, and a `null` in `patch` removing the key. Everything the patch does not name is sent back as it is, so
+ * a foreign value, a `labels:` list or a key's own spelling stays untouched.
+ *
+ * `tags` on a page whose only list is `labels:` replaces that list in place (the panel's rule): `labels` is then left
+ * out of the map instead of being sent next to a new `tags`.
+ */
+export function mergePropertyPatch(kind: PageKind, current: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const store = propertiesStoreOf(kind);
+  if (store === 'frontmatter' && hasOwn(patch, 'id') && !same(patch.id, current.id)) throw badRequest('id cannot be changed');
+  const merged: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    if (value === null) delete merged[key];
+    else merged[key] = value;
+  }
+  if (hasOwn(patch, 'tags') && patch.tags !== null && !hasOwn(patch, 'labels') && !hasOwn(current, 'tags') && hasOwn(current, 'labels')) delete merged.labels;
+  return merged;
 }

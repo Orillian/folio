@@ -37,11 +37,37 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 /**
+ * Zoom range a saved viewport may carry. Both ends are Excalidraw's own clamps (10% and
+ * 3000%) and a value sitting exactly ON one is not something a person chose — it is what
+ * a broken fit or a runaway gesture leaves behind (prod, 16.10.2026: boards stored at
+ * 0.1 and opened at 3000%). Such a viewport is dropped on read and never written, so the
+ * next open frames the board afresh instead of restoring the breakage. A deliberate zoom
+ * past 400% is not worth keeping either: the board reopens fitted.
+ */
+export const STORED_ZOOM_MIN_EXCLUSIVE = 0.1;
+export const STORED_ZOOM_MAX = 4;
+/** Scroll is in scene units; anything beyond this is a corrupted number, not a place on a board. */
+const STORED_SCROLL_LIMIT = 1e7;
+
+export function isUsableViewport(viewport: Partial<BoardViewport> | null | undefined): viewport is BoardViewport {
+  return (
+    !!viewport &&
+    isFiniteNumber(viewport.scrollX) &&
+    isFiniteNumber(viewport.scrollY) &&
+    isFiniteNumber(viewport.zoom) &&
+    Math.abs(viewport.scrollX) <= STORED_SCROLL_LIMIT &&
+    Math.abs(viewport.scrollY) <= STORED_SCROLL_LIMIT &&
+    viewport.zoom > STORED_ZOOM_MIN_EXCLUSIVE + 1e-6 &&
+    viewport.zoom <= STORED_ZOOM_MAX
+  );
+}
+
+/**
  * Reads the last-saved pan/zoom for this page. Returns null if nothing is
  * stored, storage is unavailable (private browsing / disabled storage), the
- * stored JSON is malformed, or any field is missing/non-finite/non-positive
- * zoom — never a value that could feed a broken viewport back into
- * Excalidraw. `pageId` may legitimately be '' (BoardCanvasProps allows a
+ * stored JSON is malformed, or any field is missing/non-finite or outside the
+ * usable range (isUsableViewport) — never a value that could feed a broken
+ * viewport back into Excalidraw. `pageId` may legitimately be '' (BoardCanvasProps allows a
  * caller without a real id up front); that's treated as "nothing to key on",
  * not an error.
  */
@@ -51,13 +77,7 @@ export function readStoredViewport(pageId: string): BoardViewport | null {
     const raw = localStorage.getItem(VIEWPORT_KEY_PREFIX + pageId);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<BoardViewport> | null;
-    if (
-      parsed &&
-      isFiniteNumber(parsed.scrollX) &&
-      isFiniteNumber(parsed.scrollY) &&
-      isFiniteNumber(parsed.zoom) &&
-      parsed.zoom > 0
-    ) {
+    if (isUsableViewport(parsed)) {
       return { scrollX: parsed.scrollX, scrollY: parsed.scrollY, zoom: parsed.zoom };
     }
     return null;
@@ -68,11 +88,12 @@ export function readStoredViewport(pageId: string): BoardViewport | null {
 
 /**
  * Persists the viewer's current pan/zoom for next time they open this page.
- * Silently a no-op if storage throws (quota/disabled) or `pageId` is falsy —
+ * Silently a no-op if storage throws (quota/disabled), `pageId` is falsy or the
+ * viewport is not usable (isUsableViewport) —
  * the viewport just won't persist across reloads either way.
  */
 export function storeViewport(pageId: string, viewport: BoardViewport): void {
-  if (!pageId) return;
+  if (!pageId || !isUsableViewport(viewport)) return;
   try {
     localStorage.setItem(VIEWPORT_KEY_PREFIX + pageId, JSON.stringify(viewport));
   } catch {

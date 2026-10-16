@@ -113,7 +113,7 @@ export function calloutLabel(rawType: string): string {
  * the reading view starts in.
  *
  * Round 22 translated the name. Until then it was the marker keyword verbatim
- * ("note", capitalised by CSS), which is the one thing a Ukrainian or Russian
+ * ("note", capitalised by CSS), which is the one thing a Ukrainian
  * reader never sees anywhere else in the page; reading mode learned the same
  * words in the same round and both views read them from the same bundle so a
  * callout is named identically on either side of the mode switch.

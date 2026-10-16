@@ -1,6 +1,6 @@
 {
   "name": "folio",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Collaborative wiki backed by Git: documents, tables, whiteboards, forms, and MCP access for AI agents.",
   "license": "MIT",
   "private": true,
@@ -26,11 +26,13 @@
     "@fastify/multipart": "^9.0.0",
     "@fastify/static": "^10.1.5",
     "@modelcontextprotocol/sdk": "^1.31.0",
+    "@sentry/node": "^11.8.0",
     "bcryptjs": "^3.0.3",
     "docx": "^9.7.1",
     "fastify": "^5.12.5",
     "gray-matter": "^4.0.3",
     "ioredis": "^6.0.0",
+    "jose": "^6.2.9",
     "js-yaml": "^4.3.2",
     "jsdom": "^29.1.1",
     "jszip": "^3.10.1",
@@ -66,12 +68,15 @@
     "@lezer/common": "^1.2.0",
     "@lezer/highlight": "^1.2.0",
     "@lezer/markdown": "^1.4.0",
+    "@sentry/react": "^11.8.0",
+    "@sentry/vite-plugin": "^11.8.0",
     "@silurus/ooxml": "^0.87.0",
     "@tailwindcss/vite": "^4.3.0",
     "@tanstack/react-query": "^5.90.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.6",
+    "@types/d3-force": "^3.0.10",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.19.0",
     "@types/pg": "^8.23.1",
@@ -84,6 +89,7 @@
     "@vitejs/plugin-react": "^6.0.0",
     "clsx": "^2.1.1",
     "concurrently": "^9.2.0",
+    "d3-force": "^3.0.0",
     "i18next": "^26.4.0",
     "katex": "^0.18.2",
     "lucide-react": "^1.31.0",
@@ -120,5 +126,8 @@
       }
     },
     "shell-quote": "^1.11.0"
+  },
+  "optionalDependencies": {
+    "@sentry/profiling-node": "^11.8.0"
   }
 }

@@ -15,7 +15,17 @@ COPY shared ./shared
 COPY web ./web
 COPY server ./server
 COPY db ./db
-RUN npm run build
+# Release name (the short git sha) and Sentry coordinates. Not secrets, so plain build args. When the token below is
+# absent (the default) no source maps are made or uploaded and the build is unchanged. See docs/DEPLOYMENT-PAAS.md.
+ARG FOLIO_RELEASE=
+ARG SENTRY_ORG=
+ARG SENTRY_PROJECT=
+ARG SENTRY_URL=
+# The auth token is a BuildKit secret (`--secret id=sentry_auth_token,src=<file>`): it exists only while this one
+# command runs and is never written to an image layer. Source maps are deleted from web/dist after the upload.
+RUN --mount=type=secret,id=sentry_auth_token \
+    if [ -s /run/secrets/sentry_auth_token ]; then export SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_auth_token)"; fi; \
+    npm run build
 
 FROM node:22-alpine
 # git — spaces are git clones; chromium + font-noto — PDF export (round 23):
@@ -43,6 +53,9 @@ RUN node server/assistant/nativeCheck.mjs --sdk
 COPY db ./db
 COPY --from=build /app/web/dist ./web/dist
 
+# The build's release name, reported to Sentry when SENTRY_DSN is set (server/sentry.ts); harmless otherwise.
+ARG FOLIO_RELEASE=
+ENV FOLIO_RELEASE=$FOLIO_RELEASE
 ENV NODE_ENV=production
 ENV PORT=4870
 # An explicit path instead of pdf.ts's fallback search: alpine's chromium

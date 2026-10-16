@@ -23,7 +23,13 @@ export interface MermaidSegment {
   code: string;
 }
 
-export type MarkdownSegment = TextSegment | MermaidSegment;
+/** Obsidian Bases: a ```base fence — the same YAML as a `.base` file, rendered as a live view (bases/BaseEmbed). */
+export interface BaseFenceSegment {
+  type: 'base';
+  code: string;
+}
+
+export type MarkdownSegment = TextSegment | MermaidSegment | BaseFenceSegment;
 
 const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})[ \t]*(\S*)/;
 
@@ -55,7 +61,10 @@ export function splitMermaidFences(rawMarkdown: string): MarkdownSegment[] {
     const closeRe = new RegExp(`^ {0,3}${fenceChar}{${marker.length},}[ \\t]*$`);
     // Only the first whitespace-delimited token of the info string is the
     // language, same convention as CommonMark code-fence highlighting.
-    const isMermaid = info.trim().split(/\s+/)[0]?.toLowerCase() === 'mermaid';
+    const lang = info.trim().split(/\s+/)[0]?.toLowerCase();
+    const isMermaid = lang === 'mermaid';
+    // An unterminated ```base fence stays text: the author is still typing it.
+    const isBase = lang === 'base';
 
     let j = i + 1;
     const body: string[] = [];
@@ -68,6 +77,9 @@ export function splitMermaidFences(rawMarkdown: string): MarkdownSegment[] {
     if (isMermaid) {
       flushText();
       segments.push({ type: 'mermaid', code: body.join('\n') });
+    } else if (isBase && closed) {
+      flushText();
+      segments.push({ type: 'base', code: body.join('\n') });
     } else {
       // Not mermaid: keep the fence verbatim as text so any ```mermaid
       // written *inside* it (e.g. a doc explaining the syntax) is not split.

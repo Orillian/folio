@@ -1,25 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import {
-  Bookmark,
-  BookmarkPlus,
-  CircleHelp,
-  ClipboardList,
-  Clock,
-  FileSpreadsheet,
-  FileText,
-  FileType2,
-  Folder,
-  LayoutDashboard,
-  RefreshCw,
-  Search,
-  SunMoon,
-  Table2,
-  X,
-} from 'lucide-react';
+import { Bookmark, BookmarkPlus, CircleHelp, ClipboardList, Clock, FileSpreadsheet, FileText, FileType2, Folder, LayoutDashboard, RefreshCw, Search, SunMoon, Table2, Waypoints, X, Database } from 'lucide-react';
 import type { PageKind, SavedSearch, SearchHit } from '@shared/contracts';
 import { isEmptySearchQuery, parseSearchQuery } from '@shared/searchQuery';
 import { api } from '../api';
@@ -36,6 +20,10 @@ import { useRecents } from '../recents';
 import type { RecentPage } from '../recents';
 import { HelpModal } from '../help/HelpModal';
 import { SaveSearchDialog } from './SaveSearchDialog';
+// Obsidian Bases: "Save as base" (lazy: the YAML writer stays out of the main chunk).
+const SaveAsBaseDialog = lazy(() => import('../../bases/SaveAsBaseDialog'));
+// "New base": name + location dialog instead of a blind create.
+import { NewBaseDialog, preloadNewBaseDialog } from '../../bases/lazyNewBase';
 import { SEARCH_OPERATORS, insertOperator } from './searchOperators';
 import type { SearchOperator } from './searchOperators';
 import { fuzzyFilter } from './fuzzy';
@@ -62,6 +50,7 @@ type Entry =
   | { kind: 'recent'; key: string; label: string; icon?: string; go: () => void }
   | { kind: 'hit'; key: string; hit: SearchHit; go: () => void }
   | { kind: 'save-search'; key: string; run: () => void }
+  | { kind: 'save-base'; key: string; run: () => void }
   | { kind: 'action'; key: string; label: string; icon: ReactNode; run: () => void };
 
 /** The icon of a search hit by page kind; a server that predates `kind` on hits gets the plain page icon. */
@@ -78,6 +67,10 @@ function KindIcon({ kind }: { kind: PageKind | undefined }) {
       return <FileType2 {...props} />;
     case 'office':
       return <FileSpreadsheet {...props} />;
+    case 'canvas':
+      return <Waypoints {...props} />;
+    case 'base':
+      return <Database {...props} />;
     case 'folder':
       return <Folder {...props} />;
     default:
@@ -110,6 +103,12 @@ export function QuickSwitcher({ space, initialQuery = '', onClose }: QuickSwitch
   // Where the search runs: this space, or — after running a saved search — the space it was pinned to ('' = every space).
   const [searchSpace, setSearchSpace] = useState(space);
   const [saving, setSaving] = useState(false);
+  const [savingBase, setSavingBase] = useState(false);
+  const [creatingBase, setCreatingBase] = useState(false);
+  // The switcher is mounted only while open: warm up the "New base" dialog's chunk for its action.
+  useEffect(() => {
+    void preloadNewBaseDialog().catch(() => undefined);
+  }, []);
   const [deleting, setDeleting] = useState<SavedSearch | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   // Round 6 addendum: stacks on top of the switcher itself (same z-50 as
@@ -279,6 +278,12 @@ export function QuickSwitcher({ space, initialQuery = '', onClose }: QuickSwitch
         icon: <ClipboardList size={15} aria-hidden="true" />,
         run: () => createPage.mutate('form'),
       });
+      list.push({
+        id: 'new-base',
+        label: t('switcher.createBase'),
+        icon: <Database size={15} aria-hidden="true" />,
+        run: () => setCreatingBase(true),
+      });
     }
     list.push({
       id: 'cycle-theme',
@@ -332,8 +337,15 @@ export function QuickSwitcher({ space, initialQuery = '', onClose }: QuickSwitch
   // "Save this search…" closes the results group: reachable with the arrow keys like any row.
   const saveEntries = useMemo<Entry[]>(
     // (Not for a query that parses to nothing — only symbols, or operators without a value.)
-    () => (hasQuery && !isEmptySearchQuery(parseSearchQuery(trimmed)) ? [{ kind: 'save-search' as const, key: 'save-search', run: () => setSaving(true) }] : []),
-    [hasQuery, trimmed],
+    () =>
+      hasQuery && !isEmptySearchQuery(parseSearchQuery(trimmed))
+        ? [
+            { kind: 'save-search' as const, key: 'save-search', run: () => setSaving(true) },
+            // A base lives in a space: offered in a space, to its editors.
+            ...(space && canEditContent(role) ? [{ kind: 'save-base' as const, key: 'save-base', run: () => setSavingBase(true) }] : []),
+          ]
+        : [],
+    [hasQuery, trimmed, space, role],
   );
 
   // Saved searches lead the list while nothing is typed.
@@ -369,7 +381,7 @@ export function QuickSwitcher({ space, initialQuery = '', onClose }: QuickSwitch
 
   function activate(entry: Entry | undefined) {
     if (!entry) return;
-    if (entry.kind === 'action' || entry.kind === 'saved' || entry.kind === 'save-search') entry.run();
+    if (entry.kind === 'action' || entry.kind === 'saved' || entry.kind === 'save-search' || entry.kind === 'save-base') entry.run();
     else entry.go();
   }
 
@@ -538,8 +550,8 @@ export function QuickSwitcher({ space, initialQuery = '', onClose }: QuickSwitch
                 renderIndex++;
                 return (
                   <Row key={entry.key} index={renderIndex} active={renderIndex === activeIndex} onActivate={() => activate(entry)}>
-                    <BookmarkPlus size={14} className="shrink-0 opacity-60" aria-hidden="true" />
-                    <span className="truncate">{t('search.saved.save')}</span>
+                    {entry.kind === 'save-base' ? <Database size={14} className="shrink-0 opacity-60" aria-hidden="true" /> : <BookmarkPlus size={14} className="shrink-0 opacity-60" aria-hidden="true" />}
+                    <span className="truncate">{entry.kind === 'save-base' ? t('switcher.saveAsBase') : t('search.saved.save')}</span>
                   </Row>
                 );
               })}
@@ -577,6 +589,12 @@ export function QuickSwitcher({ space, initialQuery = '', onClose }: QuickSwitch
             inputRef.current?.focus();
           }}
         />
+      )}
+      {creatingBase && <NewBaseDialog space={space} initialParentPath="" onClose={() => setCreatingBase(false)} onCreated={onClose} />}
+      {savingBase && (
+        <Suspense fallback={null}>
+          <SaveAsBaseDialog query={query.trim()} space={space} onClose={() => setSavingBase(false)} onCreated={onClose} />
+        </Suspense>
       )}
       {deleting && (
         <ConfirmDialog

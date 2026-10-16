@@ -6,10 +6,6 @@ describe('mapToExcalidrawLangCode', () => {
     expect(mapToExcalidrawLangCode('uk')).toBe('uk-UA');
   });
 
-  it('maps ru to Excalidraw\'s ru-RU locale', () => {
-    expect(mapToExcalidrawLangCode('ru')).toBe('ru-RU');
-  });
-
   it('maps en to Excalidraw\'s own default "en"', () => {
     expect(mapToExcalidrawLangCode('en')).toBe('en');
   });
@@ -21,6 +17,7 @@ describe('mapToExcalidrawLangCode', () => {
 
   it('falls back to "en" for an unrecognized or missing language', () => {
     expect(mapToExcalidrawLangCode('fr')).toBe('en');
+    expect(mapToExcalidrawLangCode('ru')).toBe('en');
     expect(mapToExcalidrawLangCode(undefined)).toBe('en');
     expect(mapToExcalidrawLangCode(null)).toBe('en');
     expect(mapToExcalidrawLangCode('')).toBe('en');

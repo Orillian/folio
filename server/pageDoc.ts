@@ -10,8 +10,14 @@ import * as storage from './storage.js';
 import type { PageIndexEntry } from './storage.js';
 import * as collab from './collab.js';
 import * as tables from './tables/service.js';
+import { buildFormChoices } from './forms/service.js';
+import { buildCanvasPayload, type CanvasReader } from './canvasView.js';
 
-export async function buildPageDoc(entry: PageIndexEntry): Promise<PageDoc> {
+/** No reader named: a canvas's file cards open nothing (the safe default; every route names its reader). */
+const NOBODY: CanvasReader = { kind: 'share', pageIds: new Set() };
+
+/** `reader` decides what a canvas's file cards show (server/canvasView.ts); every other kind ignores it. */
+export async function buildPageDoc(entry: PageIndexEntry, reader: CanvasReader = NOBODY): Promise<PageDoc> {
   const meta = storage.toPageMeta(entry);
   if (entry.kind === 'doc') {
     // A live collaboration room is authoritative over the file (the debounced write may be behind).
@@ -23,9 +29,17 @@ export async function buildPageDoc(entry: PageIndexEntry): Promise<PageDoc> {
   if (entry.kind === 'table') return { ...meta, markdown: await tables.readTableMarkdown(entry.id) };
   // Round FORMS: same "rides as `markdown`" shape as a table; a form has no
   // collab room, so this is always the fresh file.
-  if (entry.kind === 'form') return { ...meta, markdown: await storage.readFreshFormRaw(entry.id) };
+  // The field choices (select options, members) are resolved for THIS reader: members only for a signed-in user.
+  if (entry.kind === 'form') {
+    const [markdown, formChoices] = await Promise.all([storage.readFreshFormRaw(entry.id), buildFormChoices(entry, reader.kind === 'user')]);
+    return { ...meta, markdown, formChoices };
+  }
   // A pdf/office page's bytes ride GET /api/pages/:id/file instead — plain
   // metadata here (no markdown/svg field).
   if (entry.kind === 'pdf' || entry.kind === 'office') return { ...meta };
+  // A canvas: the parsed file, its file cards resolved for this reader. Never written.
+  if (entry.kind === 'canvas') return { ...meta, canvas: await buildCanvasPayload(entry, reader) };
+  // A base's YAML rides GET /api/pages/:id/base/source, its rows GET /api/pages/:id/base.
+  if (entry.kind === 'base') return { ...meta };
   return { ...meta, svg: await storage.readBoardSvg(entry.id) };
 }

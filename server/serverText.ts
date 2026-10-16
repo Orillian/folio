@@ -24,6 +24,7 @@ export type ServerTextKey =
   | 'oauth.willOpen'
   | 'oauth.unverifiedDcr'
   | 'oauth.unverifiedCimd'
+  | 'oauth.internalClient'
   | 'oauth.canDo'
   | 'oauth.read'
   | 'oauth.write'
@@ -39,7 +40,18 @@ export type ServerTextKey =
   | 'gitRepos.ssoRequiredUrl'
   | 'gitRepos.forbidden'
   | 'gitRepos.unreachable'
-  | 'gitRepos.failed';
+  | 'gitRepos.failed'
+  | 'chat.title'
+  | 'chat.connectedHeading'
+  | 'chat.connectedBody'
+  | 'chat.teamsFinishing'
+  | 'chat.failedHeading'
+  | 'chat.notConfigured'
+  | 'chat.expired'
+  | 'chat.wrongWorkspace'
+  | 'chat.denied'
+  | 'chat.failed'
+  | 'chat.teamsPasteAgain';
 
 const FALLBACK_LANGUAGE = 'en';
 const BUNDLE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'i18n');
@@ -62,12 +74,14 @@ export function serverTextLanguages(): string[] {
 /**
  * The language to write in: the person's saved preference when there is a
  * bundle for it, else the first language their browser asks for that there
- * is a bundle for, else English.
+ * is a bundle for (Russian counts as Ukrainian), else English.
  */
 export function resolveTextLanguage(preferred?: string | null, acceptLanguage?: string | null): string {
   if (preferred && BUNDLES.has(preferred)) return preferred;
   for (const part of (acceptLanguage ?? '').split(',')) {
-    const base = part.split(';')[0].trim().slice(0, 2).toLowerCase();
+    const tag = part.split(';')[0].trim().slice(0, 2).toLowerCase();
+    // Russian is not a language of the app: a Russian browser gets Ukrainian.
+    const base = tag === 'ru' ? 'uk' : tag;
     if (base && BUNDLES.has(base)) return base;
   }
   return FALLBACK_LANGUAGE;

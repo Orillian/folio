@@ -23,6 +23,7 @@ import { currentLanguage, languageChangedEffect } from './i18n-reload';
 import { HtmlBlockWidget } from './html-widget';
 import { linkEditingGuard } from './link-guard';
 import { PagetreeWidget } from './pagetree-widget';
+import { BaseFenceWidget } from './base-widget';
 import { MermaidWidget } from './mermaid-widgets';
 import { resolveAssetSrc } from './paths';
 import { TableWidget, tableCellRescue } from './table-widget';
@@ -94,6 +95,10 @@ function blockDecoration(spec: BlockSpec, ctx: PageContext, lang: string): Range
     }
     case 'pagetree': {
       const widget = new PagetreeWidget(ctx.pageId, spec.depth, lang);
+      return Decoration.replace({ widget, block: true }).range(spec.from, spec.to);
+    }
+    case 'base': {
+      const widget = new BaseFenceWidget(spec.code, ctx.space, ctx.pageId, lang);
       return Decoration.replace({ widget, block: true }).range(spec.from, spec.to);
     }
     case 'details': {

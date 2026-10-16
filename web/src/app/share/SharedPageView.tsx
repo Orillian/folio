@@ -13,6 +13,7 @@ import { BoardEditor } from '../../diagrams';
 import { StaticBoardView } from '../routes/StaticBoardView';
 import { TablePageView } from '../routes/TablePageView';
 import { FormPageView } from '../routes/FormPageView';
+import { CanvasPane, spaceFileUrl } from '../../canvas';
 import '../i18n/register';
 
 /**
@@ -305,7 +306,7 @@ function SharedPageBody({ payload, token }: { payload: SharedPagePayload; token:
     // would 401 for a guest anyway.
     return (
       <div className="mx-auto w-full max-w-xl">
-        <FormPageView pageId={page.id} markdown={page.markdown ?? ''} canEdit={false} shareToken={token} />
+        <FormPageView pageId={page.id} markdown={page.markdown ?? ''} choices={page.formChoices} canEdit={false} shareToken={token} />
       </div>
     );
   }
@@ -317,6 +318,28 @@ function SharedPageBody({ payload, token }: { payload: SharedPagePayload; token:
     // editor instead of falling through to the doc branch below.
     return (
       <div className="p-8 text-sm text-neutral-500 dark:text-neutral-400">{page.title}</div>
+    );
+  }
+
+  if (page.kind === 'base') {
+    // A base lists pages and their properties under the reader's own access — there is no reader behind a share link.
+    return <div className="p-8 text-sm text-neutral-500 dark:text-neutral-400">{page.title}</div>;
+  }
+
+  if (page.kind === 'canvas' && page.canvas) {
+    // Read-only whatever the link's mode. File cards show the pages this share holds (title and start of a note,
+    // resolved by the server for the share's own page set) without opening them, and "No access" for the rest.
+    return (
+      <div className="h-[calc(100dvh-6rem)] min-h-[24rem] w-full">
+        <CanvasPane
+          payload={page.canvas}
+          pageId={page.id}
+          space={page.space}
+          pagePath={page.path}
+          shareToken={token}
+          fileUrl={(p) => spaceFileUrl(page.space, p, token)}
+        />
+      </div>
     );
   }
 

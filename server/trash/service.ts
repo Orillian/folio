@@ -39,7 +39,7 @@ import { canReadTrashedTarget, MemberCache, resolveRestoredAccess } from './acce
 import { getTrashRoot } from './paths.js';
 import * as propsSidecar from '../propsSidecar.js';
 
-const TRASH_KINDS: TrashKind[] = ['doc', 'board', 'table', 'pdf', 'office', 'form', 'folder', 'space'];
+const TRASH_KINDS: TrashKind[] = ['doc', 'board', 'table', 'pdf', 'office', 'form', 'canvas', 'base', 'folder', 'space'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface TrashRow {
@@ -79,7 +79,7 @@ async function isDirectory(p: string): Promise<boolean> {
 }
 
 /** The leaf page kinds a shape-(2) sibling children directory can ride along with (see restorePageItem) — never 'folder' (that's the whole-directory shape, handled as a single unit already) or 'space'. */
-const LEAF_TRASH_KINDS = new Set<TrashKind>(['doc', 'board', 'table', 'pdf', 'office', 'form']);
+const LEAF_TRASH_KINDS = new Set<TrashKind>(['doc', 'board', 'table', 'pdf', 'office', 'form', 'canvas', 'base']);
 
 // ---------------------------------------------------------------------------
 // Visibility scope

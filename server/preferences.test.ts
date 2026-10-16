@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { updateMyPreferencesBodySchema } from '../shared/contracts.js';
 import { setUpTestSchema } from './db/testSchema.js';
@@ -17,25 +20,43 @@ describe('user language preference (round 10, real PG)', () => {
     const user = await authStore.createUser({ email: 'fresh-lang@prefs-test.local', name: 'Fresh', passwordHash: 'x', isAdmin: false });
     expect(user.lang).toBeUndefined(); // NULL in the DB -> undefined on the User, never a baked-in 'uk'
 
-    const updated = await authStore.updateUserLang(user.id, 'ru');
-    expect(updated.lang).toBe('ru');
+    const updated = await authStore.updateUserLang(user.id, 'en');
+    expect(updated.lang).toBe('en');
 
     // The update is durable, and every read path (findStoredUserById, listUsers)
     // carries it through the SAME row-mapping function -- not just the direct
     // return value of updateUserLang.
     const reloaded = await authStore.findStoredUserById(user.id);
-    expect(reloaded?.lang).toBe('ru');
+    expect(reloaded?.lang).toBe('en');
 
     const listed = await authStore.listUsers();
-    expect(listed.find((u) => u.id === user.id)?.lang).toBe('ru');
+    expect(listed.find((u) => u.id === user.id)?.lang).toBe('en');
   });
 
-  it('lang can be changed repeatedly across all three supported languages', async () => {
+  it('lang can be changed repeatedly across both supported languages', async () => {
     const user = await authStore.createUser({ email: 'multi-lang@prefs-test.local', name: 'Multi', passwordHash: 'x', isAdmin: false });
-    for (const lang of ['uk', 'en', 'ru'] as const) {
+    for (const lang of ['uk', 'en'] as const) {
       const updated = await authStore.updateUserLang(user.id, lang);
       expect(updated.lang).toBe(lang);
     }
+  });
+
+  it('migration 048 moves a stored ru to uk and the column stops accepting ru', async () => {
+    const { getPool } = await import('./db/pool.js');
+    const pool = getPool();
+    const user = await authStore.createUser({ email: 'legacy-ru@prefs-test.local', name: 'Legacy', passwordHash: 'x', isAdmin: false });
+    // Put the database back to what it was before 048: a constraint that allows ru, and a user who chose it.
+    await pool.query('ALTER TABLE users DROP CONSTRAINT users_lang_check');
+    await pool.query(`ALTER TABLE users ADD CONSTRAINT users_lang_check CHECK (lang IN ('uk', 'en', 'ru'))`);
+    await pool.query(`UPDATE users SET lang = 'ru' WHERE id = $1`, [user.id]);
+    expect((await authStore.findStoredUserById(user.id))?.lang).toBe('ru');
+
+    const sql = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'db', 'migrations', '048_drop_ru_lang.sql'), 'utf8');
+    await pool.query(sql);
+
+    expect((await authStore.findStoredUserById(user.id))?.lang).toBe('uk');
+    await expect(pool.query(`UPDATE users SET lang = 'ru' WHERE id = $1`, [user.id])).rejects.toThrow();
+    await pool.query(`UPDATE users SET lang = NULL WHERE id = $1`, [user.id]); // NULL (no preference) stays allowed
   });
 
   it('updateUserLang for a nonexistent user throws (not found), never silently no-ops', async () => {
@@ -72,7 +93,9 @@ describe('own display name preference (round 28)', () => {
     expect(updateMyPreferencesBodySchema.safeParse({ name: null }).success).toBe(false);
     // Additive change: the pre-round-28 bodies are all still valid, unchanged.
     expect(updateMyPreferencesBodySchema.safeParse({}).success).toBe(true);
-    expect(updateMyPreferencesBodySchema.safeParse({ lang: 'ru' }).success).toBe(true);
+    expect(updateMyPreferencesBodySchema.safeParse({ lang: 'en' }).success).toBe(true);
+    // Russian is no longer an interface language.
+    expect(updateMyPreferencesBodySchema.safeParse({ lang: 'ru' }).success).toBe(false);
     expect(updateMyPreferencesBodySchema.safeParse({ username: null }).success).toBe(true);
   });
 

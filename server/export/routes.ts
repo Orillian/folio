@@ -35,6 +35,8 @@ export function slugOf(entry: PageIndexEntry): string {
   if (entry.kind === 'board') return base.slice(0, -'.excalidraw.svg'.length);
   if (entry.kind === 'table') return base.slice(0, -'.table.md'.length);
   if (entry.kind === 'pdf') return base.slice(0, -'.pdf'.length);
+  if (entry.kind === 'canvas') return base.slice(0, -'.canvas'.length);
+  if (entry.kind === 'base') return base.slice(0, -'.base'.length);
   if (entry.kind === 'office') {
     const fmt = officeFormat(entry.relPath);
     return fmt ? base.slice(0, -(fmt.length + 1)) : base;
@@ -59,7 +61,7 @@ export function slugOf(entry: PageIndexEntry): string {
 }
 
 /**
- * Non-ASCII filenames (uk/ru titles are the norm here) break Node outright on
+ * Non-ASCII filenames (uk titles are the norm here) break Node outright on
  * a raw header value — same ASCII-fallback + RFC 5987 pair the public asset
  * route in server/index.ts already uses.
  */

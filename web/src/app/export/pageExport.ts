@@ -91,7 +91,7 @@ function decodeExtendedValue(raw: string): string | null {
 /**
  * Pulls the download name out of `Content-Disposition`. The server sends both
  * halves of the ASCII-fallback + RFC 5987 pair (server/export/routes.ts's
- * `contentDisposition`), and `filename*` is the one that survives the uk/ru
+ * `contentDisposition`), and `filename*` is the one that survives the uk
  * titles that are the norm here — the plain `filename=` half has every
  * non-ASCII character replaced with `_`. So `filename*` is preferred, always.
  */

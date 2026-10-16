@@ -48,7 +48,11 @@ function slugOf(entry: PageIndexEntry): string {
             ? '.pdf'
             : entry.kind === 'office'
               ? `.${officeFormat(entry.relPath)}`
-              : '.md';
+              : entry.kind === 'canvas'
+                ? '.canvas'
+              : entry.kind === 'base'
+                ? '.base'
+                : '.md';
   return basename.endsWith(extension) ? basename.slice(0, -extension.length) : basename;
 }
 

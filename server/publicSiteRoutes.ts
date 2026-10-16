@@ -101,7 +101,7 @@ export function registerPublicSiteRoutes(app: FastifyInstance): void {
   app.get('/api/public/spaces/:slug/pages/:id', async (request): Promise<PublicPagePayload> => {
     const site = await requirePublicSpace(request);
     const entry = await requirePublicPage(request, site);
-    return { page: await buildPageDoc(entry), spaceName: site.name };
+    return { page: await buildPageDoc(entry, { kind: 'public', space: site.slug }), spaceName: site.name };
   });
 
   // Wave 2 (Obsidian): an embedded note (`![[Note#Heading]]`) of a public page - the whole page, a heading section or a ^block (server/embed.ts).

@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ClipboardList, FileText, FileType2, Folder, LayoutDashboard, Presentation, Sheet, Table2 } from 'lucide-react';
+import { ClipboardList, FileText, FileType2, Folder, LayoutDashboard, Presentation, Sheet, Table2, Waypoints, Database } from 'lucide-react';
 import { officeFormat, type TreeNode } from '@shared/contracts';
 import { api, ApiError } from '../api';
 import { useDocumentTitle } from '../hooks';
@@ -59,7 +59,11 @@ export function FolderListing({ space, title, entries }: { space: string; title:
                       ? Folder
                       : child.kind === 'pdf'
                         ? FileType2
-                        : officeFmt === 'xlsx'
+                        : child.kind === 'canvas'
+                          ? Waypoints
+                          : child.kind === 'base'
+                          ? Database
+                          : officeFmt === 'xlsx'
                           ? Sheet
                           : officeFmt === 'pptx'
                             ? Presentation

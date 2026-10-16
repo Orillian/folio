@@ -94,7 +94,7 @@ export function registerPublicFormRoutes(app: FastifyInstance): void {
     }
 
     try {
-      const result = await submitForm(entry, submitterLabel, body.values);
+      const result = await submitForm(entry, submitterLabel, body.values, { anonymous: !authed });
       gitSync.recordEditor(
         entry.space,
         authed ? { name: authed.name, email: authed.email } : { name: `Guest via share ${guestShareId!.slice(0, 8)}`, email: 'guest@folio.local' },

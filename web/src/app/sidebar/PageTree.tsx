@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -6,6 +6,7 @@ import { useLocalStorage } from '../hooks';
 import { useLocalPages } from '../offline/localPages';
 import { mergeLocalPages } from '../offline/treeMerge';
 import { TreeRow } from './TreeRow';
+import { ancestorIds, clearTreeReveal, useTreeRevealRequest } from './treeReveal';
 import type { DraggedNode } from './TreeRow';
 import { collectDirectories, excludeAgentFolder, excludeTemplatesFolder, getTopLevelNodes } from './treeUtils';
 import '../i18n/register';
@@ -69,6 +70,30 @@ export function PageTree({ space, activeId, activeFolderPath, canEdit }: PageTre
   const setExpanded = (updater: (prev: Set<string>) => Set<string>) => {
     setExpandedArray((prevArray) => Array.from(updater(new Set(prevArray))));
   };
+
+  // A page created outside the tree (the new-base dialog, the quick switcher…)
+  // asks to be shown: once the fresh tree holds it, expand its ancestors, then
+  // scroll its row into view (the row is rendered by the next commit).
+  const revealRequest = useTreeRevealRequest(space);
+  const [scrollToId, setScrollToId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!revealRequest || !data) return;
+    const ancestors = ancestorIds(data.tree, revealRequest.pageId);
+    if (!ancestors) return; // not in the tree yet: the invalidated query is still on its way
+    if (ancestors.length > 0) setExpanded((prev) => new Set([...prev, ...ancestors]));
+    setScrollToId(revealRequest.pageId);
+    clearTreeReveal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealRequest, data]);
+  useEffect(() => {
+    if (!scrollToId) return;
+    const frame = requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(`[data-tree-page-id="${scrollToId.replace(/["\\]/g, '\\$&')}"]`);
+      row?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+      setScrollToId(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [scrollToId, expandedArray]);
 
   // Which row is being dragged right now, lifted to the whole tree because
   // every OTHER row needs it to decide whether it is a legal drop target.

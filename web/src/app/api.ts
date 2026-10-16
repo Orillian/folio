@@ -18,12 +18,18 @@ import { visitorHeaders } from '../analytics';
 import { getConnectivity, reportRequest } from './offline/connectivity';
 import { sortTreeSiblings } from './sidebar/reorderPages';
 import type {
+  CanvasConversionReport,
+  CanvasConvertBody,
+  CanvasConvertResult,
   AccessBulkResult,
   AccessLogEntry,
   AccessMatrixResponse,
   AccessRequestSummary,
   ApiTokenInfo,
   OAuthConnectionInfo,
+  AdminChatLinkInfo,
+  ChatIntegrationsAdminInfo,
+  ChatLinkInfo,
   ActiveAssistantRunResponse,
   AdminAssistantAccess,
   AdminAssistantConversationDetail,
@@ -66,6 +72,8 @@ import type {
   PageChangeInfo,
   PageMeta,
   PagePropertiesResponse,
+  PageTimerActionBody,
+  PageTimerResponse,
   PublicAssistantConversation,
   PublicAssistantRunBody,
   PublicAssistantRunStarted,
@@ -222,6 +230,10 @@ function queryString(filters?: object): string {
 /** `?space=<slug>` for the assistant routes that can resolve a space's shared key; empty without a space. */
 function spaceQuery(space?: string | null): string {
   return space ? `?space=${encodeURIComponent(space)}` : '';
+}
+
+function pageTimerUrl(target: { pageId?: string; space: string }): string {
+  return target.pageId ? `/api/pages/${encodeURIComponent(target.pageId)}/timer` : `/api/spaces/${encodeURIComponent(target.space)}/timer`;
 }
 
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
@@ -462,6 +474,16 @@ export const api = {
 
   getPage: (id: string) => request<PageDoc>(`/api/pages/${encodeURIComponent(id)}`),
 
+  /** Obsidian canvas: what "Convert to Folio board" would lose (nothing is written). */
+  getCanvasConversionReport: (id: string) => request<CanvasConversionReport>(`/api/pages/${encodeURIComponent(id)}/canvas/convert`),
+
+  /** Obsidian canvas: a NEW board made from it, one commit; the canvas stays as it is. */
+  convertCanvas: async (id: string, body: CanvasConvertBody) => {
+    const result = await request<CanvasConvertResult>(`/api/pages/${encodeURIComponent(id)}/canvas/convert`, { method: 'POST', body: JSON.stringify(body) });
+    notifyPageChanges();
+    return result;
+  },
+
   /**
    * The only way a pdf/office page is created from the UI (createPage above
    * rejects kind:'pdf'/'office' server-side — see server/storage.ts's
@@ -601,6 +623,26 @@ export const api = {
       `/api/search?q=${encodeURIComponent(q)}&space=${encodeURIComponent(space)}${queryString(options).replace('?', '&')}`,
     ),
 
+  // ---------- Obsidian Bases (16.10.2026): `.base` pages ----------
+
+  /** GET /api/pages/:id/base — one view's rows (viewer+). */
+  getBase: (id: string, opts: { view?: string; offset?: number; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.view !== undefined) q.set('view', opts.view);
+    if (opts.offset) q.set('offset', String(opts.offset));
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return request<import('@shared/bases/types').BaseQueryResponse>(`/api/pages/${encodeURIComponent(id)}/base${qs ? `?${qs}` : ''}`);
+  },
+  /** GET /api/pages/:id/base/source — the YAML, its parse and etag (viewer+). */
+  getBaseSource: (id: string) => request<import('@shared/bases/types').BaseSourceResponse>(`/api/pages/${encodeURIComponent(id)}/base/source`),
+  /** PUT /api/pages/:id/base — editor+; 409 (ApiError.body = the current source) when the file changed since `etag`. */
+  updateBase: (id: string, body: import('@shared/bases/types').BaseWriteBody) =>
+    request<import('@shared/bases/types').BaseSourceResponse>(`/api/pages/${encodeURIComponent(id)}/base`, { method: 'PUT', body: JSON.stringify(body) }),
+  /** POST /api/spaces/:space/base/preview — a ```base block (or a draft) run for the reader; `pageId` is `this`. */
+  previewBase: (space: string, body: import('@shared/bases/types').BasePreviewBody) =>
+    request<import('@shared/bases/types').BaseQueryResponse>(`/api/spaces/${encodeURIComponent(space)}/base/preview`, { method: 'POST', body: JSON.stringify(body) }),
+
   // ---------- Obsidian wave 3: properties (front matter), tags, saved searches ----------
 
   /** GET /api/pages/:id/properties — viewer+. */
@@ -626,6 +668,19 @@ export const api = {
 
   /** GET /api/spaces/:space/tags — viewer+; every tag the caller can see with its page count. */
   getSpaceTags: (space: string) => request<SpaceTagsResponse>(`/api/spaces/${encodeURIComponent(space)}/tags`),
+
+  /**
+   * GET /api/spaces/:space/graph — viewer+; the space's link graph (pages the caller can open), with tag/file/ghost
+   * nodes and the page tree's edges (shown or not by the client's "Tree structure" toggle, without a refetch).
+   */
+  getSpaceGraph: (space: string) =>
+    request<import('@shared/contracts').GraphResponse>(`/api/spaces/${encodeURIComponent(space)}/graph?tags=1&files=1&unresolved=1&tree=1`),
+
+  /** GET /api/pages/:id/graph — viewer+ on the page; its neighbourhood within `depth` hops (tree neighbours too with `tree`). */
+  getPageGraph: (id: string, depth: number, direction: 'both' | 'in' | 'out' = 'both', tree = true) =>
+    request<import('@shared/contracts').GraphResponse>(
+      `/api/pages/${encodeURIComponent(id)}/graph?depth=${depth}&direction=${direction}&tags=1&files=1&unresolved=1&tree=${tree ? 1 : 0}`,
+    ),
 
   /** GET /api/spaces/:space/tags/:tag/pages — the pages carrying a tag (children included); `/` of the tag stays a path separator. */
   getTagPages: (space: string, tag: string, options: { limit?: number; offset?: number } = {}) =>
@@ -887,6 +942,14 @@ export const api = {
   /** OAuth connections (claude.ai, ChatGPT, …) the user approved — "Connected apps". */
   listOAuthConnections: () => request<{ connections: OAuthConnectionInfo[] }>('/api/me/oauth-connections'),
   revokeOAuthConnection: (id: string) => request<{ ok: true }>(`/api/me/oauth-connections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  /** Chat link previews: the person's own Slack / Teams links ("Chat apps"). */
+  listChatLinks: () => request<{ links: ChatLinkInfo[] }>('/api/me/chat-links'),
+  deleteChatLink: (id: string) => request<{ ok: true }>(`/api/me/chat-links/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** Instance admin: whether Slack / Teams are configured, the URLs to paste, link counts; and every link. */
+  getChatIntegrations: () => request<ChatIntegrationsAdminInfo>('/api/admin/integrations/chat'),
+  listAdminChatLinks: () => request<{ links: AdminChatLinkInfo[] }>('/api/admin/integrations/chat/links'),
+  deleteAdminChatLink: (id: string) => request<{ ok: true }>(`/api/admin/integrations/chat/links/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // ---------- share links (round 8) ----------
 
@@ -1242,6 +1305,11 @@ export const api = {
   // The socket itself does not live here: it does not fit a request()-like
   // "one JSON response"; see notifications/socket.ts (the same split as for
   // the assistant's stream).
+
+  /** The shared page timer (server/pageTimerRoutes.ts): a page's own, or — without a page id (a folder listing) — the space's. */
+  getPageTimer: (target: { pageId?: string; space: string }) => request<PageTimerResponse>(pageTimerUrl(target)),
+  postPageTimer: (target: { pageId?: string; space: string }, body: PageTimerActionBody) =>
+    request<PageTimerResponse>(pageTimerUrl(target), { method: 'POST', body: JSON.stringify(body) }),
 
   /** GET /api/notifications — up to 50 rows, newest first; `unread` is counted over ALL rows, not only the returned page. */
   listNotifications: () => request<NotificationListResponse>('/api/notifications'),

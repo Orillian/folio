@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { PageDoc } from '@shared/contracts';
+import type { FormFieldChoices, PageDoc } from '@shared/contracts';
 import { isFormParseError, parseFormFile } from '@shared/forms/codec';
 import { FormRenderer } from '../forms/FormRenderer';
+import { answersDraftKey } from '../forms/draftStorage';
 import type { FormSubmitOutcome } from '../forms/FormRenderer';
 import '../forms/i18n/register';
 import './i18n/register';
@@ -12,7 +13,7 @@ export interface FormEmbedProps {
   pageId: string;
 }
 
-type LoadState = { status: 'loading' } | { status: 'error' } | { status: 'ok'; doc: ReturnType<typeof parseFormFile> };
+type LoadState = { status: 'loading' } | { status: 'error' } | { status: 'ok'; doc: ReturnType<typeof parseFormFile>; choices?: Record<string, FormFieldChoices> };
 
 /**
  * Round FORMS — renders a `::form{id}` directive inline: fetches the form's
@@ -40,7 +41,7 @@ export function FormEmbed({ pageId }: FormEmbedProps) {
           setState({ status: 'error' });
           return;
         }
-        setState({ status: 'ok', doc: parseFormFile(page.markdown ?? '') });
+        setState({ status: 'ok', doc: parseFormFile(page.markdown ?? ''), choices: page.formChoices });
       })
       .catch(() => {
         if (!cancelled) setState({ status: 'error' });
@@ -84,8 +85,11 @@ export function FormEmbed({ pageId }: FormEmbedProps) {
         title={form.title}
         description={form.description}
         fields={form.fields}
+        choices={state.choices}
         submitButtonLabel={form.submitButton}
         onSubmit={handleSubmit}
+        // No auth context here by design (see the doc comment), so the slot is per form only.
+        draftKey={answersDraftKey(pageId, 'embed')}
       />
     </div>
   );

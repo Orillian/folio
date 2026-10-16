@@ -353,6 +353,10 @@
       "description": "Кольоровий бейдж статусу, як у Confluence"
     }
   },
+  "base": {
+    "editHint": "Вигляд бази — YAML редагується в коді",
+    "badge": "БАЗА"
+  },
   "pagetree": {
     "placeholder": "Дерево сторінок (глибина {{depth}})",
     "badge": "ДЕРЕВО",

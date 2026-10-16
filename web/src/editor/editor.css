@@ -1997,6 +1997,16 @@ ol.cm-md-cell-list > .cm-md-cell-line { list-style: decimal; }
   position: relative;
 }
 
+/* The name tag is a block inside the line, so it INHERITS the line's
+   text-indent: inside a list item that is the hanging -1.5em, which pulled the
+   tag's first letters out of its box (the label showed "ame" for "Name").
+   Reset it on the tag, the caret and the dot: they are not list text. */
+.folio-editor .cm-ySelectionCaret,
+.folio-editor .cm-ySelectionCaretDot,
+.folio-editor .cm-ySelectionInfo {
+  text-indent: 0;
+}
+
 .folio-editor .cm-ySelectionInfo {
   font-family: var(--folio-ed-sans);
   font-size: 10px;

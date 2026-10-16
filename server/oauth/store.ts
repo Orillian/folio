@@ -29,7 +29,8 @@ export interface OAuthClient {
   clientId: string;
   clientName: string;
   redirectUris: string[];
-  source: 'dcr' | 'cimd';
+  /** 'internal': Folio's own client (the chat link previews), created by the server itself. */
+  source: 'dcr' | 'cimd' | 'internal';
   clientUri: string | null;
   fetchedAt: Date | null;
 }
@@ -38,7 +39,7 @@ interface ClientRow {
   client_id: string;
   client_name: string;
   redirect_uris: string[];
-  source: 'dcr' | 'cimd';
+  source: 'dcr' | 'cimd' | 'internal';
   client_uri: string | null;
   fetched_at: string | null;
 }
@@ -79,13 +80,29 @@ export async function upsertCimdClient(input: { clientId: string; clientName: st
   return rowToClient(row!);
 }
 
+/**
+ * Folio's own client (server/integrations/chat): created or refreshed by the server, so its one
+ * redirect URI always follows the instance's current address. Never touches a DCR/CIMD row.
+ */
+export async function upsertInternalClient(input: { clientId: string; clientName: string; redirectUri: string }): Promise<OAuthClient> {
+  const row = await queryOne<ClientRow>(
+    `INSERT INTO oauth_clients (client_id, client_name, redirect_uris, source) VALUES ($1, $2, $3, 'internal')
+     ON CONFLICT (client_id) DO UPDATE SET client_name = EXCLUDED.client_name, redirect_uris = EXCLUDED.redirect_uris
+     WHERE oauth_clients.source = 'internal'
+     RETURNING *`,
+    [input.clientId, input.clientName, [input.redirectUri]],
+  );
+  if (!row) throw new Error(`oauth client id ${input.clientId} is taken by a non-internal client`);
+  return rowToClient(row);
+}
+
 /** Housekeeping, called from registration: expired rows, and self-registered clients nobody ever authorized. */
 export async function pruneStale(): Promise<void> {
   await query(`DELETE FROM oauth_authz_requests WHERE expires_at < now()`);
   await query(`DELETE FROM oauth_codes WHERE expires_at < now() - interval '1 day'`);
   await query(`DELETE FROM oauth_tokens WHERE expires_at < now() - interval '1 day'`);
   await query(
-    `DELETE FROM oauth_clients c WHERE c.created_at < now() - interval '7 days'
+    `DELETE FROM oauth_clients c WHERE c.created_at < now() - interval '7 days' AND c.source <> 'internal'
        AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)
        AND NOT EXISTS (SELECT 1 FROM oauth_authz_requests r WHERE r.client_id = c.client_id)`,
   );
@@ -308,14 +325,14 @@ export async function revokeByToken(raw: string, clientId: string | undefined): 
 }
 
 // ---------------------------------------------------------------------------
-// "Connected apps"
+// "Connected apps" (Folio's own internal clients — the chat link previews — have their own list)
 // ---------------------------------------------------------------------------
 
 export async function listConnections(userId: string): Promise<OAuthConnectionInfo[]> {
   const rows = await query<{ id: string; client_name: string; redirect_uris: string[]; scopes: ApiTokenScope[]; created_at: string; last_used_at: string | null }>(
     `SELECT g.id, c.client_name, c.redirect_uris, g.scopes, g.created_at, g.last_used_at
        FROM oauth_grants g JOIN oauth_clients c ON c.client_id = g.client_id
-      WHERE g.user_id = $1 AND g.revoked_at IS NULL ORDER BY g.created_at DESC`,
+      WHERE g.user_id = $1 AND g.revoked_at IS NULL AND c.source <> 'internal' ORDER BY g.created_at DESC`,
     [userId],
   );
   return rows.map((r) => ({

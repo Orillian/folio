@@ -186,7 +186,7 @@ export function joinLabels(values: string[]): string {
  * arrives on the clipboard is whatever Google Sheets/Excel produced, not
  * what Folio would have written. Two tolerances are added, and only these:
  *
- *  - a decimal comma (`3,5`) — normal in uk/ru locales, `Number()` rejects it;
+ *  - a decimal comma (`3,5`) — normal in the uk locale, `Number()` rejects it;
  *  - the checkbox vocabulary shared/tables' own column INFERENCE accepts
  *    (`x`, `true`, `yes`, `1` and the localized words) rather than only `[x]`. Without
  *    this, pasting a yes/no column infers as `checkbox` (csv.ts's

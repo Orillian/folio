@@ -24,6 +24,18 @@ export function languageName(lang: string): string {
   return typeof name === 'string' && name ? name : lang;
 }
 
+/**
+ * A browser language tag ('ru-RU', 'uk', 'en-GB') or a stored value -> one of
+ * our languages, or null. Russian is not an interface language any more: a
+ * browser or an old saved choice that says `ru` lands on Ukrainian.
+ */
+export function toUiLanguage(tag: string | null | undefined): UiLanguage | null {
+  const base = tag?.slice(0, 2).toLowerCase();
+  if (!base) return null;
+  const mapped = base === 'ru' ? 'uk' : base;
+  return isUiLanguage(mapped) ? mapped : null;
+}
+
 export function isUiLanguage(value: string | null | undefined): value is UiLanguage {
   return !!value && (UI_LANGUAGES as readonly string[]).includes(value);
 }

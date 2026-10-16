@@ -2,10 +2,41 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'node:path';
+import { sentryVitePlugin } from '@sentry/vite-plugin';
+
+// Source maps for Sentry (docs/DEPLOYMENT-PAAS.md "Sentry"). They are produced and uploaded ONLY when the build is
+// given a token, the org and the project slug AND a release name; otherwise the build is exactly what it was and no
+// .map file exists. After the upload the maps are deleted from dist, so they are never served to the public.
+//   SENTRY_AUTH_TOKEN   an org auth token with release/sourcemap upload rights (a build secret, never an image layer)
+//   SENTRY_ORG, SENTRY_PROJECT   the slugs
+//   SENTRY_URL          the region host, e.g. https://de.sentry.io (the default is sentry.io, the US region)
+//   FOLIO_RELEASE       the release name; must equal what the server reports (the short git sha)
+const env = process.env;
+const sentryRelease = (env.SENTRY_RELEASE ?? env.FOLIO_RELEASE ?? '').trim();
+const uploadSourceMaps = Boolean(env.SENTRY_AUTH_TOKEN && env.SENTRY_ORG && env.SENTRY_PROJECT && sentryRelease);
+if (env.SENTRY_AUTH_TOKEN && !uploadSourceMaps) {
+  console.warn('[sentry] SENTRY_AUTH_TOKEN is set but SENTRY_ORG, SENTRY_PROJECT or FOLIO_RELEASE is missing: source maps are NOT uploaded.');
+}
 
 export default defineConfig({
   root: import.meta.dirname,
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    ...(uploadSourceMaps
+      ? [
+          sentryVitePlugin({
+            authToken: env.SENTRY_AUTH_TOKEN,
+            org: env.SENTRY_ORG,
+            project: env.SENTRY_PROJECT,
+            ...(env.SENTRY_URL ? { url: env.SENTRY_URL } : {}),
+            release: { name: sentryRelease },
+            sourcemaps: { filesToDeleteAfterUpload: ['**/*.map'] },
+            telemetry: false,
+          }),
+        ]
+      : []),
+  ],
   resolve: { alias: { '@shared': path.resolve(import.meta.dirname, '../shared') } },
   server: {
     port: 4871,
@@ -34,5 +65,5 @@ export default defineConfig({
   // load a missing chunk from. Served from /assets/ like the chunks themselves,
   // but it is NOT content-hashed, so the server must not cache it as immutable
   // (server/index.ts).
-  build: { outDir: 'dist', emptyOutDir: true, manifest: 'assets/manifest.json' },
+  build: { outDir: 'dist', emptyOutDir: true, manifest: 'assets/manifest.json', sourcemap: uploadSourceMaps ? 'hidden' : false },
 });

@@ -2,7 +2,7 @@ import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import type { UiLanguage } from '@shared/contracts';
 import { api } from '../app/api';
-import { UI_LANGUAGES, isUiLanguage } from './languages';
+import { UI_LANGUAGES, isUiLanguage, toUiLanguage } from './languages';
 
 /**
  * Central i18n bootstrap (Round 10, owned by SHELL). Must run and resolve
@@ -25,25 +25,32 @@ const DEFAULT_LANG: UiLanguage = 'en';
 const isSupported = isUiLanguage;
 
 /**
- * localStorage -> browser language (first available match) -> English. The user's
+ * localStorage -> browser language (first available match; Russian counts as
+ * Ukrainian) -> English. The user's
  * own PROFILE preference isn't known yet at this point — it needs an
  * authenticated fetch, which only happens once AuthProvider mounts and
  * resolves GET /api/auth/state. See reconcileLanguageFromProfile below for
  * how that gets folded in afterwards.
  */
+export function pickInitialLanguage(stored: string | null, browserLanguages: readonly (string | null | undefined)[]): UiLanguage {
+  const saved = toUiLanguage(stored);
+  if (saved) return saved;
+  for (const candidate of browserLanguages) {
+    const language = toUiLanguage(candidate);
+    if (language) return language;
+  }
+  return DEFAULT_LANG;
+}
+
 function resolveInitialLanguage(): UiLanguage {
+  let stored: string | null = null;
   try {
-    const stored = localStorage.getItem(LANG_STORAGE_KEY);
-    if (isSupported(stored)) return stored;
+    stored = localStorage.getItem(LANG_STORAGE_KEY);
   } catch {
     // storage unavailable (private mode, etc.) — fall through to browser detection
   }
   const candidates = typeof navigator !== 'undefined' ? (navigator.languages ?? [navigator.language]) : [];
-  for (const candidate of candidates) {
-    const base = candidate?.slice(0, 2).toLowerCase();
-    if (isSupported(base)) return base;
-  }
-  return DEFAULT_LANG;
+  return pickInitialLanguage(stored, candidates);
 }
 
 let initPromise: Promise<unknown> | null = null;

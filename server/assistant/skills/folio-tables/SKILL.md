@@ -12,6 +12,9 @@ schema of columns, rows and tab views, stored as one `.table.md` file in
 git. The normative specification is `docs/spec-tables.md`; this skill is an
 operational digest for the `folio_table_*` tools from `server/mcp.ts`.
 
+A table that collects the answers of a form is an ordinary table too — the
+form itself is changed with `update_form` (the `folio-forms` skill).
+
 **This is not the same as an extended markdown table inside a document**
 (colspan/rowspan/backgrounds — the `folio-content` skill). A data table is a
 page of its own, with its own schema of types and its own API.
@@ -32,8 +35,10 @@ experience with a "similar" table — every table has its own real schema.
 3. Reading rows — `folio_table_query` with `filter`/`sort`/`q`/`view`/
    `limit`/`offset`, `format: 'markdown'` for a concise look or `'json'` for
    exact values.
-4. Writing — `folio_table_insert`/`folio_table_update`/`folio_table_delete`/
-   `folio_table_add_column`, in AGENT mode only.
+4. Writing — rows: `folio_table_insert`/`folio_table_update`/
+   `folio_table_delete`; columns: `folio_table_add_column`/
+   `folio_table_update_column`/`folio_table_delete_column`; views:
+   `folio_table_save_view`/`folio_table_delete_view` — in AGENT mode only.
 5. After a write — re-read (`folio_table_query`/`folio_table_schema`) and
    only then confirm the result to the user.
 
@@ -152,14 +157,40 @@ low/medium/high), `Type` (select: bug/feature/tech debt), `Link` (link),
 The keys of the object are the ids of columns from the schema (not the
 displayed `name`s).
 
+## Changing columns
+
+`folio_table_update_column` with `id`, `columnId` and only what changes:
+`name` (rename), `type` (the values are converted; the answer says how many
+were `converted` and how many `cleared` — tell the user when something was
+cleared), `description`, `options` (the WHOLE new list — include every option
+to keep, or the values outside it show as "outside the list"), `multiple`,
+`precision`, `time`, `default`. `folio_table_delete_column` removes a column
+and all its values: ask the user first.
+
 ## Views
+
+A view is a tab of the table with its own filter, sort, hidden columns and
+column order. `folio_table_save_view` without `viewId` adds one:
+
+```json
+{
+  "id": "<table page id>",
+  "name": "In progress",
+  "filter": { "op": "and", "rules": [{ "column": "status", "operator": "is", "value": "IN PROG" }] },
+  "sort": [{ "column": "due", "dir": "asc" }],
+  "hiddenColumns": ["description"]
+}
+```
+
+With `viewId` (from `folio_table_schema`) only the given fields change.
+`folio_table_delete_view` deletes one (never the last).
 
 `folio_table_query` can apply an already saved view through `view` (the id
 of a view from the schema) instead of repeating `filter`/`sort` by hand —
 handy when the user says "show it as in the 'In progress' tab". The first
 view ("All records", named in the language of the person who creates the
-table) is created automatically together with the table; the agent cannot
-delete the last view.
+table) is created automatically together with the table; the last view
+cannot be deleted.
 
 ## Typical pitfalls
 

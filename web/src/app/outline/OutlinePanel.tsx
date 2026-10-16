@@ -10,6 +10,7 @@ import {
   OctagonAlert,
   Square,
   StickyNote,
+  Waypoints,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -19,6 +20,8 @@ import { extractNotes, type NoteKind } from '../../markdown/notes';
 import { useLocalStorage } from '../hooks';
 import '../i18n/register';
 import { useLiveDocText } from '../liveDocText';
+import { useParams } from 'react-router';
+import { LocalGraphSection } from '../graph/LocalGraphSection';
 
 /** One icon per NoteEntry.kind — a compact visual hint for what kind of entry a row is. */
 const NOTE_ICONS: Record<NoteKind, LucideIcon> = {
@@ -123,6 +126,11 @@ export function OutlinePanel({ markdown, pageId }: OutlinePanelProps) {
   // own persisted open/closed state, and the rail shows an icon for whichever
   // one is currently put away.
   const [notesOpen, setNotesOpen] = useLocalStorage('folio:notes-open', true);
+  // Graph view (16.10.2026): the page's local graph, a third section with its own open/closed state. Only where
+  // there is a space and a page (not on a share link).
+  const { space } = useParams<{ space: string }>();
+  const [graphOpen, setGraphOpen] = useLocalStorage('folio:local-graph-open', true);
+  const hasGraph = !!space && !!pageId;
   const [activeSlug, setActiveSlug] = useState<string | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -174,7 +182,7 @@ export function OutlinePanel({ markdown, pageId }: OutlinePanelProps) {
     return () => observer.disconnect();
   }, [headings]);
 
-  if (headings.length === 0 && notes.length === 0) return null;
+  if (headings.length === 0 && notes.length === 0 && !hasGraph) return null;
 
   function scrollTo(slug: string) {
     // source/live: hands off to the mounted CodeMirror view (see this file's
@@ -257,6 +265,7 @@ export function OutlinePanel({ markdown, pageId }: OutlinePanelProps) {
   const hasNotes = notes.length > 0;
   const showOutline = hasHeadings && outlineOpen;
   const showNotes = hasNotes && notesOpen;
+  const showGraph = hasGraph && graphOpen;
 
   /** The put-away sections, as icons that bring their own list back — nothing else. */
   const railButtons = (
@@ -270,6 +279,17 @@ export function OutlinePanel({ markdown, pageId }: OutlinePanelProps) {
           className="rounded-md p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
         >
           <ListTree size={16} />
+        </button>
+      )}
+      {hasGraph && !graphOpen && (
+        <button
+          type="button"
+          onClick={() => setGraphOpen(true)}
+          aria-label={t('graph.local.show')}
+          title={t('graph.local.show')}
+          className="rounded-md p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+        >
+          <Waypoints size={16} />
         </button>
       )}
       {hasNotes && !notesOpen && (
@@ -326,19 +346,20 @@ export function OutlinePanel({ markdown, pageId }: OutlinePanelProps) {
   // "whatever is open, plus a rail icon for whatever is not" rather than one
   // panel with one switch. With nothing open it degrades to the icon-only rail
   // this panel has always had.
-  const dockedPanel = !showOutline && !showNotes ? (
+  const dockedPanel = !showOutline && !showNotes && !showGraph ? (
     <div className="hidden shrink-0 flex-col gap-1 p-2 min-[1100px]:flex">
       <div className="sticky top-3 flex flex-col gap-1">{railButtons}</div>
     </div>
   ) : (
     <nav
-      aria-label={showOutline ? t('outline.label') : t('notes.label')}
+      aria-label={showOutline ? t('outline.label') : showNotes ? t('notes.label') : t('graph.local.title')}
       className="ph-mask hidden w-56 shrink-0 min-[1100px]:block"
     >
       <div className="sticky top-3 max-h-[calc(100vh-4.5rem)] overflow-y-auto pb-6 pl-2 pr-1">
         {/* A section that's away is one click from coming back, without
             disturbing the one that stayed. */}
-        {(!outlineOpen || !notesOpen) && <div className="mb-1 flex items-center gap-1">{railButtons}</div>}
+        {(!outlineOpen || !notesOpen || (hasGraph && !graphOpen)) && <div className="mb-1 flex items-center gap-1">{railButtons}</div>}
+        {showGraph && <LocalGraphSection space={space!} pageId={pageId!} variant="docked" onHide={() => setGraphOpen(false)} />}
         {showOutline && outlineSection}
         {showNotes && notesSection('docked', () => setNotesOpen(false))}
       </div>
@@ -408,6 +429,7 @@ export function OutlinePanel({ markdown, pageId }: OutlinePanelProps) {
                 ))}
               </ul>
               {notesSection('mobile')}
+              {hasGraph && <LocalGraphSection space={space!} pageId={pageId!} variant="mobile" onNavigate={() => setMobileOpen(false)} />}
             </div>
           </nav>
         </div>

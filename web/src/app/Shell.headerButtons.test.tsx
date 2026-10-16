@@ -30,7 +30,7 @@ import { Shell, useSetHeaderInfo } from './Shell';
 import './i18n/register';
 
 // Round 10: header labels are i18next-driven now — pin the language so the
-// aria-label selectors below (written against the Russian copy) match,
+// aria-label selectors below (written against the English copy) match,
 // rather than whatever the standalone fallback's own default ('uk') would
 // otherwise produce.
 beforeAll(async () => {

@@ -41,7 +41,10 @@ Not ready to install? [Try the live demo](https://demo.foliowiki.online/?utm_sou
   Markdown links made for agents.
 - **Documents, tables, whiteboards, diagrams and files in one tree.** A
   roadmap table next to the spec, next to the architecture board, next to the
-  signed PDF.
+  signed PDF. Obsidian canvases and bases open as pages, too.
+- **See how your pages connect.** A graph of the space and a local graph beside
+  every page, built from the links your team already writes, and showing only
+  what the reader may open.
 - **Publish what should be public.** Turn a space into a read-only website,
   with search and an optional "Ask AI" for visitors, at a path of your
   instance, on a subdomain or on your own domain.
@@ -314,6 +317,87 @@ Reactions are live for everyone on the board, and people who can only view it
 
 ---
 
+## Graph
+
+Every link between pages is already in the index, so Folio can draw it. Open
+**Graph** under the tag tree and the space appears as a map: pages are nodes,
+links are edges, and the biggest hubs carry their names.
+
+![The graph of a space: pages as nodes, links as edges, folders as colours](docs/images/graph.png)
+
+- **Labels follow the zoom.** At the overview only the top hubs are named;
+  zoom in and more titles fade in, never one on top of another. A hovered or
+  selected page and its neighbours always keep their labels.
+- **Tree structure included.** A "Tree structure" toggle adds the page tree as
+  dashed lines, so a nested space is not a cloud of unconnected dots. A page of
+  another space you may open shows up with its space in its name, in its own
+  colour.
+- **A local graph beside every document.** The page and its neighbours one to
+  three links away, in, out or both, in the right-hand panel; click a node to
+  open the page, or expand it to full size.
+
+![A page with its local graph in the side panel](docs/images/graph-local.png)
+
+- **Filters in the search grammar** (`tag:`, `in:`, `kind:`, `prop:`), colour
+  groups by top folder, page kind, tag or your own query, and the layout forces
+  are settings of the graph, remembered per space.
+- **Access is applied in the query.** A page you cannot open is never a node, a
+  ghost or an edge. The graph is built on the server from the page index (5,000
+  pages in about 150 ms) and the drawing code loads only when a graph is opened.
+- **Agents can read it too.** The MCP tool `get_graph` returns the same graph, and
+  the built-in assistant uses it.
+
+The limits (10,000 pages, no graph on public sites) are in
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+
+---
+
+## Obsidian canvases and bases
+
+An Obsidian vault is not only Markdown, and Folio now opens two more of its
+file types as pages.
+
+![An Obsidian canvas rendered as a page](docs/images/canvas.png)
+
+- **Canvases (`.canvas`).** Text cards rendered as Markdown, note cards with the
+  note's start, images, web page cards, groups and connections with arrows and
+  colours, with pan, zoom and fit. A card that points at a page you may not open
+  says "No access". "Convert to Folio board" makes a new, editable whiteboard in
+  one commit and leaves the canvas as it was.
+- **Bases (`.base`).** A saved query over the pages of a space, shown as a table,
+  cards or a list, with grouping, sorting, formulas and column summaries. An Edit
+  toggle changes a cell in place by changing that page's property, and a visual editor
+  changes views, filters and formulas without disturbing the rest of the file.
+
+![An Obsidian base as a grouped table with summaries](docs/images/base.png)
+
+![The visual editor of a base](docs/images/base-editor.png)
+
+Both follow renames: move a note and the canvas cards and wikilinks that point
+at it are rewritten in the same commit. Bases run in a safe evaluator of our own
+(no `eval`); `kanban` and `map` views and plugin functions are not supported.
+Details and limits: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+
+---
+
+## Properties and a shared timer
+
+**Properties on every kind of page.** The thin "Properties" row above a page now
+appears on data tables, forms, boards and files, not only documents. A board keeps
+its properties in a small sidecar file in Git, next to the board, and they work in
+search (`tag:`, `prop:`), the tag tree and MCP like any other.
+
+![The properties of a whiteboard, edited in the page header](docs/images/properties-board.png)
+
+**A timer that belongs to the page.** The clock icon in the header starts a
+countdown (1, 3, 5 or 10 minutes, or your own) that everyone who has the page open
+sees and hears end together, for a workshop or a retro. Editors control it, readers
+watch.
+
+![A running timer in the page header, with its pause, +1 minute and reset controls](docs/images/timer.png)
+
+---
+
 ## Document preview
 
 PDF, Word, Excel and PowerPoint files are pages too. Drop one into the tree
@@ -359,13 +443,19 @@ it appears in the table on the left — and answered from the data.
 - **Ask** — read-only. Find, summarize, compare, explain across the pages you
   have access to.
 - **Agent** — reads and writes. Drafts a page, updates a table, draws a board,
-  restructures a section — inside your rights, never beyond them.
+  builds a form, restructures a section — inside your rights, never beyond them.
 - **Runs live on the server.** Close the browser and the work continues; come
   back and pick up where it was.
 - **The same tools as everyone else.** The assistant works through the very
   tools an outside agent gets over MCP — there is no second, weaker
   implementation, and in Ask mode the write tools are switched off on the
   server, not just hidden.
+
+**It builds forms and tables, not only text.** Ask for "a lunch poll with a
+required name, a cuisine and a yes/no for Friday" and the agent creates the form
+and the table its answers land in, with the same steps as the form editor.
+
+![Folio AI in Agent mode has built a form, and the form is on the page next to the chat](docs/images/assistant-form.png)
 
 ### Is the assistant actually helping?
 
@@ -445,9 +535,10 @@ Without a key everything else in Folio works as usual.
 
 ## Built for agents
 
-**MCP server.** 26 tools over `/mcp`: list and search spaces, read and write
-pages, read a page's outline, tags, properties and links, find unresolved links
-and orphan pages, create and edit whiteboards, query and update data tables,
+**MCP server.** 40 tools over `/mcp`: list and search spaces, read and write
+pages, build forms, edit data table columns and views, convert a canvas to a board, read a page's outline, tags, properties and links, list a space's tags and
+property keys, rename a tag, set page properties, find unresolved links
+and orphan pages, read the link graph, query, create and edit Obsidian bases, create and edit whiteboards, query and update data tables,
 read history.
 Connect with a personal access token, or through OAuth 2.1 from clients that
 run in a vendor's cloud (claude.ai, Claude Desktop, ChatGPT). `search` and
@@ -548,6 +639,12 @@ members, to you only, or to selected people with view or edit rights.
   A token never has more rights than its owner, and administrative actions are
   not available to tokens at all.
 - The `.agent` folder is visible to space administrators only.
+
+**In Slack and Microsoft Teams**
+
+- A pasted Folio link unfurls into a card with the page's title, place, opening
+  text and headings, built with the access of the person who shared it; a page
+  they cannot open shows no title at all. [Setup](docs/CHAT-PREVIEWS.md).
 
 ---
 
@@ -652,7 +749,11 @@ analytics library is loaded and no connection is opened to the Folio authors or
 to a third party. There is one opt-in exception for people who run a public
 demo: set `FOLIO_POSTHOG_KEY` to a PostHog project of your own and Folio sends
 anonymous events (page kinds, space slugs, never content). Without that key
-nothing happens. Details: [docs/INSTALL.md](docs/INSTALL.md#optional-analytics-hook-off-by-default).
+nothing happens. The same holds for the optional error reporting to a Sentry
+project of your own (`SENTRY_DSN`, with a "Report a problem" menu item): no
+DSN, no library, no connection. Details:
+[docs/INSTALL.md](docs/INSTALL.md#optional-analytics-hook-off-by-default) and
+[docs/INSTALL.md](docs/INSTALL.md#optional-error-reporting-off-by-default).
 
 ---
 
@@ -693,6 +794,7 @@ gets in your way.
 - [Docs-as-code without the IDE: edit your repository's docs in a browser](https://foliowiki.online/blog/docs-as-code-in-the-browser/)
 - [What is not there yet](docs/LIMITATIONS.md)
 - [MCP and REST for agents](docs/MCP.md)
+- [Link previews in Slack and Microsoft Teams](docs/CHAT-PREVIEWS.md)
 - [Changelog](CHANGELOG.md)
 
 ## Development

@@ -17,6 +17,8 @@ file:
 | Form | `*.form.md` | yes |
 | PDF | `*.pdf` | no, view only |
 | Office | `*.docx`, `*.xlsx`, `*.pptx` | no, view only |
+| Obsidian canvas | `*.canvas` (JSON Canvas 1.0) | no, view only; can be converted into a whiteboard |
+| Obsidian base | `*.base` (Bases YAML) | yes: views and filters are configured, a row's properties are edited in the cells |
 
 PostgreSQL stores the index, access rights, the activity history and the state
 of collaborative editing — but not the content itself. Any page can be read
@@ -109,6 +111,28 @@ is present.
 
 Authorship reaches the Git commit: the history shows who changed the page.
 
+**Shared page timer.** Every page has a timer icon in its header (document, table,
+whiteboard, form, PDF/Office, a space's home page; a folder listing has one for
+the space): presets of 1, 3, 5 and 10 minutes, or a custom time (minutes and
+seconds, up to 3 hours). While it runs, the header shows a live `mm:ss`
+countdown, red for the last 10 seconds; click it to Pause, Resume, add a minute
+or Reset. The timer belongs to the page: everyone who has the page open sees the
+same countdown and reaches zero together (each browser counts to a server-time
+end moment, corrected for its own clock), and at zero everyone gets a soft chime
+(generated in the browser, no sound file) and a "Time is up" toast. If the
+browser has not allowed sound yet, the countdown shows a muted-speaker icon and
+the first click anywhere enables it; there is a per-device sound switch in the
+popover. Someone who opens the page later sees the current state, and a reload
+long after the end stays silent. People with the editor role on the page (the
+space role and the page's own access, checked on the server) can start, pause
+and reset; everyone else who can read the page only watches. The state is held
+in server memory (never in the page file, Git, the shared document or the audit
+log), is sent over the existing `/events` socket to the people who can read the
+page, and clears itself five minutes after the end (two hours when paused).
+There is also a REST API, `GET`/`POST /api/pages/:id/timer` (and
+`/api/spaces/:space/timer`). Share-link guests and visitors of a public site do
+not see the timer.
+
 **Typed text is protected.** The editor and the shared document are compared
 after every change and any difference is repaired, so text cannot stay on
 screen only. The browser keeps a local copy of the page and deletes it only
@@ -119,6 +143,124 @@ page file is retried and the newer live state wins over the older file the next
 time the page opens; page files are written atomically; and the text a live
 page held is saved in a backup table before the server replaces all of it (a
 file changed outside, an API or MCP body write, "Take the version from Git").
+
+**Obsidian canvases (`.canvas`).** A canvas from an Obsidian vault (the open
+[JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/) format) is a page of its
+own in the tree, shown as it is and read-only: Folio never writes the file
+while showing or indexing it. The view is an infinite canvas with pan (drag,
+scroll), zoom (Ctrl/⌘ + wheel, pinch, `+` `-`, `0` for 100%) and a fit button;
+the first view fits the whole canvas, between 10% and 100%. Text cards are
+Markdown drawn by Folio's own reading view (Obsidian syntax included); a note
+card shows the note's title and its start, or the `#heading` / `#^block` it is
+narrowed to, and a double click or its label opens the note; an image, audio
+or video card shows the file; a web page card shows its domain and URL (no
+preview is fetched); groups are frames with their label and background image.
+The six preset colours use Obsidian's palette in light and dark, hex colours
+are used as written, and connections are drawn as Obsidian draws them, with
+sides, arrowheads, labels and colours. A card pointing at a page you may not
+open shows only "No access" — no title, no path. Text cards and group labels
+are searchable, their `#tags` are the canvas's tags, and its file cards and the
+links in its text cards count as links (backlinks, unresolved links). A file
+that is not a valid canvas opens on a readable error; a canvas over 8 MB, or the
+part of it over 5,000 cards / 10,000 connections, is not shown. Properties live
+in a sidecar `.folio/<path>.props.yaml`, as for a whiteboard. **The name is the
+file name, as in Obsidian:** "Rename" in the tree menu of a canvas or a base takes
+any valid file name (Unicode and spaces, such as "Sprint notes"; no `/ \ : * ? " < > |`,
+no leading or trailing dot, up to 200 bytes), keeps the extension, and moves the
+property sidecar, the links to the file (wikilinks, Markdown links, file cards of
+other canvases, in a vault too) and the page id along in one commit; a name that is
+taken is refused. When a page a canvas points at is renamed or moved in Folio, its
+file cards and the links in its text cards follow in every space, a vault included,
+only the changed path strings rewritten. **Convert to Folio
+board** (editors, in the canvas toolbar) makes a new whiteboard next to the
+canvas, in one commit by you, and lists first what changes: Markdown becomes
+plain text, text longer than its card is cut, note cards become a title with a
+link, images over 1.5 MB (4 MB together) become linked cards, audio, video and
+web page cards become links, group background images and nesting are dropped,
+curved connections become right-angled arrows. The canvas itself always stays.
+
+**Obsidian Bases (`.base`).** A base from an Obsidian vault is a page of its own
+in the tree (kind `base`). It is not storage but a **query**: the file holds
+filters, formulas and views, and the rows are the pages of the same space that
+you may open. Access is applied inside the query, as in search and the graph:
+space membership, page access, `.agent/**` for administrators only, `_templates/**`
+never, no folders. Any page can be a row: documents, data tables and forms (their
+front matter), whiteboards, PDFs, Office files and other bases (their sidecar
+properties); attachments are not rows. The base's id lives only in the page
+index and its title is the file name without `.base`; Folio never rewrites the
+file while showing or indexing it. Broken YAML opens a readable error page with
+the line number.
+
+- **Views.** Table, cards (the cover comes from an `image:` property: a link to
+  an image, a URL or a `#hex` colour) and list (with markers). `kanban`, `map`
+  and plugin views show "not supported yet" and fall back to a table. Group by
+  one property (with `groupOrder`, including rows with no value), sort by
+  several keys, limit, column summaries (Average, Min, Max, Sum, Range, Median,
+  Stddev, Earliest, Latest, Checked, Unchecked, Empty, Filled, Unique, plus your
+  own formulas under `summaries:`), property display names, and the base's
+  filters and the view's filters combined, with `and` / `or` / `not` groups
+  (`not` means none of).
+- **Expressions.** A safe evaluator of our own (no `eval`): arithmetic,
+  comparisons, `&& || !`, date arithmetic with durations (`"1d"`, `"2w"`,
+  `"1M"`), lists, objects, regular expression literals, and `this` (the base
+  itself, or the document that embeds the block). Supported: the globals `if`,
+  `now`, `today`, `date`, `duration`, `number`, `list`, `max`, `min`, `link`,
+  `file`, `escapeHTML`, `random` and the older `taggedWith`, `inFolder`,
+  `linksTo`; methods of strings, numbers, dates (`format` with Moment tokens,
+  `relative`, the fields `year` to `millisecond`), lists (`filter`, `map`,
+  `reduce`, `sort`, `unique`, `sum`, `mean`, `median`, and more), links, files
+  (`file.name`, `path`, `folder`, `ext`, `size`, `ctime`, `mtime`, `tags`,
+  `links`, `backlinks`, `hasTag`, `inFolder`, and more), objects and regular
+  expressions. Not supported: `html()`, `image()`, `icon()` and plugin functions.
+  A formula column using one shows "formula not supported", and a filter
+  statement using one is ignored with a visible warning. Dates are computed in
+  UTC (a date and time is shown in the reader's local time). Regular expressions
+  with nested quantifiers or back-references are refused, and each query has an
+  evaluation budget.
+- **Limits.** At most 5,000 candidate pages per query (after an SQL prefilter on
+  tags, folders, extension, name, `hasProperty` and the presence of a property;
+  beyond that the view is marked truncated with a warning), 200 rows per page of
+  results ("Show more"), an API `limit` of up to 1,000, and a file of up to
+  256 KB.
+- **Editing cells.** An Edit toggle on the base page. Changing a cell is a
+  `PUT /api/pages/:id/properties` of **that** page (the whole map with its etag;
+  on a 409 the view refreshes and says so). Only rows you can edit are
+  editable (editor or above on that page; a restricted page needs its owner or
+  an edit grant; a read-only token cannot), and only note properties, never
+  `file.*` or `formula.*`. Folio's own keys with a foreign value are read-only
+  (for example `status: todo` on a document), and labels follow the rules of the
+  properties API.
+- **Visual editor** ("Configure", editors on the base page). Views (add, rename,
+  delete, layout, column order, sort, group, summaries, limit, card image),
+  filters for all views or for this view (property, operator, value rules, nested
+  groups; raw expressions are kept as text), formulas and display names, and a
+  raw YAML tab. Saving is `PUT /api/pages/:id/base` with an etag. The writer
+  keeps unchanged top-level blocks and unchanged views byte for byte, comments
+  and unknown keys included, and the write is one debounced commit authored by
+  you.
+- **Creating.** "+ → New base" in the sidebar and the tree, and "New base" in
+  the quick switcher (the starter is one table view filtered to the folder it is
+  created in). "Save as base…" in the quick switcher's search (editors, inside a
+  space) turns `tag:`, `kind:`, `status:`, `in:` and `prop:` into Obsidian
+  filter statements; words and phrases are dropped, and the dialog says so.
+- **`base` code blocks in documents** show the same view (in Reading mode and as
+  a live widget in the editor; read-only, a click reveals the source), with `this`
+  meaning the document. Share links and public sites show a note instead,
+  because a base exposes properties.
+- **Export and search.** A base exports to Markdown as its YAML inside a `base`
+  code fence; `kind:base` works in search.
+- **API and MCP.** `GET /api/pages/:id/base?view=&offset=&limit=`,
+  `GET /api/pages/:id/base/source`, `PUT /api/pages/:id/base` and
+  `POST /api/spaces/:space/base/preview`. MCP has a read-only `query_base` tool
+  (`limit` 1 to 500, default 100) and a `save_base` tool that creates a `.base`
+  or replaces its YAML (invalid YAML is refused with the line number, and the
+  answer carries a preview of the first view); `read_page` on a base returns
+  its YAML and `fetch` renders the rows as a Markdown table. Public sites refuse
+  `query_base`.
+- **Not yet.** `kanban` and `map` views, editing cells inside an embedded `base`
+  block, attachments as rows, `![[x.base]]` embeds, autocomplete in the formula
+  editor, `html()` / `image()` / `icon()`, relative dates by the viewer's time
+  zone, and a base across several spaces. Database migration 047.
 
 **Whiteboard reactions.** Selecting a single shape in Edit mode shows a reaction
 button at its selection frame; the palette has eleven emoji (yes, no and in
@@ -381,6 +523,40 @@ it exactly as they read a space with `instance` visibility.
   backlink counts never include pages you cannot open, and a link to such a
   page looks like a link to nothing. The interface for all this comes in the
   next waves.
+- **Graph view.** A "Graph" row in the sidebar, under Tags, opens a map of the
+  space: pages are nodes, links between them are edges, and tags, attachments
+  and unresolved links can be switched on as nodes too. A "Local graph" section
+  at the top of a document's right-hand panel (next to Outline and Notes) shows
+  the page and its neighbours 1 to 3 links away, following links out of it, into
+  it or both, with a button to open it full size. Hover highlights a node and
+  its neighbours, click opens the page (a tag node opens the search `tag:x`),
+  nodes can be dragged, the wheel or a pinch zooms, and on a touch screen the
+  first tap selects a node (a card with Open and Neighbours). A compact settings
+  panel, remembered per space, has filters in the search grammar (words,
+  `tag:`, `kind:`, `status:`, `in:`) with toggles for Tags, Attachments,
+  Unresolved links and Orphans; colour groups (by top folder, page kind, tag or
+  your own query); display (arrows, text fade threshold, node size by number of
+  links, link thickness); and the four layout forces (center, repel, link force,
+  link distance). The server builds the graph from the page index in a handful
+  of queries (5,000 pages in about 150 ms), and access is applied inside the
+  query, as in search: a page you cannot open is never a node, a ghost or an
+  edge. Past 10,000 readable pages the most recently changed 10,000 are kept and
+  the view suggests the local graph. REST: `GET /api/spaces/:space/graph` and
+  `GET /api/pages/:id/graph?depth=&direction=`; MCP: `get_graph`. The graph is
+  drawn on a canvas by a small layout engine that loads only when a graph is
+  opened.
+  Links written the Folio way count like any other: the page URL "Copy link"
+  gives, a pasted page address, `/s/<space>/p/<id>` (what the assistant and MCP
+  write), the space home `/s/<space>` and a folder route, root-relative or on
+  the instance's own host (`PUBLIC_URL`). They feed the graph, backlinks,
+  orphans, unresolved links, bases and `get_backlinks`, across spaces too: a
+  page of another space that you may open appears in the graph labelled
+  "space / title" in its own colour. The "Tree structure" toggle (on by
+  default) adds the page tree's parent → child lines, dashed, so nested pages
+  show their place even without links; in the local graph the parent, the
+  children and, two steps away, the siblings are neighbours. The local graph
+  panel has a visible Depth label with a hint on each button (direct links /
+  through one page / through two pages) and collapses from its header.
 - A **tree** with drag and drop, a templates folder for creating "from a
   template", and the `.agent` folder (see section 11). The tree updates by
   itself.
@@ -460,6 +636,24 @@ A form can be made public, so that people answer without an account. That
 needs **both** the "public" flag **and** a valid share link to the form.
 Anonymous answers are rate-limited.
 
+**A reload does not cost you the work.** While you edit a form's definition, every
+change is also kept as a draft in this browser (about half a second after you stop
+typing, per form and per user): title, description, submit text, every field with
+its help text and "required" flag, their order, and fields you have not saved yet.
+Open the form again after a reload or a crashed tab and the editor opens with a
+banner, "There is an unsaved draft from 14:05", with **Restore** and **Discard**.
+Closing the editor with unsaved changes (the cross, Cancel, Escape or a click outside)
+asks first: keep editing, close and keep the draft, or discard it. Reloading or
+closing the tab with unsaved changes shows the browser's own warning. The draft is
+removed when you save. It is not sent to the server on purpose: saving a form creates
+real table columns for new fields, so it stays a deliberate step.
+
+The same goes for **filling a form in**, signed in or through a share link: answers
+are kept in this browser as you type, come back after a reload with a note, "Your
+answers from 14:05 were restored. Clear", and are dropped once the response is sent.
+Leaving the page with unsent answers shows the browser's warning. File contents and
+sensitive field types are never stored.
+
 ## 11. Folio AI
 
 An assistant in the side panel with two modes: **Ask** (read only) and
@@ -535,19 +729,36 @@ work continues; come back and read on from where it stopped.
 ## 12. Integration for external tools (MCP)
 
 The `/mcp` endpoint with a personal access token (`folio_pat_…`), scopes
-`read` and `write`. 26 tools: listing spaces and trees, reading a page,
+`read` and `write`. 40 tools: listing spaces and trees, reading a page,
 search (plus `search` and `fetch` for ChatGPT deep research), creating and updating pages, resolving a Folio link, backlinks
 with context, a page's metadata (outline, tags, properties, links), a space's
-unresolved links and orphan pages, history and reading a page at a given
-commit, working with whiteboards, and a full set of operations on data tables.
+unresolved links and orphan pages, the link graph of a space or a page's neighbourhood, the rows of an Obsidian base (and creating or replacing one), a space's tags and property keys, renaming a tag across a space, setting a page's properties, history and reading a page at a given
+commit, working with whiteboards (and converting an Obsidian canvas into one), a full set of operations on data tables (rows, columns, views), and building forms with the table their answers go to.
 See [MCP.md](MCP.md).
+
+### Link previews in Slack and Microsoft Teams
+
+A Folio link pasted into Slack or Teams unfurls into a card: icon and title,
+`Space / Parent / Page`, the first lines of text, the section headings, tags,
+the last update and who made it, and for a data table its rows and columns. Each
+person connects their own Folio account once, from the chat app, through
+Folio's own OAuth consent screen, and the card is built with that person's
+access: a page they cannot open gives a card with no title at all. Because a
+preview is seen by the whole conversation, a page restricted to specific people
+shows its title only. Share links and public-site pages unfurl for anyone.
+People disconnect in API tokens → Chat apps; instance administrators see the
+setup and every connection in Administration → Chat integrations. Setup:
+[CHAT-PREVIEWS.md](CHAT-PREVIEWS.md).
 
 ## 13. Import, export and the rest
 
 **Privacy of the installation.** Folio sends no telemetry. An optional hook for
 a PostHog project of your own (`FOLIO_POSTHOG_KEY`) exists for people running
 a public demo; with no key set, no analytics library is loaded and no
-connection is opened. **Link previews:** the front page carries Open Graph and
+connection is opened. Likewise opt-in: error reporting to a Sentry project of
+your own (`SENTRY_DSN`) with a "Report a problem" item in the user menu; it
+never sends page content, and with no DSN set nothing is loaded or contacted
+(see [INSTALL.md](INSTALL.md#optional-error-reporting-off-by-default)). **Link previews:** the front page carries Open Graph and
 Twitter card tags (title, description, 1200x630 picture), neutral by default
 and set with `FOLIO_OG_TITLE`, `FOLIO_OG_DESCRIPTION` and `FOLIO_OG_IMAGE`.
 See [INSTALL](INSTALL.md).

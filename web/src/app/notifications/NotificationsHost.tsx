@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { NOTIFICATIONS_QUERY_KEY, addNotificationToCache, useNotifications } from './useNotifications';
 import { subscribeNotifications } from './socket';
+import { applyTimerFrame, refreshAllTimers } from '../timer/pageTimerStore';
 import { cancelPendingTreeRefreshes, requestAllTreeRefresh, requestTreeRefresh } from '../sidebar/treeLive';
 
 /**
@@ -18,6 +19,7 @@ import { cancelPendingTreeRefreshes, requestAllTreeRefresh, requestTreeRefresh }
  * it again" (sidebar/treeLive.ts; the server half is server/treeSignal.ts).
  * It is handled here, not in the sidebar, because this is the one place that
  * owns the socket — a second subscriber would open a second connection per tab.
+ * The shared page timer's `{ type: 'timer' }` frame rides it too (timer/pageTimerStore.ts).
  */
 export function NotificationsHost() {
   const queryClient = useQueryClient();
@@ -32,6 +34,8 @@ export function NotificationsHost() {
       onReopen: () => {
         void queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_QUERY_KEY });
         requestAllTreeRefresh(queryClient);
+        // A running timer may have been paused or reset during the break.
+        refreshAllTimers(queryClient);
       },
       onEvent: (event) => {
         if (event.type === 'notification') {
@@ -41,6 +45,11 @@ export function NotificationsHost() {
         if (event.type === 'tree') {
           // A frame from a newer server than this bundle, or a malformed one, must not blow up the feed.
           if (typeof event.space === 'string' && event.space) requestTreeRefresh(queryClient, event.space);
+          return;
+        }
+        if (event.type === 'timer') {
+          // The shared page timer (server/pageTimer.ts): the new state of one page's / space home's timer.
+          applyTimerFrame(queryClient, event);
           return;
         }
         if (event.type !== 'refresh') return;

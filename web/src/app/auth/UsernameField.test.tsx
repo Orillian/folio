@@ -10,7 +10,7 @@ import { ToastProvider } from '../ui/Toast';
 // 409/Escape/normalize behavior against the move.
 import { UsernameField } from './SettingsDialog';
 
-// The whole app is Russian-language today (see pipeline.test.ts's own note)
+// The app speaks two languages
 // — pin the test's i18next instance so string assertions check real copy.
 beforeEach(async () => {
   await i18next.changeLanguage('en');

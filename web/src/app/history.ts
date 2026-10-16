@@ -16,8 +16,8 @@ export function shortSha(sha: string): string {
  * "just now" / "5 minutes ago" / "3 hours ago" / "2 days ago", falling back
  * to a plain localized date past ~30 days. `now` is injectable for tests;
  * defaults to the real clock. Round 10: plurals resolve from `count` via
- * i18next's own CLDR-driven plural rule for the current language (ru/uk
- * both need one/few/many/other, en needs one/other — see app/i18n/*.json's
+ * i18next's own CLDR-driven plural rule for the current language (uk
+ * needs one/few/many/other, en needs one/other — see app/i18n/*.json's
  * history.*Ago_* keys), and the date fallback follows the current language too.
  */
 export function formatRelativeDate(iso: string, now: Date = new Date()): string {

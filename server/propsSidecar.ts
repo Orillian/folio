@@ -32,7 +32,7 @@ export const SIDECAR_SUFFIX = '.props.yaml';
 /** A sidecar larger than this is not read (shown as unreadable, read-only). */
 export const SIDECAR_MAX_BYTES = 256 * 1024;
 
-const SIDECAR_KINDS: ReadonlySet<PageKind> = new Set<PageKind>(['board', 'pdf', 'office']);
+const SIDECAR_KINDS: ReadonlySet<PageKind> = new Set<PageKind>(['board', 'pdf', 'office', 'canvas', 'base']);
 
 /** Pages whose properties live in a sidecar. */
 export function usesSidecar(kind: PageKind): boolean {

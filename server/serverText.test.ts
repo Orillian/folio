@@ -18,6 +18,11 @@ describe('serverText', () => {
     expect(resolveTextLanguage('xx', 'en-GB')).toBe('en');
   });
 
+  it('treats a Russian browser as Ukrainian, and a stale saved ru as no preference', () => {
+    expect(resolveTextLanguage(undefined, 'ru-RU,ru;q=0.9,en;q=0.5')).toBe('uk');
+    expect(resolveTextLanguage('ru', 'en-GB')).toBe('en');
+  });
+
   it('falls back to English when nothing matches', () => {
     expect(resolveTextLanguage(undefined, 'de-DE,fr;q=0.8')).toBe('en');
     expect(resolveTextLanguage(null, null)).toBe('en');

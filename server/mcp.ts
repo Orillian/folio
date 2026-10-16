@@ -40,14 +40,17 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { ApiTokenScope, SpaceRole, TableColumn, TableRow, User } from '../shared/contracts.js';
-import { tableColumnSchema, tableFilterRuleSchema } from '../shared/contracts.js';
+import { tableColumnSchema, tableColumnTypeSchema, tableFilterRuleSchema, tableOptionSchema } from '../shared/contracts.js';
 import * as storage from './storage.js';
 import { resolveTextLanguage } from './serverText.js';
 import type { PageIndexEntry } from './storage.js';
 import * as collab from './collab.js';
 import * as gitSync from './gitSync.js';
 import * as indexRead from './indexV2/read.js';
+import * as graph from './graph.js';
 import { userViewer, type PageViewer } from './accessSql.js';
+import { buildCanvasPayload } from './canvasView.js';
+import { canvasOutline } from '../shared/canvas/index.js';
 import { SEARCH_GRAMMAR_NOTE, searchPages, searchPublicSpace } from './search.js';
 import { getPublicSpace, isPublicPage, publicReadablePageIds } from './publicSites.js';
 import * as session from './auth/session.js';
@@ -55,11 +58,23 @@ import { recordAudit } from './audit.js';
 import { isAgentPath } from './agentPath.js';
 import { publicUrlOrOrigin } from './publicUrl.js';
 import * as tableService from './tables/service.js';
-import { encodeCell } from '../shared/tables/index.js';
+import { encodeCell, withNewColumnDefaults } from '../shared/tables/index.js';
 import { decodeScenePayload, extractScenePayload, renderSceneSvg, selfcheckWhiteboardSvg, type ExcalidrawElement, type ExcalidrawScene } from './confluenceWhiteboard.js';
 import { buildSceneFromSketch, boardSketchSchema } from './boardSketch.js';
 import { outputSchemas } from './mcpOutputSchemas.js';
+import { queryBaseForAgent, AGENT_BASE_MAX_ROWS } from './bases/agent.js';
+import { baseAsMarkdown } from './bases/compact.js';
 import { applyBoardOps, boardOpSchema, type BoardOp } from './boardOps.js';
+import { HttpError } from './errors.js';
+import { normalizeRenameTags, renameTag } from './tags.js';
+import { assertNoReservedKey, mergePropertyPatch, PropertiesConflictError, propertiesStoreOf, readPageProperties, savePageProperties } from './properties.js';
+import { listPropertySamples, readSpacePropertyTypes } from './propertyTypes.js';
+import { baseErrorText, BaseConflictError, baseEtag, writeBase } from './bases/service.js';
+import { parseBaseConfig } from '../shared/bases/parse.js';
+import { BASE_MAX_BYTES } from '../shared/bases/types.js';
+import { createFormFromDefinition, FormConflictError, readFormDefinition, updateFormDefinition, type FormFieldInput } from './forms/service.js';
+import { convertCanvasPage } from './canvasToBoard.js';
+import { recordPageChange, snapshotPageChange } from './pageChanges.js';
 
 /**
  * The product version, as the `serverInfo.version` every MCP client sees on
@@ -114,6 +129,16 @@ export const MCP_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'folio_table_delete',
   'folio_table_add_column',
   'folio_table_create',
+  'rename_tag',
+  'set_page_properties',
+  'save_base',
+  'create_form',
+  'update_form',
+  'folio_table_update_column',
+  'folio_table_delete_column',
+  'folio_table_save_view',
+  'folio_table_delete_view',
+  'convert_canvas_to_board',
 ]);
 
 /**
@@ -122,11 +147,11 @@ export const MCP_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
  * hence the first paragraph stands on its own). English only: it is protocol text for a model.
  */
 export const FOLIO_MCP_INSTRUCTIONS = [
-  'Folio is a team wiki: spaces hold pages (documents, whiteboards, data tables), stored as files in Git. Use these tools to find and read pages, and to create or edit them as the connected user.',
+  'Folio is a team wiki: spaces hold pages (documents, whiteboards, data tables, forms, bases), stored as files in Git. Use these tools to find and read pages, and to create or edit them as the connected user.',
   '',
-  'Find, then read: call list_spaces, then search_pages (full text) or list_tree (page tree) to locate a page, then read_page by id. search and fetch do the same for clients that accept only those two tool names (ChatGPT deep research). resolve_folio_url turns a pasted Folio link into a page id. get_backlinks, page_history and page_at_sha show links and past versions. get_page_metadata gives a page\'s outline, tags, properties and links; list_unresolved_links and list_orphans find broken links and pages nothing links to.',
+  'Find, then read: call list_spaces, then search_pages (full text) or list_tree (page tree) to locate a page, then read_page by id. search and fetch do the same for clients that accept only those two tool names (ChatGPT deep research). resolve_folio_url turns a pasted Folio link into a page id. get_backlinks, page_history and page_at_sha show links and past versions. get_page_metadata gives a page\'s outline, tags, properties and links; list_unresolved_links and list_orphans find broken links and pages nothing links to; get_graph maps how pages link (a whole space or one page\'s neighbourhood); list_tags and list_properties show the tags and property keys in use; query_base answers a base.',
   '',
-  'Write minimally: every write is committed to Git under the connected user, and update_page merges with live editing. Prefer changing only what was asked, create_page for new pages (set parentPath), and read the page again after writing to confirm. Before writing to a data table, call folio_table_schema and use its exact column ids and select/status options; then folio_table_insert / folio_table_update / folio_table_delete.',
+  'Write minimally: every write is committed to Git under the connected user, and update_page merges with live editing. Prefer changing only what was asked, create_page for new pages (set parentPath), and read the page again after writing to confirm. Before writing to a data table, call folio_table_schema and use its exact column ids and select/status options; then folio_table_insert / folio_table_update / folio_table_delete; columns and views: folio_table_add_column / folio_table_update_column / folio_table_save_view. Forms: create_form / update_form (read_page shows the fields). Page properties: set_page_properties (merge: true to change one key); tags: rename_tag; bases: save_base; a canvas becomes a board with convert_canvas_to_board.',
   '',
   'Permissions: you act with exactly the rights of the connected user, limited by the granted scope (read-only connections cannot write). If a tool reports a missing role or scope, tell the user instead of retrying.',
   '',
@@ -170,6 +195,19 @@ async function listablePageIds(actor: McpActor, space: string): Promise<Set<stri
 }
 
 const NOT_ON_PUBLIC_SITE = 'not available on a public site';
+
+/** get_graph: pages per answer by default and at most — a whole space would not fit a model's context. */
+const MCP_GRAPH_DEFAULT_PAGES = 300;
+const MCP_GRAPH_MAX_PAGES = 2000;
+
+/** list_tags: tags per answer by default and at most — a vault with thousands of tags would not fit a model's context. */
+const MCP_TAGS_DEFAULT_LIMIT = 200;
+const MCP_TAGS_MAX_LIMIT = 1000;
+/** list_properties: keys per answer at most, and sample values per key. */
+const MCP_PROPERTIES_MAX_KEYS = 500;
+const MCP_PROPERTY_SAMPLES = 3;
+/** save_base: rows of the answered view in the preview. */
+const MCP_BASE_PREVIEW_ROWS = 10;
 
 function errorResult(message: string): CallToolResult {
   return { content: [{ type: 'text', text: message }], isError: true };
@@ -327,6 +365,13 @@ async function loadBoardScene(id: string): Promise<{ scene: ExcalidrawScene | nu
   }
 }
 
+/** A canvas page as its readable outline for this reader (read_page `outline`, fetch `text`) — or the reason it cannot be read. */
+async function canvasOutlineFor(entry: storage.PageIndexEntry, reader: PageViewer): Promise<string> {
+  const payload = await buildCanvasPayload(entry, reader);
+  if (!payload.document) return `# ${entry.title}\n\nThis canvas could not be read: ${payload.error ?? 'unknown error'}\n`;
+  return canvasOutline(entry.title, payload.document, payload.files, payload.warnings);
+}
+
 /** A board as plain markdown for `fetch`: its labelled shapes, the arrows between them and the free texts. No geometry — a reader of prose has no use for it. */
 function boardAsText(summary: ReturnType<typeof boardSceneSummary>): string {
   const shapes = summary.shapes as { id: string; type: string; label: string }[];
@@ -469,6 +514,33 @@ const cellValueSchema = z.union([z.string(), z.number(), z.boolean(), z.array(z.
 const mcpFilterSchema = z.object({ op: z.enum(['and', 'or']).describe('Match all rules (and) or any rule (or)'), rules: z.array(tableFilterRuleSchema).describe('Conditions: { column, operator, value? }') });
 const mcpSortSchema = z.array(z.object({ column: z.string().describe('Column id'), dir: z.enum(['asc', 'desc']).describe('Sort direction') }));
 
+/** A select/status option as a tool takes it: the plain label, or { value, color?, description? }. */
+const mcpOptionSchema = z.union([z.string().min(1), tableOptionSchema]);
+const mcpOptionsSchema = z.array(mcpOptionSchema);
+function toTableOptions(options: z.infer<typeof mcpOptionsSchema> | undefined): TableColumn['options'] {
+  return options?.map((o) => (typeof o === 'string' ? { value: o, color: 'gray' as const } : o));
+}
+
+/** One field of create_form / update_form: an existing column of the paired table (columnId) or a new column. */
+const mcpFormFieldSchema = z.object({
+  columnId: z.string().optional().describe('Column of the paired table this field fills (from read_page form.fields or folio_table_schema). Omit to add a new column for the field'),
+  label: z.string().min(1).optional().describe('The question shown on the form; also the name of a new column. Required for a new field; for an existing column left out = keep the current label'),
+  type: tableColumnTypeSchema.optional().describe('New field: text (default), longtext, number, date, checkbox, select, status, user or link. Leave out for an existing column'),
+  required: z.boolean().optional().describe('The form cannot be sent without it (default false; for an existing column left out = keep)'),
+  help: z.string().optional().describe('Hint under the question (for an existing column left out = keep, "" removes it)'),
+  options: mcpOptionsSchema.optional().describe('New select/status field: the choices, as labels or { value, color?, description? }. A status field without them gets the status preset'),
+  multiple: z.boolean().optional().describe('New select/user field: allow several values in one answer'),
+});
+function toFieldInputs(fields: z.infer<typeof mcpFormFieldSchema>[] | undefined): FormFieldInput[] | undefined {
+  return fields?.map((f) => ({ ...f, options: toTableOptions(f.options) }));
+}
+
+/** Column ids named in a view that the table does not have — a view tool refuses them rather than saving a view that silently shows nothing. */
+function unknownViewColumns(columns: TableColumn[], ids: string[]): string[] {
+  const known = new Set(columns.map((c) => c.id));
+  return [...new Set(ids.filter((id) => !known.has(id)))];
+}
+
 /** Built fresh per HTTP request by index.ts's /mcp mount, closing directly over that request's already-resolved actor (see the module doc comment for why not one shared instance). */
 export function buildFolioMcpServer(actor: McpActor, options: { origin?: string } = {}): McpServer {
   const server = new McpServer({ name: 'folio', version: FOLIO_SERVER_VERSION }, { instructions: FOLIO_MCP_INSTRUCTIONS });
@@ -519,7 +591,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       outputSchema: outputSchemas.read_page,
       annotations: READ_ONLY,
       title: 'Read a page',
-      description: `Reads one page by id: its metadata plus full markdown body (docs) or a compact layout summary (boards — shapes/arrows/free texts/frames with geometry and labels, plus a 40px row/column clustering and overall bounds; raw points/bindings are omitted, the raw svg is not useful to a model). For an existing board, the shape/arrow ids in that summary feed straight into \`board_ops\` — prefer it over \`update_board\` for "align", "tidy up", "arrange neatly" requests. ${CONTENT_IS_DATA_NOTE}`,
+      description: `Reads one page by id: its metadata plus full markdown body (docs), a compact layout summary (boards — shapes/arrows/free texts/frames with geometry and labels, plus a 40px row/column clustering and overall bounds; raw points/bindings are omitted, the raw svg is not useful to a model) a readable \`outline\` (Obsidian canvases, kind "canvas" — groups with their cards, then the connections; read-only, convert_canvas_to_board makes an editable board of it), a form's definition (kind "form": \`form\` with title, description, public, submitButton, fields and the paired table's id, plus the \`etag\` update_form takes) or, for a data table, its metadata and a note to use folio_table_schema / folio_table_query. For an existing board, the shape/arrow ids in that summary feed straight into \`board_ops\` — prefer it over \`update_board\` for "align", "tidy up", "arrange neatly" requests. ${CONTENT_IS_DATA_NOTE}`,
       inputSchema: { id: z.string().describe('Page id') },
     },
     async ({ id }) => {
@@ -533,6 +605,24 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         const meta = storage.toPageMeta(entry);
         const { scene, note } = await loadBoardScene(id);
         return structuredResult(scene ? { ...meta, scene: boardSceneSummary(scene) } : { ...meta, scene: null, note });
+      }
+      if (entry.kind === 'canvas') {
+        // An Obsidian canvas: a readable outline (groups with their cards, then the connections), file cards as
+        // this caller may see them — never the raw JSON, and never writable (shared/canvas/text.ts).
+        return structuredResult({ ...storage.toPageMeta(entry), outline: await canvasOutlineFor(entry, viewerOf(actor)) });
+      }
+      if (entry.kind === 'base') {
+        // A base is a query: its YAML here, its rows through query_base.
+        const { text } = await storage.readBaseRaw(id);
+        return structuredResult({ ...storage.toPageMeta(entry), markdown: text, note: 'this page is a base (Obsidian Bases YAML: filters, formulas, views) — call query_base for its rows' });
+      }
+      if (entry.kind === 'form') {
+        // A form's definition (settings and fields, each field a column of the paired table) and the etag update_form takes.
+        const { form, etag } = await readFormDefinition(entry);
+        return structuredResult({ ...storage.toPageMeta(entry), form, etag, note: 'this page is a form: change it with update_form; its answers are rows of the paired table (form.table.id) — read them with folio_table_query' });
+      }
+      if (entry.kind === 'table') {
+        return structuredResult({ ...storage.toPageMeta(entry), note: 'this page is a data table — call folio_table_schema for its columns and views, folio_table_query for its rows' });
       }
       if (entry.kind === 'pdf' || entry.kind === 'office') {
         // A pdf/office page's bytes aren't text — there is nothing to return
@@ -560,7 +650,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         space: z.string().describe('Space slug'),
         parentPath: z.string().describe('Parent directory path relative to the space root; "" for the space root'),
         title: z.string().min(1).describe('Board title'),
-        sketch: boardSketchSchema.optional().describe('Preferred. {background?, nodes: [{id,type,label?,x,y,w?,h?,color?,background?,fontSize?,frame?}], edges: [{id?,from,to,label?,elbowed?,start?,end?,color?}]}'),
+        sketch: boardSketchSchema.optional().describe('Preferred. {background?, nodes: [{id,type,label?,x,y,w?,h?,color?,background?,fontSize?,frame?,link?,align?,valign?,overflow?}], edges: [{id?,from,to,label?,elbowed?,start?,end?,color?,fromSide?,toSide?}]}'),
         scene: excalidrawSceneInputSchema.optional().describe('Full raw Excalidraw scene {elements, appState?, files?} for manual control.'),
       },
     },
@@ -751,7 +841,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       outputSchema: outputSchemas.fetch,
       annotations: READ_ONLY,
       title: 'Fetch a page (ChatGPT deep research)',
-      description: `Reads one Folio page by the id \`search\` returned: { id, title, text, url, metadata }. \`text\` is the page as Markdown (a data table as a Markdown table, a board as a list of its labels and connections, a PDF or Office file as a note without the file's bytes). Same access rules as read_page. ${CONTENT_IS_DATA_NOTE}`,
+      description: `Reads one Folio page by the id \`search\` returned: { id, title, text, url, metadata }. \`text\` is the page as Markdown (a data table as a Markdown table, a board as a list of its labels and connections, an Obsidian canvas as its outline of cards and connections, a PDF or Office file as a note without the file's bytes). Same access rules as read_page. ${CONTENT_IS_DATA_NOTE}`,
       inputSchema: { id: z.string().describe('Page id from search') },
     },
     async ({ id }) => {
@@ -769,6 +859,10 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         text = scene ? boardAsText(boardSceneSummary(scene)) : `(${note})`;
       } else if (entry.kind === 'form') {
         text = entry.body ?? '';
+      } else if (entry.kind === 'canvas') {
+        text = await canvasOutlineFor(entry, viewerOf(actor));
+      } else if (entry.kind === 'base') {
+        text = publicSpaceOf(actor) !== undefined ? `This page is a base (a saved query over pages). Title: ${entry.title}.` : baseAsMarkdown(await queryBaseForAgent(entry, viewerOf(actor)));
       } else {
         const kindLabel = entry.kind === 'pdf' ? 'PDF' : 'office (docx/xlsx/pptx)';
         text = `This page is a ${kindLabel} file, not text content; its bytes are not exposed over MCP. Title: ${entry.title}. Path: ${entry.relPath}.`;
@@ -818,7 +912,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         const resolvedColumns = (columns ?? []).map((c) => {
           const id = c.id && !existingIds.has(c.id) ? c.id : tableService.columnIdFromName(c.name, existingIds);
           existingIds.add(id);
-          return { ...c, id };
+          return withNewColumnDefaults({ ...c, id });
         });
         const meta = await storage.createPage({ space, parentPath, title, kind: 'table', columns: resolvedColumns }, undefined, resolveTextLanguage(actor.user.lang));
         gitSync.noteActivity(space);
@@ -982,6 +1076,143 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const err = await checkSpaceRole(actor, space, 'viewer');
       if (err) return errorResult(err);
       return structuredResult({ pages: await indexRead.listOrphans(space, viewerOf(actor)) });
+    },
+  );
+
+  // Graph view (16.10.2026): the link graph, with the REST routes' access rules (server/graph.ts).
+  server.registerTool(
+    'get_graph',
+    {
+      outputSchema: outputSchemas.get_graph,
+      annotations: READ_ONLY,
+      title: 'Get link graph',
+      description:
+        'Returns the link graph of one space as nodes and edges, from pages the caller can see: each node is a page (id, title, kind, path, tags, degree = distinct neighbours) and each edge a link source -> target with its count. With page, only that page and the pages within depth link hops of it (1-3, default 1), following links out of it, into it, or both. Optional nodes: tags (page -> tag edges), files (attachments linked from pages), unresolved (link targets that do not exist). Use it to find hub pages, clusters and how pages connect; read_page a node id for its content. Pages beyond limit (default 300) are left out, most recently changed kept, and truncated says so.',
+      inputSchema: {
+        space: z.string().describe('Space slug'),
+        page: z.string().optional().describe('Page id: return only its neighbourhood'),
+        depth: z.number().int().optional().describe('Link hops from page, 1-3 (default 1)'),
+        direction: z.enum(['both', 'in', 'out']).optional().describe('With page: follow links out of it, into it, or both (default)'),
+        tags: z.boolean().optional().describe('Include tags as nodes (default false)'),
+        files: z.boolean().optional().describe('Include linked space files as nodes (default false)'),
+        unresolved: z.boolean().optional().describe('Include link targets that do not exist (default false)'),
+        orphans: z.boolean().optional().describe('Keep pages without links (default true)'),
+        limit: z.number().int().optional().describe('Maximum number of pages (1-2000, default 300)'),
+      },
+    },
+    async ({ space, page, depth, direction, tags, files, unresolved, orphans, limit }) => {
+      const err = await checkSpaceRole(actor, space, 'viewer');
+      if (err) return errorResult(err);
+      const options = graph.parseGraphOptions({ tags, files, unresolved, orphans });
+      const cap = Math.min(MCP_GRAPH_MAX_PAGES, graph.clampGraphLimit(limit, MCP_GRAPH_DEFAULT_PAGES));
+      let result;
+      if (page) {
+        const { entry, error } = await checkPageRole(actor, page, 'viewer');
+        if (error || !entry || entry.space !== space) return errorResult(error ?? 'page not found');
+        result = await graph.getLocalGraph({ id: entry.id, space: entry.space }, viewerOf(actor), {
+          depth: graph.clampDepth(depth),
+          direction: graph.parseDirection(direction),
+          options,
+          limit: cap,
+        });
+      } else {
+        result = await graph.getSpaceGraph(space, viewerOf(actor), options, cap);
+      }
+      // Compact for a model's context: no timestamps or statuses, no empty tag lists.
+      const nodes = result.nodes.map((n) => ({ id: n.id, title: n.title, kind: n.kind, ...(n.path ? { path: n.path } : {}), ...(n.tags?.length ? { tags: n.tags } : {}), degree: n.degree }));
+      const compact = { nodes, edges: result.edges, totalPages: result.totalPages, truncated: result.truncated, limit: result.limit, ...(result.center ? { center: result.center } : {}) };
+      return { content: [{ type: 'text', text: JSON.stringify(compact) }], structuredContent: compact };
+    },
+  );
+
+  server.registerTool(
+    'query_base',
+    {
+      outputSchema: outputSchemas.query_base,
+      annotations: READ_ONLY,
+      title: 'Query a base',
+      description:
+        'Runs one view of a base page (an Obsidian `.base` file, kind "base": a saved query over the pages of its space) and returns its rows: one page per row, its values by column (note properties, file.* fields, formula.* results), the groups and column summaries of the view. Only pages the caller can open are rows. Read-only: change a value with update_page on that page\'s front matter. Use read_page on the base for its YAML (filters, formulas, views).',
+      inputSchema: {
+        id: z.string().describe('Page id of the base (kind "base")'),
+        view: z.string().optional().describe('View name; the first view when omitted'),
+        limit: z.number().int().optional().describe(`Rows to return, 1-${AGENT_BASE_MAX_ROWS} (default 100)`),
+        offset: z.number().int().optional().describe('Rows to skip (paging)'),
+      },
+    },
+    async ({ id, view, limit, offset }) => {
+      // A base shows page properties, which a public site does not publish.
+      if (publicSpaceOf(actor) !== undefined) return errorResult(NOT_ON_PUBLIC_SITE);
+      const { entry, error } = await checkPageRole(actor, id, 'viewer');
+      if (error || !entry) return errorResult(error ?? 'page not found');
+      if (entry.kind !== 'base') return errorResult('this page is not a base (kind "base")');
+      const result = await queryBaseForAgent(entry, viewerOf(actor), { view, limit, offset });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result as unknown as Record<string, unknown> };
+    },
+  );
+
+  // Tags and properties (16.10.2026): the same index reads as the tags and properties panels, with their access rules.
+  server.registerTool(
+    'list_tags',
+    {
+      outputSchema: outputSchemas.list_tags,
+      annotations: READ_ONLY,
+      title: 'List tags',
+      description: `Lists the tags of one space as a tree (a/b is a child of a) with page counts, counting only pages the caller can open: a tag used only on pages the caller cannot open is not listed. Each tag has \`pages\` (pages carrying exactly this tag) and \`total\` (this tag or any child). With \`prefix\`, only tags starting with it (\`project/\` lists the children of project). Tags come from #tags in the text and from tags:/labels: in the front matter. Use search_pages with tag:name to list the pages of a tag; rename_tag changes a tag across the space. Answers at most limit tags (default ${MCP_TAGS_DEFAULT_LIMIT}).`,
+      inputSchema: {
+        space: z.string().describe('Space slug'),
+        prefix: z.string().optional().describe('Only tags starting with this text, e.g. "project/" (case-insensitive, a leading # is ignored)'),
+        limit: z.number().int().optional().describe(`Maximum number of tags to return, 1-${MCP_TAGS_MAX_LIMIT} (default ${MCP_TAGS_DEFAULT_LIMIT})`),
+      },
+    },
+    async ({ space, prefix, limit }) => {
+      const err = await checkSpaceRole(actor, space, 'viewer');
+      if (err) return errorResult(err);
+      const startsWith = (prefix ?? '').trim().replace(/^#+/, '').toLowerCase();
+      const cap = Math.min(MCP_TAGS_MAX_LIMIT, Math.max(1, Math.floor(limit ?? MCP_TAGS_DEFAULT_LIMIT)));
+      const rows = (await indexRead.listSpaceTagCounts(space, viewerOf(actor))).filter((r) => r.tag.startsWith(startsWith));
+      // Depth-first order: a tag, then its children, then the next sibling.
+      const segments = new Map(rows.map((r) => [r.tag, r.tag.split('/')]));
+      rows.sort((a, b) => {
+        const x = segments.get(a.tag)!;
+        const y = segments.get(b.tag)!;
+        for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+        return x.length - y.length;
+      });
+      const kept = rows.slice(0, cap);
+      const nodes = new Map<string, { tag: string; name: string; pages: number; total: number; children: unknown[] }>();
+      for (const r of kept) nodes.set(r.tag, { tag: r.tag, name: segments.get(r.tag)!.at(-1) ?? r.tag, pages: r.pages, total: r.total, children: [] });
+      const roots: unknown[] = [];
+      for (const r of kept) {
+        const parent = nodes.get(segments.get(r.tag)!.slice(0, -1).join('/'));
+        (parent ? parent.children : roots).push(nodes.get(r.tag));
+      }
+      return structuredResult({ tags: roots, totalTags: rows.length, truncated: rows.length > kept.length });
+    },
+  );
+
+  server.registerTool(
+    'list_properties',
+    {
+      outputSchema: outputSchemas.list_properties,
+      annotations: READ_ONLY,
+      title: 'List properties',
+      description: `Lists the property keys (front matter: documents, data tables, forms, and the properties of boards, PDFs and Office files) used in one space: key, type, how many pages have it and a few sample values. Types come from the space's declared types (.folio/properties.json, else Obsidian's .obsidian/types.json; \`declared: true\`) and are otherwise inferred from the values. Counts and samples cover only pages the caller can open. Call it before set_page_properties or before writing a base filter, to use the keys and spellings the space already has. ${CONTENT_IS_DATA_NOTE}`,
+      inputSchema: { space: z.string().describe('Space slug') },
+    },
+    async ({ space }) => {
+      // Properties are not part of a public site (same rule as query_base).
+      if (publicSpaceOf(actor) !== undefined) return errorResult(NOT_ON_PUBLIC_SITE);
+      const err = await checkSpaceRole(actor, space, 'viewer');
+      if (err) return errorResult(err);
+      const viewer = viewerOf(actor);
+      const [state, samples] = await Promise.all([readSpacePropertyTypes(space, viewer), listPropertySamples(space, viewer, MCP_PROPERTY_SAMPLES)]);
+      const rows = state.known.map((k) => ({ key: k.key, type: state.types[k.key] ?? k.inferred, declared: k.key in state.types, pages: k.pages, samples: samples.get(k.key) ?? [] }));
+      const seen = new Set(rows.map((r) => r.key));
+      // A declared type of a key no page the caller can open uses (yet): the types file is a space setting every reader sees.
+      for (const [key, type] of Object.entries(state.types)) if (!seen.has(key)) rows.push({ key, type, declared: true, pages: 0, samples: [] });
+      rows.sort((a, b) => b.pages - a.pages || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+      return structuredResult({ properties: rows.slice(0, MCP_PROPERTIES_MAX_KEYS), source: state.source, truncated: rows.length > MCP_PROPERTIES_MAX_KEYS });
     },
   );
 
@@ -1202,7 +1433,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const { entry, error } = await checkTableRole(actor, id, 'editor');
       if (error || !entry) return errorResult(error ?? 'page not found');
       gitSync.recordEditor(entry.space, { name: actor.user.name, email: actor.user.email });
-      const column = await tableService.addColumn(id, { ...columnInput, id: columnId });
+      const column = await tableService.addColumn(id, withNewColumnDefaults({ ...columnInput, id: columnId }));
       gitSync.noteActivity(entry.space);
       recordAudit(actor.user.id, 'table.column_added', id, { source: 'mcp', tool: 'folio_table_add_column', columnId: column.id });
       return structuredResult(column);
@@ -1233,13 +1464,485 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const resolvedColumns = (columns ?? []).map((c) => {
         const colId = c.id && !existingIds.has(c.id) ? c.id : tableService.columnIdFromName(c.name, existingIds);
         existingIds.add(colId);
-        return { ...c, id: colId };
+        return withNewColumnDefaults({ ...c, id: colId });
       });
       gitSync.recordEditor(space, { name: actor.user.name, email: actor.user.email });
       const meta = await tableService.createTable(space, parentPath, title, resolvedColumns, resolveTextLanguage(actor.user.lang));
       gitSync.noteActivity(space);
       recordAudit(actor.user.id, 'page.created', meta.id, { source: 'mcp', tool: 'folio_table_create' });
       return structuredResult(meta);
+    },
+  );
+
+  server.registerTool(
+    'folio_table_update_column',
+    {
+      outputSchema: outputSchemas.folio_table_update_column,
+      annotations: WRITE_OVERWRITES,
+      title: 'Change a data table column',
+      description: `Changes one column of a data table, like the column menu in the web app: rename it, change its type (values are converted; the answer says how many were converted and how many could not be and were cleared), its hint, width, alignment, select/status options (the WHOLE list: give every option to keep), multiple, allowCreate, precision, time or default. Only the fields you give change. ${CALL_SCHEMA_FIRST_NOTE} Requires a write-scoped token.`,
+      inputSchema: {
+        id: z.string().describe('Table page id'),
+        columnId: z.string().describe('Id of the column to change (from folio_table_schema)'),
+        ...mcpColumnShape,
+        name: mcpColumnShape.name.optional().describe('New column title'),
+        type: mcpColumnShape.type.optional().describe('New column type; existing values are converted'),
+        options: mcpOptionsSchema.optional().describe('select and status columns: the whole new list of allowed values, as labels or { value, color?, description? }'),
+      },
+    },
+    async ({ id, columnId, options, ...rest }) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      const patch: Partial<Omit<TableColumn, 'id'>> = Object.fromEntries(Object.entries({ ...rest, options: toTableOptions(options) }).filter(([, v]) => v !== undefined));
+      if (Object.keys(patch).length === 0) return errorResult('nothing to change: give at least one of name, type, description, options, …');
+      const { entry, error } = await checkTableRole(actor, id, 'editor');
+      if (error || !entry) return errorResult(error ?? 'page not found');
+      gitSync.recordEditor(entry.space, { name: actor.user.name, email: actor.user.email });
+      try {
+        const result = await tableService.updateColumn(id, columnId, patch);
+        gitSync.noteActivity(entry.space);
+        recordAudit(actor.user.id, 'table.column_updated', id, { source: 'mcp', tool: 'folio_table_update_column', columnId, keys: Object.keys(patch) });
+        return structuredResult(result);
+      } catch (updateErr) {
+        if (updateErr instanceof HttpError) return errorResult(updateErr.message);
+        throw updateErr;
+      }
+    },
+  );
+
+  server.registerTool(
+    'folio_table_delete_column',
+    {
+      outputSchema: outputSchemas.folio_table_delete_column,
+      annotations: WRITE_DELETES,
+      title: 'Delete a data table column',
+      description: 'Deletes one column of a data table and every value in it, like "Delete column" in the web app (the values stay in the page history). A form field that fills this column stops being answerable: change the form with update_form. Ask the user first. Requires a write-scoped token.',
+      inputSchema: { id: z.string().describe('Table page id'), columnId: z.string().describe('Id of the column to delete (from folio_table_schema)') },
+    },
+    async ({ id, columnId }) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      const { entry, error } = await checkTableRole(actor, id, 'editor');
+      if (error || !entry) return errorResult(error ?? 'page not found');
+      gitSync.recordEditor(entry.space, { name: actor.user.name, email: actor.user.email });
+      try {
+        await tableService.deleteColumn(id, columnId);
+      } catch (deleteErr) {
+        if (deleteErr instanceof HttpError) return errorResult(deleteErr.message);
+        throw deleteErr;
+      }
+      gitSync.noteActivity(entry.space);
+      recordAudit(actor.user.id, 'table.column_deleted', id, { source: 'mcp', tool: 'folio_table_delete_column', columnId });
+      return structuredResult({ deleted: columnId });
+    },
+  );
+
+  server.registerTool(
+    'folio_table_save_view',
+    {
+      outputSchema: outputSchemas.folio_table_save_view,
+      annotations: { ...WRITE_OVERWRITES, idempotentHint: false }, // without viewId every call adds a view
+      title: 'Create or change a data table view',
+      description: `Creates a view (a tab of a data table: its own filter, sort, hidden columns and column order) or changes one, like the view tabs in the web app. Without \`viewId\` a new view is added (\`name\` required); with it only the fields you give change. \`filter\` and \`sort\` use the same shapes as folio_table_query. ${CALL_SCHEMA_FIRST_NOTE} Requires a write-scoped token.`,
+      inputSchema: {
+        id: z.string().describe('Table page id'),
+        viewId: z.string().optional().describe('View to change (from folio_table_schema); omit to create a view'),
+        name: z.string().min(1).optional().describe('Tab name; required to create'),
+        filter: mcpFilterSchema.optional().describe('Rows the view shows: { op: "and"|"or", rules: [{ column, operator, value? }] }'),
+        sort: mcpSortSchema.optional().describe('Sort order: [{ column, dir }]'),
+        hiddenColumns: z.array(z.string()).optional().describe('Column ids the view hides'),
+        columnOrder: z.array(z.string()).optional().describe('Column ids in the order the view shows them'),
+        frozen: z.number().int().min(0).max(4).optional().describe('Columns frozen at the left (0-4)'),
+        rowHeight: z.enum(['short', 'medium', 'tall']).optional().describe('Row height'),
+      },
+    },
+    async ({ id, viewId, name, filter, sort, hiddenColumns, columnOrder, frozen, rowHeight }) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      if (viewId === undefined && !name) return errorResult('name is required to create a view');
+      const { entry, error } = await checkTableRole(actor, id, 'editor');
+      if (error || !entry) return errorResult(error ?? 'page not found');
+      const snapshot = await tableService.getTableSnapshot(id);
+      const unknown = unknownViewColumns(snapshot.columns, [
+        ...(filter?.rules.map((r) => r.column) ?? []),
+        ...(sort?.map((r) => r.column) ?? []),
+        ...(hiddenColumns ?? []),
+        ...(columnOrder ?? []),
+      ]);
+      if (unknown.length) return errorResult(`the table has no column ${unknown.join(', ')} (its columns: ${snapshot.columns.map((c) => c.id).join(', ')})`);
+      const current = viewId !== undefined ? snapshot.views.find((v) => v.id === viewId) : undefined;
+      if (viewId !== undefined && !current) return errorResult(`the table has no view "${viewId}" (its views: ${snapshot.views.map((v) => v.id).join(', ')})`);
+      const baseColumns = current?.columns ?? { hidden: [], order: [], width: {} };
+      const columns = hiddenColumns !== undefined || columnOrder !== undefined ? { ...baseColumns, hidden: hiddenColumns ?? baseColumns.hidden, order: columnOrder ?? baseColumns.order } : undefined;
+      gitSync.recordEditor(entry.space, { name: actor.user.name, email: actor.user.email });
+      try {
+        let view;
+        if (viewId === undefined) {
+          view = await tableService.addView(id, {
+            name: name!,
+            columns: columns ?? baseColumns,
+            sort: sort ?? [],
+            filter: filter ?? { op: 'and', rules: [] },
+            frozen: frozen ?? 0,
+            rowHeight: rowHeight ?? 'short',
+          });
+        } else {
+          const patch = Object.fromEntries(Object.entries({ name, columns, sort, filter, frozen, rowHeight }).filter(([, v]) => v !== undefined));
+          if (Object.keys(patch).length === 0) return errorResult('nothing to change: give at least one of name, filter, sort, hiddenColumns, columnOrder, frozen, rowHeight');
+          view = await tableService.updateView(id, viewId, patch);
+        }
+        gitSync.noteActivity(entry.space);
+        recordAudit(actor.user.id, viewId === undefined ? 'table.view_added' : 'table.view_updated', id, { source: 'mcp', tool: 'folio_table_save_view', viewId: view.id });
+        return structuredResult({ created: viewId === undefined, view });
+      } catch (viewErr) {
+        if (viewErr instanceof HttpError) return errorResult(viewErr.message);
+        throw viewErr;
+      }
+    },
+  );
+
+  server.registerTool(
+    'folio_table_delete_view',
+    {
+      outputSchema: outputSchemas.folio_table_delete_view,
+      annotations: WRITE_DELETES,
+      title: 'Delete a data table view',
+      description: 'Deletes one view (tab) of a data table; the rows are not touched. The last view of a table cannot be deleted. Requires a write-scoped token.',
+      inputSchema: { id: z.string().describe('Table page id'), viewId: z.string().describe('Id of the view to delete (from folio_table_schema)') },
+    },
+    async ({ id, viewId }) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      const { entry, error } = await checkTableRole(actor, id, 'editor');
+      if (error || !entry) return errorResult(error ?? 'page not found');
+      gitSync.recordEditor(entry.space, { name: actor.user.name, email: actor.user.email });
+      try {
+        await tableService.deleteView(id, viewId);
+      } catch (deleteErr) {
+        if (deleteErr instanceof HttpError) return errorResult(deleteErr.message);
+        throw deleteErr;
+      }
+      gitSync.noteActivity(entry.space);
+      recordAudit(actor.user.id, 'table.view_deleted', id, { source: 'mcp', tool: 'folio_table_delete_view', viewId });
+      return structuredResult({ deleted: viewId });
+    },
+  );
+
+  // ---------------------------------------------------------------------
+  // Forms (16.10.2026): the same steps as the web app (forms/service.ts) — "+ -> Form" or "Create a form" on a
+  // table, then the form editor's Save, which adds a column to the paired table for each new field.
+  // ---------------------------------------------------------------------
+
+  server.registerTool(
+    'create_form',
+    {
+      outputSchema: outputSchemas.form_write,
+      annotations: WRITE_ADDITIVE,
+      title: 'Create a form',
+      description:
+        'Creates a form page: questions people answer, each answer a new row of a data table paired with the form. Without `table` a new table is created together with the form, as the form\'s child page, with one column per field (like "+ → Form" in the web app). With `table` (a table page id) the form is placed under that existing table (like "Create a form" on a table; `parentPath` is then ignored) and starts with one field per column — or with exactly `fields` when given (an existing column by `columnId`, a new column without it). Field types: text, longtext, number, date, checkbox, select, status, user, link. Folio adds "Submitted at" and "Submitter" to the table on the first answer. A form is private to space members until `public: true` plus a share link of the form. Returns the form, the paired table id, the columns added and the `etag` for update_form. Requires an editor role and a write-scoped token.',
+      inputSchema: {
+        space: z.string().describe('Space slug'),
+        parentPath: z.string().optional().describe('Parent directory path relative to the space root; "" (default) for the space root. Ignored with `table`'),
+        title: z.string().min(1).describe('Form title'),
+        table: z.string().optional().describe('Page id of an existing data table to collect the answers in; omit to create a new table with the form'),
+        fields: z.array(mcpFormFieldSchema).optional().describe('The questions, in order. Without `table` each becomes a new column of the new table'),
+        description: z.string().optional().describe('Text shown above the questions'),
+        submitButton: z.string().optional().describe('Label of the submit button (default "Submit" in the reader\'s language)'),
+        public: z.boolean().optional().describe('Accept answers from anyone with a share link of the form (default false: space members only)'),
+      },
+    },
+    async ({ space, parentPath, title, table, fields, description, submitButton, public: isPublic }) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      const err = await checkSpaceRole(actor, space, 'editor');
+      if (err) return errorResult(err);
+      let target = parentPath ?? '';
+      if (table !== undefined) {
+        const { entry: tableEntry, error } = await checkTableRole(actor, table, 'editor');
+        if (error || !tableEntry) return errorResult(error ?? 'page not found');
+        if (tableEntry.space !== space) return errorResult('the table is in another space');
+        target = tableEntry.dirPath;
+      }
+      const agentErr = await checkAgentWriteAllowed(actor.user, space, target);
+      if (agentErr) return errorResult(agentErr);
+      gitSync.recordEditor(space, { name: actor.user.name, email: actor.user.email });
+      let result;
+      try {
+        result = await createFormFromDefinition(
+          { space, parentPath: target, title, tableId: table, fields: toFieldInputs(fields), description, submitButton, public: isPublic },
+          resolveTextLanguage(actor.user.lang),
+        );
+      } catch (createErr) {
+        if (createErr instanceof HttpError) return errorResult(createErr.message);
+        throw createErr;
+      }
+      gitSync.noteActivity(space);
+      await recordPageChange(actor.user.id, 'page.create', result.meta.id, space, undefined, snapshotPageChange(await storage.requireEntry(result.meta.id)));
+      recordAudit(actor.user.id, 'page.created', result.meta.id, { source: 'mcp', tool: 'create_form', kind: 'form', table: result.tableId });
+      const { form } = await readFormDefinition(await storage.requireEntry(result.meta.id));
+      return structuredResult({ ...result.meta, form, etag: result.etag, tableId: result.tableId, columnsAdded: result.columnsAdded });
+    },
+  );
+
+  server.registerTool(
+    'update_form',
+    {
+      outputSchema: outputSchemas.form_write,
+      annotations: WRITE_OVERWRITES,
+      title: 'Change a form',
+      description:
+        'Changes a form like the form editor of the web app: its title, description, submit button label, public flag, and/or its whole list of `fields` in order. Each field with `columnId` keeps filling that column of the paired table (label, help and required change only when given, e.g. { "columnId": "rating", "required": true }); a field without `columnId` adds a new column; a field you leave out is removed from the form only — its column and the answers already collected stay in the table. Read the form with read_page first and send its `etag`: if the form changed meanwhile the write is refused and the error carries the current etag. Returns the form after the write, the columns added and the new etag. Requires an editor role and a write-scoped token.',
+      inputSchema: {
+        id: z.string().describe('Form page id'),
+        etag: z.string().optional().describe('The etag read_page (or a previous create_form/update_form) returned; a mismatch refuses the write'),
+        title: z.string().min(1).optional().describe('New title'),
+        description: z.string().nullable().optional().describe('Text above the questions; null removes it'),
+        submitButton: z.string().nullable().optional().describe('Label of the submit button; null restores the default'),
+        public: z.boolean().optional().describe('Accept answers from anyone with a share link of the form'),
+        fields: z.array(mcpFormFieldSchema).optional().describe('The WHOLE new list of questions, in order; omit to keep the fields as they are'),
+      },
+    },
+    async ({ id, etag, title, description, submitButton, public: isPublic, fields }) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      const { entry, error } = await checkPageRole(actor, id, 'editor');
+      if (error || !entry) return errorResult(error ?? 'page not found');
+      if (entry.kind !== 'form') return errorResult('this page is not a form (kind "form")');
+      if (title === undefined && description === undefined && submitButton === undefined && isPublic === undefined && fields === undefined) {
+        return errorResult('nothing to change: give at least one of title, description, submitButton, public, fields');
+      }
+      // A new field adds a column to the paired table: that is a write to the table, with the table's own access check.
+      if (fields?.some((f) => f.columnId === undefined)) {
+        const { form } = await readFormDefinition(entry);
+        if (!form.table.id) return errorResult(`the table paired with this form was not found (looked for "${form.table.path}")`);
+        const tableAccess = await checkTableRole(actor, form.table.id, 'editor');
+        if (tableAccess.error) return errorResult(`cannot add a column to the paired table: ${tableAccess.error}`);
+      }
+      gitSync.recordEditor(entry.space, { name: actor.user.name, email: actor.user.email });
+      let result;
+      try {
+        result = await updateFormDefinition(entry, { title, description, submitButton, public: isPublic, fields: toFieldInputs(fields) }, etag);
+      } catch (updateErr) {
+        if (updateErr instanceof FormConflictError) return errorResult(`the form changed since it was read (current etag: ${updateErr.currentEtag}); read it again with read_page, apply your change and retry with this etag`);
+        if (updateErr instanceof HttpError) return errorResult(updateErr.message);
+        throw updateErr;
+      }
+      gitSync.noteActivity(entry.space);
+      recordAudit(actor.user.id, 'page.updated', id, { source: 'mcp', tool: 'update_form', columnsAdded: result.columnsAdded.length });
+      const { form } = await readFormDefinition(await storage.requireEntry(id));
+      return structuredResult({ ...result.meta, form, etag: result.etag, tableId: result.tableId, columnsAdded: result.columnsAdded });
+    },
+  );
+
+  server.registerTool(
+    'convert_canvas_to_board',
+    {
+      outputSchema: outputSchemas.convert_canvas_to_board,
+      annotations: WRITE_ADDITIVE,
+      title: 'Convert a canvas to a board',
+      description:
+        'Makes a NEW editable Folio board (Excalidraw) from an Obsidian canvas page (kind "canvas"), like "Convert to Folio board" in the web app; the canvas itself is not changed. Groups become frames, cards become labelled rectangles (notes and files as their title with a link), connections become arrows; what could not be carried over is listed in `report.losses`. The board goes next to the canvas unless `parentPath` is given, and is committed at once as the connected user. Requires read access to the canvas, an editor role in the space and a write-scoped token.',
+      inputSchema: {
+        id: z.string().describe('Page id of the canvas (kind "canvas")'),
+        title: z.string().min(1).max(200).optional().describe('Title of the new board (default "<canvas title> (board)")'),
+        parentPath: z.string().optional().describe('Folder for the board, relative to the space root (default: the canvas\'s folder)'),
+      },
+    },
+    async ({ id, title, parentPath }) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      const { entry, error } = await checkPageRole(actor, id, 'viewer');
+      if (error || !entry) return errorResult(error ?? 'page not found');
+      if (entry.kind !== 'canvas') return errorResult('this page is not a canvas (kind "canvas")');
+      const err = await checkSpaceRole(actor, entry.space, 'editor');
+      if (err) return errorResult(err);
+      const agentErr = await checkAgentWriteAllowed(actor.user, entry.space, parentPath ?? entry.dirPath);
+      if (agentErr) return errorResult(agentErr);
+      const author = { name: actor.user.name, email: actor.user.email };
+      gitSync.recordEditor(entry.space, author);
+      let result;
+      try {
+        result = await convertCanvasPage(entry, viewerOf(actor), { title, parentPath }, author, publicUrlOrOrigin(options.origin ?? ''));
+      } catch (convertErr) {
+        if (convertErr instanceof HttpError) return errorResult(convertErr.message);
+        throw convertErr;
+      }
+      await recordPageChange(actor.user.id, 'page.create', result.board.id, entry.space, undefined, snapshotPageChange(await storage.requireEntry(result.board.id)));
+      recordAudit(actor.user.id, 'page.created', result.board.id, { from: 'canvas', canvas: entry.id, source: 'mcp', tool: 'convert_canvas_to_board' });
+      return structuredResult(result);
+    },
+  );
+
+  // ---------------------------------------------------------------------
+  // Tags, properties and bases (16.10.2026). Each routes through the SAME code as the REST route of the web app
+  // (tags.ts renameTag, properties.ts savePageProperties, bases/service.ts writeBase, storage.createPage) —
+  // the access rules, the Git commit and the audit row are those routes'.
+  // ---------------------------------------------------------------------
+
+  server.registerTool(
+    'rename_tag',
+    {
+      outputSchema: outputSchemas.rename_tag,
+      annotations: { ...WRITE_OVERWRITES, idempotentHint: false }, // rewrites tags in many files; renaming the same pair again finds nothing
+      title: 'Rename a tag',
+      description:
+        'Renames a tag across one space, like the tag rename in the web app: `#from` in page bodies (never in code, links or HTML), `from` in tags:/labels: front matter (each entry edited in place, in its own style; labels: stays labels:), and the tags of tables, forms, boards, PDFs and Office files; a child tag from/x becomes to/x. Everything else in a page stays byte for byte. One Git commit authored by the connected user. Only pages the caller can edit are changed; pages the caller can open but not edit are counted in pagesSkipped and keep the old tag (pages the caller cannot open are never changed or counted). If `to` already exists the tags merge. Names are normalized (lowercase, no #). Requires an editor role in the space and a write-scoped token.',
+      inputSchema: {
+        space: z.string().describe('Space slug'),
+        from: z.string().describe('Tag to rename, e.g. "project/alpha" (a leading # is ignored); its children are renamed too'),
+        to: z.string().describe('New name, e.g. "project/beta"; must contain a letter and must not look like a colour (#fff)'),
+      },
+    },
+    async ({ space, from, to }) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      const err = await checkSpaceRole(actor, space, 'editor');
+      if (err) return errorResult(err);
+      try {
+        const names = normalizeRenameTags(from, to);
+        const result = await renameTag({ space, from: names.from, to: names.to, user: actor.user, actor: { name: actor.user.name, email: actor.user.email } });
+        recordAudit(actor.user.id, 'space.tag_rename', space, { from: names.from, to: names.to, pagesChanged: result.pagesChanged, source: 'mcp', tool: 'rename_tag' });
+        return structuredResult({ from: names.from, to: names.to, ...result });
+      } catch (renameErr) {
+        if (renameErr instanceof HttpError) return errorResult(renameErr.message);
+        throw renameErr;
+      }
+    },
+  );
+
+  server.registerTool(
+    'set_page_properties',
+    {
+      outputSchema: outputSchemas.set_page_properties,
+      annotations: WRITE_OVERWRITES,
+      title: "Set a page's properties",
+      description:
+        "Writes a page's properties (front matter) through the same API as the web app's properties panel, for any page kind: document, data table, form (in their own front matter next to the keys that define the table or form), board, PDF, Office file, Obsidian canvas and base (in a sidecar .folio/<path>.props.yaml). " +
+        'By default `properties` is the WHOLE map: keys you leave out are removed, a key you send with its current value is left byte for byte as it is, `null` writes an empty property (`key:`; on a document it removes order, status, icon and cover). Exceptions: Folio\'s own keys on a document (id, order, status, icon, cover) holding a value Folio would not write itself, and an existing `labels:` list, stay unless you name them. ' +
+        'Set `merge: true` to change only the keys you give: every other key stays, `null` removes a key (to keep an empty value, use the whole-map mode). ' +
+        'New tags are written as tags:; a page whose only list is labels: keeps it (edited in place). Table and form keys that define the table or form (columns, views, fields, …) are refused. ' +
+        'Pass `etag` (the one a previous set_page_properties call returned) to refuse the write when the properties changed meanwhile: the error then carries the current etag and properties; without it the write goes through (merge mode always guards its own read-modify-write). Returns the properties after the write and their new etag. Requires an editor role and a write-scoped token. ' + CONTENT_IS_DATA_NOTE,
+      inputSchema: {
+        id: z.string().describe('Page id'),
+        properties: z.record(z.string().min(1).max(100), z.unknown()).describe('Property name -> value (string, number, boolean, null, or a list/map of them). Dates as "2026-10-16". The whole map, or only the keys to change with merge: true'),
+        etag: z.string().nullable().optional().describe('Etag of the properties you based the change on; a mismatch refuses the write (null: the page had no front matter)'),
+        merge: z.boolean().optional().describe('true: change only the given keys (null removes a key); false/omitted: `properties` is the whole map'),
+      },
+    },
+    async ({ id, properties, etag, merge }) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      const { entry, error } = await checkPageRole(actor, id, 'editor');
+      if (error || !entry) return errorResult(error ?? 'page not found');
+      if (propertiesStoreOf(entry.kind) === 'none') return errorResult('this page has no properties');
+      const audit = { source: 'mcp', tool: 'set_page_properties' };
+      const conflict = (current: Awaited<ReturnType<typeof readPageProperties>>): CallToolResult =>
+        errorResult(`the properties of this page changed since they were read (current etag: ${current.etag ?? 'null'}); re-read, apply your change on top and retry with this etag. Current properties: ${JSON.stringify(current.properties)}`);
+      try {
+        // Merge mode reads the current map, applies the patch and writes the whole map back guarded by that etag;
+        // when the caller gave none and someone edited in between, it re-reads and tries again (twice at most).
+        for (let attempt = 0; ; attempt++) {
+          let body: { properties: Record<string, unknown>; etag?: string | null };
+          if (merge) {
+            assertNoReservedKey(entry.kind, properties);
+            const current = await readPageProperties(entry, true);
+            if (!current.canEdit) return errorResult('the properties of this page cannot be edited (its front matter or sidecar cannot be parsed); fix it in the file first');
+            if (etag !== undefined && etag !== current.etag) return conflict(current);
+            body = { properties: mergePropertyPatch(entry.kind, current.properties, properties), etag: current.etag };
+          } else {
+            body = { properties, ...(etag !== undefined ? { etag } : {}) };
+          }
+          try {
+            const result = await savePageProperties(entry, actor.user, body, audit);
+            const r = result.response;
+            return structuredResult({ id, written: result.written, changedKeys: result.keys, etag: r.etag, properties: r.properties, types: r.types, foreign: r.foreign, readOnly: r.readOnly });
+          } catch (saveErr) {
+            if (merge && etag === undefined && attempt < 2 && saveErr instanceof PropertiesConflictError) continue;
+            throw saveErr;
+          }
+        }
+      } catch (writeErr) {
+        if (writeErr instanceof PropertiesConflictError) return conflict(writeErr.current);
+        if (writeErr instanceof HttpError) return errorResult(writeErr.message);
+        throw writeErr;
+      }
+    },
+  );
+
+  server.registerTool(
+    'save_base',
+    {
+      outputSchema: outputSchemas.save_base,
+      annotations: { ...WRITE_OVERWRITES, idempotentHint: false }, // creating the same path twice is refused
+      title: 'Create or update a base',
+      description:
+        'Creates a base (an Obsidian `.base` file, kind "base": a saved query over the pages of a space) or replaces the YAML of an existing one. Give `path` (e.g. "views/tasks.base", must end in .base, must not exist yet) to create, or `id` (a base page id) to update; `yaml` is the whole file: top-level filters, formulas, properties, summaries, views (type table/cards/list, name, filters, order, sort, groupBy, limit). The YAML is checked before anything is written: invalid YAML or a file too large comes back as an error with the line number. Keys this server does not know are kept as written; parts it reads leniently (a filter of an unknown shape) come back in `warnings`. Use read_page on a base for an example of its YAML, list_properties for the property names (note.<key>, file.name, file.mtime, formula.<name>). Returns id, path, etag and a preview of the first view (columns and its first 10 rows, as query_base would answer). One change to one file, committed to Git as the connected user. Requires an editor role and a write-scoped token.',
+      inputSchema: {
+        space: z.string().describe('Space slug'),
+        yaml: z.string().describe('The whole .base file as YAML text'),
+        path: z.string().optional().describe('Create: path relative to the space root, ending in .base, e.g. "views/tasks.base" (folders are created); exactly one of path and id'),
+        id: z.string().optional().describe('Update: page id of the base to replace; exactly one of path and id'),
+        etag: z.string().optional().describe('Update only: the etag the file had when you read it (from this tool); a mismatch refuses the write. Without it the write goes through'),
+      },
+    },
+    async ({ space, yaml, path: requestedPath, id, etag }) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      if ((requestedPath === undefined) === (id === undefined)) return errorResult('provide exactly one of path (create a base) or id (update one)');
+      if (etag !== undefined && id === undefined) return errorResult('etag only applies to an update (id)');
+      const parsed = parseBaseConfig(yaml);
+      if (parsed.error) return errorResult(`not a valid base: ${baseErrorText(parsed.error)}`);
+      if (yaml.length > BASE_MAX_BYTES) return errorResult(`the base file would be too large (over ${BASE_MAX_BYTES / 1024} KB)`);
+      const warnings = [...parsed.warnings];
+
+      let baseId: string;
+      let created: boolean;
+      let written = true;
+      if (id !== undefined) {
+        const { entry, error } = await checkPageRole(actor, id, 'editor');
+        if (error || !entry || entry.space !== space) return errorResult(error ?? 'page not found');
+        if (entry.kind !== 'base') return errorResult('this page is not a base (kind "base")');
+        gitSync.recordEditor(entry.space, { name: actor.user.name, email: actor.user.email });
+        try {
+          const result = await writeBase(id, { etag, source: yaml });
+          written = result.written;
+        } catch (writeErr) {
+          if (writeErr instanceof BaseConflictError) return errorResult(`the base changed since it was read (current etag: ${writeErr.current.etag}); re-read it with read_page, apply your change and retry with this etag`);
+          if (writeErr instanceof HttpError) return errorResult(writeErr.message);
+          throw writeErr;
+        }
+        if (written) {
+          gitSync.noteActivity(entry.space);
+          recordAudit(actor.user.id, 'page.base', id, { mode: 'source', source: 'mcp', tool: 'save_base' });
+        }
+        baseId = id;
+        created = false;
+      } else {
+        const err = await checkSpaceRole(actor, space, 'editor');
+        if (err) return errorResult(err);
+        let relPath: string;
+        try {
+          relPath = storage.normalizeDirParam(requestedPath as string);
+        } catch (pathErr) {
+          return errorResult(pathErr instanceof HttpError ? pathErr.message : 'invalid path');
+        }
+        const parts = relPath.split('/');
+        const fileName = parts.pop() ?? '';
+        if (!/\.base$/i.test(fileName) || fileName.length <= '.base'.length) return errorResult('path must be a file name ending in .base, e.g. "views/tasks.base"');
+        const parentPath = parts.join('/');
+        const agentErr = await checkAgentWriteAllowed(actor.user, space, parentPath);
+        if (agentErr) return errorResult(agentErr);
+        if (await storage.getEntryIdByExactPath(space, relPath)) return errorResult(`a page already exists at ${relPath}; pass its id to update it`);
+        gitSync.recordEditor(space, { name: actor.user.name, email: actor.user.email });
+        let meta;
+        try {
+          meta = await storage.createPage({ space, parentPath, title: fileName.slice(0, -'.base'.length), kind: 'base' }, { baseSource: yaml }, resolveTextLanguage(actor.user.lang));
+        } catch (createErr) {
+          if (createErr instanceof HttpError) return errorResult(createErr.message);
+          throw createErr;
+        }
+        gitSync.noteActivity(space);
+        recordAudit(actor.user.id, 'page.created', meta.id, { source: 'mcp', tool: 'save_base', kind: 'base' });
+        if (meta.path !== relPath) warnings.push(`created as ${meta.path}: the name ${relPath} was adjusted to a file name the space accepts`);
+        baseId = meta.id;
+        created = true;
+      }
+
+      const entry = await storage.requireEntry(baseId);
+      const { text } = await storage.readBaseRaw(baseId);
+      const preview = await queryBaseForAgent(entry, viewerOf(actor), { limit: MCP_BASE_PREVIEW_ROWS });
+      return structuredResult({ id: baseId, space: entry.space, path: entry.relPath, created, written, etag: baseEtag(text), warnings, preview });
     },
   );
 
