@@ -6,11 +6,13 @@ import { useTranslation } from 'react-i18next';
 import { ImagePlus, X } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
-import { describePath, MAX_IMAGE_BYTES, sendFeedback } from '../../sentry';
+import { describePath, isReplayAvailable, MAX_IMAGE_BYTES, REPLAY_UNMASK_CLASS, sendFeedback } from '../../sentry';
 import '../i18n/register';
 
 export interface ReportProblemDialogProps {
   onClose: () => void;
+  /** The Sentry event of the error screen the person is reporting from; the report is linked to it. */
+  eventId?: string;
 }
 
 function firstImage(files: FileList | File[] | null | undefined): File | null {
@@ -22,7 +24,7 @@ function firstImage(files: FileList | File[] | null | undefined): File | null {
  * "Report a problem": a message, an optional screenshot (picked or pasted), and the page the person is on. Goes to
  * Sentry only (web/src/sentry). The menu offers it only while error reporting is configured.
  */
-export function ReportProblemDialog({ onClose }: ReportProblemDialogProps) {
+export function ReportProblemDialog({ onClose, eventId }: ReportProblemDialogProps) {
   const { t } = useTranslation('app');
   const toast = useToast();
   const location = useLocation();
@@ -32,6 +34,9 @@ export function ReportProblemDialog({ onClose }: ReportProblemDialogProps) {
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const replayAvailable = isReplayAvailable();
+  const [attachReplay, setAttachReplay] = useState(true);
+  const [replayInfo, setReplayInfo] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -69,7 +74,13 @@ export function ReportProblemDialog({ onClose }: ReportProblemDialogProps) {
     try {
       const pageId = /^\/s\/[^/]+\/p\/([^/]+)/.exec(location.pathname)?.[1];
       const cached = pageId ? queryClient.getQueryData<{ kind?: string }>(['page', decodeURIComponent(pageId)]) : undefined;
-      await sendFeedback({ message: text, context: describePath(location.pathname, cached?.kind), image });
+      await sendFeedback({
+        message: text,
+        context: describePath(location.pathname, cached?.kind),
+        image,
+        ...(eventId ? { associatedEventId: eventId } : {}),
+        attachReplay: replayAvailable && attachReplay,
+      });
       toast(t('feedback.thanks'), 'info');
       onClose();
     } catch {
@@ -139,6 +150,28 @@ export function ReportProblemDialog({ onClose }: ReportProblemDialogProps) {
             </button>
           )}
         </div>
+        {replayAvailable && (
+          <div className={`text-xs ${REPLAY_UNMASK_CLASS}`}>
+            <label className="flex items-start gap-2 text-neutral-700 dark:text-neutral-200">
+              <input type="checkbox" checked={attachReplay} onChange={(e) => setAttachReplay(e.target.checked)} className="mt-0.5" data-testid="feedback-replay" />
+              <span>{t('feedback.attachReplay')}</span>
+            </label>
+            <button
+              type="button"
+              aria-expanded={replayInfo}
+              onClick={() => setReplayInfo((v) => !v)}
+              className="ml-6 mt-1 text-neutral-500 underline underline-offset-2 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
+            >
+              {t('feedback.replayWhat')}
+            </button>
+            {replayInfo && (
+              <p role="note" className="ml-6 mt-1 text-neutral-500 dark:text-neutral-400">
+                {t('feedback.replayInfo')}
+              </p>
+            )}
+          </div>
+        )}
+        {eventId && <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('feedback.forError')}</p>}
         <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('feedback.privacy')}</p>
         {error && (
           <p role="alert" className="text-xs text-red-600 dark:text-red-400">

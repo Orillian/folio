@@ -68,6 +68,9 @@ services:
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      SENTRY_REPLAY: ${SENTRY_REPLAY:-}
+      SENTRY_REPLAY_ON_ERROR: ${SENTRY_REPLAY_ON_ERROR:-}
+      SENTRY_REPLAY_SESSION_RATE: ${SENTRY_REPLAY_SESSION_RATE:-}
       # Optional; empty or unset means off (the server reads an empty value as
       # "not set").
       TRUST_PROXY: ${TRUST_PROXY:-}

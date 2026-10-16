@@ -1,3 +1,4 @@
+import { loadedBundleId } from './build-version';
 import { getConnectivity } from './offline/connectivity';
 
 /**
@@ -42,7 +43,84 @@ function messageOf(error: unknown): string {
   return '';
 }
 
-const RELOAD_FLAG = 'folio:stale-chunk-reload';
+/**
+ * Reload bookkeeping, kept in sessionStorage so it survives the reload it
+ * guards: `{ <key>: <time of the reload for it> }`. The key is the failing
+ * chunk's path (or, when the browser does not name it, the running build).
+ *
+ * It is deliberately NOT cleared when the shell renders. It used to be
+ * (main.tsx wiped the flag after the first render), and that made a chunk
+ * that stays missing loop forever: reload, the shell renders, the flag is
+ * gone, the same lazy chunk fails again, reload, ... (16.10.2026). Entries
+ * expire by time instead: one reload per key per RELOAD_WINDOW_MS.
+ */
+const RELOAD_LOG = 'folio:stale-chunk-reloads';
+export const RELOAD_WINDOW_MS = 60_000;
+/** Whatever the keys, no more reloads than this inside the window — a safety net against many different chunks failing in turn. */
+const MAX_RELOADS_IN_WINDOW = 3;
+/** How long a reload that has been asked for counts as "on its way" — the page is leaving, nothing else should react. */
+const PENDING_MS = 5_000;
+
+type ReloadLog = Record<string, number>;
+let memoryLog: ReloadLog = {};
+let pendingUntil = 0;
+const reported = new Set<string>();
+
+function readLog(now: number): ReloadLog {
+  let log: ReloadLog = memoryLog;
+  try {
+    const raw = sessionStorage.getItem(RELOAD_LOG);
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) log = { ...memoryLog, ...(parsed as ReloadLog) };
+    }
+  } catch {
+    // sessionStorage unavailable or garbled — fall back to what this document remembers.
+  }
+  const fresh: ReloadLog = {};
+  for (const [key, at] of Object.entries(log)) {
+    if (typeof at === 'number' && now - at < RELOAD_WINDOW_MS && at <= now + RELOAD_WINDOW_MS) fresh[key] = at;
+  }
+  return fresh;
+}
+
+function writeLog(log: ReloadLog): void {
+  memoryLog = log;
+  try {
+    sessionStorage.setItem(RELOAD_LOG, JSON.stringify(log));
+  } catch {
+    // ignore — see readLog()
+  }
+}
+
+/** Forgets everything this module remembers, as a freshly loaded page would. Tests only. */
+export function resetStaleChunkStateForTests(): void {
+  memoryLog = {};
+  pendingUntil = 0;
+  reported.clear();
+  try {
+    sessionStorage.removeItem(RELOAD_LOG);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * What the failure is about: the chunk's path when the browser's message
+ * names it (Chrome and Firefox do), else the build this tab is running
+ * (Safari's "Importing a module script failed" names nothing).
+ */
+export function staleChunkKey(error: unknown): string {
+  const match = /(?:https?:)?\/\/[^\s'")]+|\/assets\/[^\s'")]+/.exec(messageOf(error));
+  if (match) {
+    try {
+      return `chunk:${new URL(match[0], window.location.href).pathname}`;
+    } catch {
+      return `chunk:${match[0]}`;
+    }
+  }
+  return `build:${loadedBundleId() ?? 'unknown'}`;
+}
 
 function isOffline(): boolean {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
@@ -68,42 +146,14 @@ export async function quietImport<T>(load: () => Promise<T>): Promise<T | undefi
   }
 }
 
-function alreadyReloaded(): boolean {
-  try {
-    return sessionStorage.getItem(RELOAD_FLAG) === '1';
-  } catch {
-    // sessionStorage unavailable (private mode, disabled storage) — treat as
-    // "not yet reloaded"; worst case a genuinely broken deploy reloads on
-    // every stale-chunk error instead of stopping after one, which is still
-    // better than the dead red banner this replaces.
-    return false;
-  }
-}
-
-function markReloaded(): void {
-  try {
-    sessionStorage.setItem(RELOAD_FLAG, '1');
-  } catch {
-    // ignore — see alreadyReloaded()
-  }
-}
-
-/** Call once the app has actually rendered — a real load means the reload (if any) worked. */
-export function clearStaleChunkReloadFlag(): void {
-  try {
-    sessionStorage.removeItem(RELOAD_FLAG);
-  } catch {
-    // ignore — see alreadyReloaded()
-  }
-}
-
 /**
- * If `error` looks like a stale-chunk failure and this tab hasn't already
- * tried reloading for one, reloads the page (once) and returns `true` — the
- * caller should stop, the page is on its way out. Returns `false` either
- * because `error` isn't a stale-chunk error, or because a reload already
- * happened and didn't help (a real outage, not a stale tab) — the caller
- * should show its own error text instead of looping forever.
+ * If `error` looks like a stale-chunk failure, reloads the page and returns
+ * `true` — the caller should stop, the page is on its way out. At most one
+ * reload per failing chunk (or build) per RELOAD_WINDOW_MS. Returns `false`
+ * because `error` isn't a stale-chunk error, or because a reload for it
+ * already happened a moment ago and didn't help (a chunk that is really gone,
+ * a server problem) — the caller should show its own error instead of
+ * looping forever.
  */
 export function tryReloadForStaleChunk(error: unknown): boolean {
   if (!isStaleChunkError(error)) return false;
@@ -115,9 +165,33 @@ export function tryReloadForStaleChunk(error: unknown): boolean {
   // everything disappearing"). Same for an import made in the background
   // (`quietImport`): nobody asked for it, so nobody's page reloads over it.
   if (quiet > 0 || isOffline()) return false;
-  if (alreadyReloaded()) return false;
-  markReloaded();
+  const now = Date.now();
+  // Several failures arrive together (vite:preloadError, then the boundary that
+  // caught the same rejection): the second must not read the first one's
+  // reload as "it already failed once" and put an error screen up over a page
+  // that is already leaving.
+  if (now < pendingUntil) return true;
+  const key = staleChunkKey(error);
+  const log = readLog(now);
+  if (log[key] !== undefined || Object.keys(log).length >= MAX_RELOADS_IN_WINDOW) return false;
+  log[key] = now;
+  writeLog(log);
+  pendingUntil = now + PENDING_MS;
   window.location.reload();
+  return true;
+}
+
+/**
+ * Whether this stale-chunk failure has not been reported yet: the first call
+ * for a chunk (or build) says yes, the rest no. An error screen can render
+ * several times for one broken chunk (retries, remounts) and should land in
+ * Sentry once.
+ */
+export function shouldReportStaleChunk(error: unknown): boolean {
+  if (!isStaleChunkError(error)) return true;
+  const key = staleChunkKey(error);
+  if (reported.has(key)) return false;
+  reported.add(key);
   return true;
 }
 

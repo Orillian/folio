@@ -55,6 +55,7 @@ import {
   type ThrottledElementsWriter,
 } from './boardYdoc';
 import { mapToExcalidrawLangCode } from './langCode';
+import { interceptHelpDialogClick } from './helpDialogLinks';
 import { folioLibraryAdapter } from './libraries/libraryPersistence';
 import { BoardModeToggle } from './BoardModeToggle';
 import {
@@ -1672,6 +1673,11 @@ export default function BoardCanvas({ pageId, shareToken, shareMode, onEditingCh
       onPointerDownCapture={touchCanvas}
       onWheelCapture={touchCanvas}
       onKeyDownCapture={touchCanvas}
+      // Excalidraw's Help dialog "Found an issue?" opens Folio's report dialog instead of Excalidraw's GitHub (helpDialogLinks.ts).
+      onClickCapture={(event) =>
+        void interceptHelpDialogClick(event, () => apiRef.current?.updateScene({ appState: { openDialog: null } } as never))
+      }
+      onAuxClickCapture={(event) => void interceptHelpDialogClick(event, () => {})}
     >
       <Excalidraw
         excalidrawAPI={(api) => {

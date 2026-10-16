@@ -30,6 +30,19 @@ describe('scrubBreadcrumb', () => {
     expect(scrubBreadcrumb({ category: 'ui.input', message: 'typed' })).toBeNull();
     expect(scrubBreadcrumb({ category: 'fetch', data: { url: '/api/a?share=T', status_code: 200 } })).toEqual({ category: 'fetch', data: { url: '/api/a', status_code: 200 } });
   });
+
+  it('keeps a click as its selector only: attribute values, element text and data are gone', () => {
+    const out = scrubBreadcrumb({
+      type: 'default',
+      category: 'ui.click',
+      message: 'div#root > button.save[aria-label="Delete Q3 plan"][title=\'Secret\']',
+      data: { text: 'Q3 plan', nodeId: 4 },
+      innerText: 'Q3 plan',
+    } as never);
+    expect(out).toEqual({ type: 'default', category: 'ui.click', message: 'div#root > button.save[aria-label][title]' });
+    expect(JSON.stringify(out)).not.toMatch(/Q3|Secret/);
+    expect(scrubBreadcrumb({ category: 'ui.click', message: 'x'.repeat(900) })?.message).toHaveLength(300);
+  });
 });
 
 describe('scrubEvent', () => {

@@ -25,6 +25,10 @@ import { AcceptInviteView } from './invites/AcceptInviteView';
 import { PublicHostRoutes, PublicPathRoutes } from './public/PublicSiteRoutes';
 import { readHostSiteSlug } from './public/publicSite';
 import { SentryHost } from '../sentry/SentryHost';
+import { ReportProblemHost } from './feedback/reportProblem';
+import { NewVersionNotice } from './ui/NewVersionNotice';
+import { ErrorBoundary } from './ui/ErrorBoundary';
+import { PageCrashed } from './routes/PageCrashed';
 import './i18n/register';
 
 // The settings page carries the CodeMirror CSS/HTML modes and the CSS sanitizer; only space admins ever open it, so it is a chunk of its own
@@ -71,7 +75,13 @@ export function App() {
         <ToastProvider>
           <BrowserRouter>
             <SentryHost />
-            <AppRoutes />
+            <ReportProblemHost />
+            <NewVersionNotice />
+            {/* Outermost net: a lazy chunk that fails outside the Shell (a public site, a shared page, the admin
+                pages) would otherwise take the whole tree down to a blank screen. */}
+            <ErrorBoundary fallback={(error, reset, eventId) => <PageCrashed onRetry={reset} eventId={eventId} error={error} />}>
+              <AppRoutes />
+            </ErrorBoundary>
           </BrowserRouter>
         </ToastProvider>
       </SettingsProvider>

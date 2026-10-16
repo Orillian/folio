@@ -53,9 +53,30 @@ interface Breadcrumbish {
   data?: Record<string, unknown>;
 }
 
-/** Breadcrumb filter: UI input and console breadcrumbs are dropped (they may hold typed text), the rest lose query strings. */
+/**
+ * A click breadcrumb's message is the CSS path of the element (`div#root > button.save[aria-label="Delete \u201cQ3 plan\u201d"]`):
+ * ids, classes and tags are interface structure and stay; attribute VALUES (aria-label, title, alt, name) can carry a
+ * page title or a person's text, so only the attribute names are kept. Length is capped.
+ */
+export function scrubClickSelector(message: string): string {
+  return message.replace(/\[([\w:-]+)=(?:"[^"]*"|'[^']*')\]/g, '[$1]').slice(0, 300);
+}
+
+const CLICK_KEYS = new Set(['type', 'category', 'level', 'timestamp']);
+
+/**
+ * Breadcrumb filter: UI input and console breadcrumbs are dropped (they may hold typed text); a click keeps its
+ * selector (without attribute values) and nothing else, so the report shows the sequence of actions without any
+ * text the person saw; the rest lose query strings.
+ */
 export function scrubBreadcrumb<B extends Breadcrumbish>(crumb: B): B | null {
-  if (crumb.category === 'console' || crumb.category === 'ui.input' || crumb.category === 'ui.click') return null;
+  if (crumb.category === 'console' || crumb.category === 'ui.input') return null;
+  if (crumb.category === 'ui.click') {
+    const click: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(crumb)) if (CLICK_KEYS.has(key)) click[key] = value;
+    if (typeof crumb.message === 'string') click.message = scrubClickSelector(crumb.message);
+    return click as unknown as B;
+  }
   const next = { ...crumb };
   if (next.data) next.data = scrubRecord(next.data);
   if (typeof next.message === 'string') next.message = scrubText(next.message);

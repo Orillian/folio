@@ -192,7 +192,7 @@ export function Shell() {
           <SetHeaderInfoContext.Provider value={setHeaderInfo}>
             <SetPagePresenceContext.Provider value={setPagePresence}>
               <PropertiesSlotContext.Provider value={propertiesSlot}>
-                <ErrorBoundary resetKey={location.pathname} fallback={(_error, reset) => <PageCrashed onRetry={reset} />}>
+                <ErrorBoundary resetKey={location.pathname} fallback={(error, reset, eventId) => <PageCrashed onRetry={reset} eventId={eventId} error={error} />}>
                   <Outlet />
                 </ErrorBoundary>
               </PropertiesSlotContext.Provider>

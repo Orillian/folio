@@ -750,8 +750,9 @@ to a third party. There is one opt-in exception for people who run a public
 demo: set `FOLIO_POSTHOG_KEY` to a PostHog project of your own and Folio sends
 anonymous events (page kinds, space slugs, never content). Without that key
 nothing happens. The same holds for the optional error reporting to a Sentry
-project of your own (`SENTRY_DSN`, with a "Report a problem" menu item): no
-DSN, no library, no connection. Details:
+project of your own (`SENTRY_DSN`, with a "Report a problem" menu item and an
+optional recording of recent actions with all text masked, off with
+`SENTRY_REPLAY=0`): no DSN, no library, no connection. Details:
 [docs/INSTALL.md](docs/INSTALL.md#optional-analytics-hook-off-by-default) and
 [docs/INSTALL.md](docs/INSTALL.md#optional-error-reporting-off-by-default).
 

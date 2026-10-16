@@ -116,3 +116,16 @@ html[data-theme='dark'] ::selection { background: #23445c; color: #f5f5f5; }
   line-height: 1.45;
 }
 
+
+/*
+ * Excalidraw's Help dialog ("?" on a board) links to Excalidraw's blog, YouTube channel and GitHub issues. The
+ * promotion is hidden for good; "Found an issue?" stays only while error reporting is on (html[data-folio-report],
+ * set by initSentry), where diagrams/helpDialogLinks.ts turns it into Folio's own "Report a problem" dialog.
+ */
+.HelpDialog__btn[href*='plus.excalidraw.com'],
+.HelpDialog__btn[href*='youtube.com/@excalidraw'] {
+  display: none !important; /* Excalidraw's own `.excalidraw .HelpDialog__btn { display: flex }` is more specific */
+}
+html:not([data-folio-report='on']) .HelpDialog__btn[href*='github.com/excalidraw/excalidraw/issues'] {
+  display: none !important;
+}

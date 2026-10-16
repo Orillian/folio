@@ -154,7 +154,10 @@ client IP data" for the project.
 
 Folio can report its own errors to a [Sentry](https://sentry.io) project that
 you own, and show a "Report a problem" item in the user menu that sends a
-message (and an optional screenshot) to the same project. Nothing is reported to
+message (an optional screenshot and, if the person leaves the box ticked, a
+masked recording of their recent actions) to the same project. The same dialog
+opens from the "Found an issue?" link in a board's help dialog and from a
+"Report a problem" button on the error screens, with the crash attached. Nothing is reported to
 the Folio authors. It stays off until you set a DSN:
 
 | Setting | What it does |
@@ -163,6 +166,9 @@ the Folio authors. It stays off until you set a DSN:
 | `SENTRY_ENVIRONMENT` | The environment tag. Default `production` when `NODE_ENV=production`, otherwise `development`. |
 | `SENTRY_TRACES_SAMPLE_RATE` | Share of requests traced for performance, 0 to 1. Default `0.1`; `0` turns tracing off. |
 | `SENTRY_RELEASE` | The release name shown in Sentry. Default: the build's `FOLIO_RELEASE` (the image tag or short git sha when you build it with `--build-arg FOLIO_RELEASE=...`), or none. |
+| `SENTRY_REPLAY` | Session Replay in the browser, with all text hidden (see below). On when `SENTRY_DSN` is set; `0`, `false` or `off` turns it off. |
+| `SENTRY_REPLAY_ON_ERROR` | 0 to 1: the share of visits with an error whose last minute of actions is sent with the error. Default `1`. |
+| `SENTRY_REPLAY_SESSION_RATE` | 0 to 1: the share of whole visits recorded and sent from the start. Default `0`: nothing is sent unless there is an error or the person attaches it to a report. |
 | `SENTRY_PROFILES` | `1` adds CPU profiles to the traced requests. Default off. Uses the optional `@sentry/profiling-node` package; if it cannot load on your platform, profiling is skipped. |
 
 What is sent: unhandled errors in the server and in the browser, server
@@ -172,10 +178,27 @@ problem": the message they typed, a screenshot only if they attach or paste
 one, the page address without its query string, the page id and kind, the
 release and the browser.
 
+Recording of recent actions (Session Replay). Unless `SENTRY_REPLAY=0`, the
+browser keeps the last minute or so of what a person did in a tab (clicks,
+scrolling, which screens opened) in memory only. It leaves the browser in three
+cases: an error happens (`SENTRY_REPLAY_ON_ERROR`), the visit is among the
+sampled ones (`SENTRY_REPLAY_SESSION_RATE`), or the person leaves "Attach a
+recording of recent actions (text hidden)" ticked when sending a report (it is
+ticked by default and the person can untick it; unticked, nothing is sent and
+the buffer is not attached). Everything is masked by default: all text, form
+fields and images are replaced by placeholders, board drawings (canvas) and
+embedded frames are not recorded, and no request or response bodies or headers
+are captured. Only fixed interface chrome that is explicitly marked (the board
+View/Edit switch, the error screens, the report dialog) shows its words. Click
+trails keep the element's CSS path (tag, id, classes), never its text or
+labels.
+
 What is never sent: page content or titles, search words, text typed in forms
 and editors, request bodies, cookies, `Authorization` headers, query strings
 (share links and tokens ride in them; a share token in a path is replaced by
-`[token]`) and Session Replay is not used. Expected 4xx answers (not found,
+`[token]`). Page text, titles and typed text are masked in any recording, not
+removed from the page itself, so treat a recording as personal data of your
+users and keep the Sentry project private. Expected 4xx answers (not found,
 forbidden, validation, rate limits) are not reported. Sentry itself derives a
 country from the visitor's IP address when an event arrives; turn on "Prevent
 Storing of IP Addresses" in the project's Security & Privacy settings if you do

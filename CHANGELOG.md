@@ -4,6 +4,35 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ## [Unreleased]
 
+### Added
+
+- Error reporting can attach a recording of recent actions to a report (Sentry
+  Session Replay). Everything is masked: all text, form fields and images are
+  replaced by placeholders, board drawings and embedded frames are not recorded,
+  and no request bodies or headers are captured. The report dialog has a box
+  "Attach a recording of recent actions (text hidden)", ticked by default and
+  explained under "What is recorded?"; unticked, nothing is attached. `SENTRY_REPLAY=0`
+  turns recording off, `SENTRY_REPLAY_ON_ERROR` (default 1) sets the share of
+  visits with an error whose last minute is sent, and `SENTRY_REPLAY_SESSION_RATE`
+  (default 0) the share of whole visits recorded. Click trails keep only an
+  element's CSS path, never its text.
+
+### Changed
+
+- A tab left open across an update no longer reloads in a loop when a lazily loaded
+  part of the app (the graph, the space settings, the board editor) is gone from
+  the server. The page reloads at most once per missing file per minute; if the
+  file is still missing, an error screen says "Part of the app could not be loaded.
+  Reload the page." with Retry and, with error reporting on, "Report a problem",
+  and the error is reported once.
+- An open tab that is behind the server now shows "A new version of Folio is
+  available." with a Reload button, instead of failing later on a missing file.
+- With error reporting on, "Found an issue?" in a board's help dialog opens
+  Folio's own "Report a problem" dialog instead of Excalidraw's GitHub issues, and
+  Excalidraw's blog and YouTube links are hidden. The error screens have a
+  "Report a problem" button that attaches the crash to the report. With no
+  `SENTRY_DSN` the issue link is hidden too.
+
 ## [0.4.0] - 2026-10-16
 
 A graph of how your pages link, Obsidian canvases and bases, and a few tools for

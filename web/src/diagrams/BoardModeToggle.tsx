@@ -28,7 +28,7 @@ export function BoardModeToggle({ mode, onSelect }: BoardModeToggleProps) {
     <div
       role="group"
       aria-label={t('board.mode.aria')}
-      className="pointer-events-auto inline-flex items-center gap-0.5 rounded-full border border-neutral-300 bg-white/90 p-0.5 text-xs shadow-sm backdrop-blur dark:border-neutral-700 dark:bg-neutral-900/80"
+      className="sentry-unmask pointer-events-auto inline-flex items-center gap-0.5 rounded-full border border-neutral-300 bg-white/90 p-0.5 text-xs shadow-sm backdrop-blur dark:border-neutral-700 dark:bg-neutral-900/80"
     >
       {MODES.map((option) => (
         <button

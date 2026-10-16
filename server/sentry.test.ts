@@ -54,6 +54,24 @@ describe('sentryConfig', () => {
     expect(sentryConfig({ SENTRY_DSN: DSN, SENTRY_TRACES_SAMPLE_RATE: 'abc' })?.tracesSampleRate).toBe(0.1);
   });
 
+  it('hands the browser the replay settings: on with the DSN, buffer only by default, switchable with SENTRY_REPLAY', () => {
+    expect(sentryWebConfig({ SENTRY_DSN: DSN })?.replay).toEqual({ enabled: true, sessionSampleRate: 0, onErrorSampleRate: 1 });
+    expect(sentryWebConfig({ SENTRY_DSN: DSN, SENTRY_REPLAY: '0' })?.replay?.enabled).toBe(false);
+    expect(sentryWebConfig({ SENTRY_DSN: DSN, SENTRY_REPLAY: 'off' })?.replay?.enabled).toBe(false);
+    expect(sentryWebConfig({ SENTRY_DSN: DSN, SENTRY_REPLAY: '1' })?.replay?.enabled).toBe(true);
+    expect(sentryWebConfig({ SENTRY_DSN: DSN, SENTRY_REPLAY_SESSION_RATE: '0.1', SENTRY_REPLAY_ON_ERROR: '0.5' })?.replay).toEqual({
+      enabled: true,
+      sessionSampleRate: 0.1,
+      onErrorSampleRate: 0.5,
+    });
+    expect(sentryWebConfig({ SENTRY_DSN: DSN, SENTRY_REPLAY_SESSION_RATE: '9', SENTRY_REPLAY_ON_ERROR: 'x' })?.replay).toEqual({
+      enabled: true,
+      sessionSampleRate: 1,
+      onErrorSampleRate: 1,
+    });
+    expect(sentryWebConfig({})).toBeUndefined();
+  });
+
   it('takes the release from SENTRY_RELEASE, else FOLIO_RELEASE, and hands the browser no server-only switch', () => {
     expect(sentryConfig({ SENTRY_DSN: DSN, FOLIO_RELEASE: '0f425d6' })?.release).toBe('0f425d6');
     expect(sentryConfig({ SENTRY_DSN: DSN, FOLIO_RELEASE: '0f425d6', SENTRY_RELEASE: 'v1' })?.release).toBe('v1');

@@ -7,6 +7,9 @@
  *   SENTRY_TRACES_SAMPLE_RATE   0..1, the share of requests traced for performance (default 0.1; 0 turns tracing off).
  *   SENTRY_PROFILES             1/true to add CPU profiles to the traced requests (default off; needs @sentry/profiling-node).
  *   SENTRY_RELEASE              the release name; default FOLIO_RELEASE, which the image build sets to the short git sha.
+ *   SENTRY_REPLAY               Session Replay in the browser, all text/inputs/media masked: default on when SENTRY_DSN is set; 0/false/off disables.
+ *   SENTRY_REPLAY_ON_ERROR      0..1, the share of sessions with an error whose last minute is sent (default 1).
+ *   SENTRY_REPLAY_SESSION_RATE  0..1, the share of whole sessions recorded and sent (default 0: only the error buffer and "Report a problem").
  *
  * The same DSN, environment, release and sample rate are handed to the web app by GET /api/auth/state, which then
  * loads @sentry/react and offers the "Report a problem" dialog (web/src/sentry).
@@ -23,6 +26,7 @@ import type { SentryWebConfig } from '../shared/contracts.js';
 import { scrubEvent } from '../shared/sentryScrub.js';
 
 const DEFAULT_TRACES_SAMPLE_RATE = 0.1;
+const OFF_RE = /^(0|false|no|off)$/i;
 
 export interface SentryServerConfig extends SentryWebConfig {
   profiles: boolean;
@@ -55,6 +59,11 @@ export function sentryConfig(env: Env = process.env): SentryServerConfig | undef
     environment,
     ...(release ? { release } : {}),
     tracesSampleRate: clampRate(env.SENTRY_TRACES_SAMPLE_RATE, DEFAULT_TRACES_SAMPLE_RATE),
+    replay: {
+      enabled: !OFF_RE.test((env.SENTRY_REPLAY ?? '').trim()),
+      sessionSampleRate: clampRate(env.SENTRY_REPLAY_SESSION_RATE, 0),
+      onErrorSampleRate: clampRate(env.SENTRY_REPLAY_ON_ERROR, 1),
+    },
     profiles,
   };
 }

@@ -1,5 +1,10 @@
 {
   "_language": "English",
+  "newVersion": {
+    "message": "A new version of Folio is available.",
+    "reload": "Reload",
+    "dismiss": "Dismiss"
+  },
   "auth": {
     "loading": "Loading…",
     "connectionError": "Could not reach the Folio server.",
@@ -359,6 +364,7 @@
     },
     "page": {
       "crashed": "This page could not be shown.",
+      "chunkFailed": "Part of the app could not be loaded. Reload the page.",
       "loading": "Loading the page…",
       "notFound": "This page wasn't found — it may have been deleted or moved.",
       "loadFailed": "Could not load the page"
@@ -1019,7 +1025,12 @@
     "sending": "Sending…",
     "thanks": "Thank you, the report was sent.",
     "failed": "Could not send the report. Try again in a moment.",
-    "privacy": "Sent to the Folio team with the page address (without its query), the page type, the app version and your browser. Page text is not included."
+    "privacy": "Sent to the Folio team with the page address (without its query), the page type, the app version and your browser. Page text is not included.",
+    "attachReplay": "Attach a recording of recent actions (text hidden)",
+    "replayWhat": "What is recorded?",
+    "replayInfo": "The last minute or so of what you did in this tab: clicks, scrolling and which screens opened. All text, form fields and images are replaced by placeholders and board drawings are not recorded, so what you wrote and read stays on your device. Untick to send the report without it.",
+    "forError": "The report is linked to the error you just saw.",
+    "reportCrash": "Report a problem"
   },
   "oauth": {
     "resuming": "Continuing the connection…",

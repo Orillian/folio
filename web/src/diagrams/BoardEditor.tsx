@@ -4,6 +4,8 @@ import type { ShareLinkMode } from '@shared/contracts';
 import { useConnectivity } from '../app/offline/connectivity';
 import { isStaleChunkError } from '../app/stale-chunk';
 import { ErrorBoundary } from '../app/ui/ErrorBoundary';
+import { ReportCrashButton } from '../app/feedback/ReportCrashButton';
+import { REPLAY_UNMASK_CLASS } from '../sentry';
 import { isKeyboardOpen, keyboardSafeHeight, useVisualViewport } from '../app/visualViewport';
 import './i18n/register';
 
@@ -48,7 +50,7 @@ export function BoardEditor({ pageId, shareToken, shareMode, onEditingChange }: 
     <div ref={wrapRef} className="h-full w-full" style={height === null ? undefined : { height }}>
       <ErrorBoundary
         resetKey={`${shareToken || pageId}:${attempt}`}
-        fallback={(error) => <BoardEditorUnavailable error={error} onRetry={() => setAttempt((n) => n + 1)} />}
+        fallback={(error, _reset, eventId) => <BoardEditorUnavailable error={error} eventId={eventId} onRetry={() => setAttempt((n) => n + 1)} />}
       >
         <Suspense fallback={<BoardEditorFallback />}>
           <Canvas key={shareToken || pageId} pageId={pageId} shareToken={shareToken} shareMode={shareMode} onEditingChange={onEditingChange} />
@@ -67,7 +69,7 @@ export function BoardEditor({ pageId, shareToken, shareMode, onEditingChange }: 
  * moment the editor can be fetched — which this retries by itself when the
  * connection returns.
  */
-function BoardEditorUnavailable({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+function BoardEditorUnavailable({ error, onRetry, eventId }: { error: unknown; onRetry: () => void; eventId?: string }) {
   const { t } = useTranslation('diagrams');
   const connectivity = useConnectivity();
   const chunk = isStaleChunkError(error);
@@ -95,16 +97,19 @@ function BoardEditorUnavailable({ error, onRetry }: { error: unknown; onRetry: (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectivity]);
   return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-neutral-600 dark:text-neutral-300">
+    <div className={`flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-neutral-600 dark:text-neutral-300 ${REPLAY_UNMASK_CLASS}`}>
       <p className="max-w-md">{t(chunk && connectivity === 'offline' ? 'board.editorUnavailableOffline' : 'board.editorFailed')}</p>
-      <button
-        type="button"
-        disabled={chunk && connectivity === 'offline'}
-        onClick={retry}
-        className="rounded-md border border-neutral-300 px-2.5 py-1 text-xs hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-600 dark:hover:bg-neutral-800"
-      >
-        {t('board.retry')}
-      </button>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={chunk && connectivity === 'offline'}
+          onClick={retry}
+          className="rounded-md border border-neutral-300 px-2.5 py-1 text-xs hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-600 dark:hover:bg-neutral-800"
+        >
+          {t('board.retry')}
+        </button>
+        <ReportCrashButton eventId={eventId} />
+      </div>
     </div>
   );
 }

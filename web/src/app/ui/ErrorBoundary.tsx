@@ -1,9 +1,10 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { captureError } from '../../sentry';
+import { isStaleChunkError, shouldReportStaleChunk, tryReloadForStaleChunk } from '../stale-chunk';
 
 export interface ErrorBoundaryProps {
   /** What to show instead of the subtree that threw. `reset` renders the subtree again. */
-  fallback: (error: unknown, reset: () => void) => ReactNode;
+  fallback: (error: unknown, reset: () => void, eventId?: string) => ReactNode;
   /** A change of this value clears the error by itself — the route, the page id. */
   resetKey?: unknown;
   children: ReactNode;
@@ -12,6 +13,8 @@ export interface ErrorBoundaryProps {
 interface State {
   error: unknown;
   failed: boolean;
+  /** The Sentry event of this error, for "Report a problem" on the fallback; unset while reporting is off. */
+  eventId?: string;
 }
 
 /**
@@ -29,10 +32,23 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
   }
 
   componentDidCatch(error: unknown, info: ErrorInfo): void {
+    if (isStaleChunkError(error)) {
+      // A chunk the server no longer has: the first time, reload (once per chunk per minute, stale-chunk.ts) and
+      // report nothing — the page is leaving and the new build very likely has it. When the reload already
+      // happened and the chunk is still missing this is a real fault: report it, once, and keep the error screen.
+      if (tryReloadForStaleChunk(error)) return;
+      // eslint-disable-next-line no-console
+      console.error('[folio] chunk failed to load:', error);
+      if (!shouldReportStaleChunk(error)) return;
+      const eventId = captureError(error);
+      if (eventId) this.setState({ eventId });
+      return;
+    }
     // eslint-disable-next-line no-console
     console.error('[folio] render failed:', error, info.componentStack);
     // Reported only when the operator switched error reporting on (web/src/sentry); a no-op otherwise.
-    captureError(error);
+    const eventId = captureError(error);
+    if (eventId) this.setState({ eventId });
   }
 
   componentDidUpdate(previous: ErrorBoundaryProps): void {
@@ -40,10 +56,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
   }
 
   reset = (): void => {
-    this.setState({ error: null, failed: false });
+    this.setState({ error: null, failed: false, eventId: undefined });
   };
 
   render(): ReactNode {
-    return this.state.failed ? this.props.fallback(this.state.error, this.reset) : this.props.children;
+    return this.state.failed ? this.props.fallback(this.state.error, this.reset, this.state.eventId) : this.props.children;
   }
 }

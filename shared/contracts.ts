@@ -1511,6 +1511,21 @@ export interface SentryWebConfig {
   release?: string;
   /** 0..1, from SENTRY_TRACES_SAMPLE_RATE. */
   tracesSampleRate: number;
+  /**
+   * Session Replay (text, inputs and media masked; see web/src/sentry). Absent = off. Recording is a rolling in-memory
+   * buffer that leaves the browser only when an error happens, when a sampled session is recorded, or when the person
+   * attaches it to a "Report a problem".
+   */
+  replay?: SentryReplayConfig;
+}
+
+export interface SentryReplayConfig {
+  /** SENTRY_REPLAY (default on when SENTRY_DSN is set; 0/false/off turns it off). */
+  enabled: boolean;
+  /** 0..1, SENTRY_REPLAY_SESSION_RATE: the share of sessions recorded from the start and sent in full (default 0). */
+  sessionSampleRate: number;
+  /** 0..1, SENTRY_REPLAY_ON_ERROR: the share of sessions with an error whose last minute is sent (default 1). */
+  onErrorSampleRate: number;
 }
 
 /** PostHog project token (a public "phc_" key) and ingestion host, handed to the web app by GET /api/auth/state. */

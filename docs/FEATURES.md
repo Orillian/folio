@@ -756,7 +756,9 @@ setup and every connection in Administration → Chat integrations. Setup:
 a PostHog project of your own (`FOLIO_POSTHOG_KEY`) exists for people running
 a public demo; with no key set, no analytics library is loaded and no
 connection is opened. Likewise opt-in: error reporting to a Sentry project of
-your own (`SENTRY_DSN`) with a "Report a problem" item in the user menu; it
+your own (`SENTRY_DSN`) with a "Report a problem" item in the user menu, the board help dialog's
+"Found an issue?" link and the error screens; reports can carry a recording of
+recent actions with all text masked (`SENTRY_REPLAY=0` turns recording off); it
 never sends page content, and with no DSN set nothing is loaded or contacted
 (see [INSTALL.md](INSTALL.md#optional-error-reporting-off-by-default)). **Link previews:** the front page carries Open Graph and
 Twitter card tags (title, description, 1200x630 picture), neutral by default
