@@ -1,10 +1,13 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { Ref } from 'react';
+import { createPortal } from 'react-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Plus, TriangleAlert } from 'lucide-react';
+import { ChevronRight, Plus, SlidersHorizontal, TriangleAlert } from 'lucide-react';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
-import { useLocalStorage } from '../hooks';
+import { useLocalStorage, useOutsideClick } from '../hooks';
+import { PropertiesSlotContext } from '../header/propertiesSlot';
 import { useToast } from '../ui/Toast';
 import { AddPropertyForm } from './AddPropertyForm';
 import type { NewProperty } from './AddPropertyForm';
@@ -55,23 +58,58 @@ function useView(pageId: string, space: string, canEdit: boolean) {
 export interface PropertiesHalfProps extends PropertiesPanelProps {
   open: boolean;
   /**
-   * 'column' (default): centred like the editor's text column (a document). 'plain': left-aligned in whatever
-   * the caller wraps it in (PagePropertiesBar — tables, forms, boards, files).
+   * 'column' (default): centred like the editor's text column (a document). 'popover': fills the popover it sits
+   * in (PagePropertiesPopover — tables, forms, boards, files).
    */
-  layout?: 'column' | 'plain';
+  layout?: 'column' | 'popover';
 }
 
 export function propertiesBodyId(pageId: string): string {
   return `properties-${pageId}`;
 }
 
-/** The "Properties (3)" toggle: small enough to ride in the editor's chrome row. */
-export function PropertiesToggle({ pageId, space, canEdit, open, onToggle }: Omit<PropertiesHalfProps, 'canManageTypes'> & { onToggle: () => void }) {
+export interface PropertiesToggleProps extends Omit<PropertiesHalfProps, 'canManageTypes' | 'layout'> {
+  onToggle: () => void;
+  /**
+   * 'chrome' (default): the editor's chrome row, text-xs. 'header': the shell's top bar, after the breadcrumbs — the
+   * label is the header's own muted text size and shrinks to an icon with the count on a narrow screen, so it never
+   * wraps the header or pushes the action icons.
+   */
+  variant?: 'chrome' | 'header';
+  buttonRef?: Ref<HTMLButtonElement>;
+}
+
+/** The "Properties (3)" toggle: small enough to ride in the editor's chrome row, or in the page header. */
+export function PropertiesToggle({ pageId, space, canEdit, open, onToggle, variant = 'chrome', buttonRef }: PropertiesToggleProps) {
   const { t } = useTranslation('app');
   const { count, visible } = useView(pageId, space, canEdit);
   if (!visible) return null;
+  const label = t('properties.title', { n: count });
+  if (variant === 'header') {
+    return (
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-expanded={open}
+        aria-controls={propertiesBodyId(pageId)}
+        aria-haspopup="dialog"
+        aria-label={label}
+        title={label}
+        onClick={onToggle}
+        className="ph-mask flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-sm text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 max-md:min-h-10 max-md:min-w-10 max-md:justify-center dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+      >
+        <ChevronRight size={13} className={`shrink-0 transition-transform max-md:hidden ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
+        <SlidersHorizontal size={14} className="shrink-0 md:hidden" aria-hidden="true" />
+        <span className="hidden truncate md:inline">{label}</span>
+        <span className="text-xs md:hidden" aria-hidden="true">
+          {count}
+        </span>
+      </button>
+    );
+  }
   return (
     <button
+      ref={buttonRef}
       type="button"
       aria-expanded={open}
       aria-controls={propertiesBodyId(pageId)}
@@ -79,7 +117,7 @@ export function PropertiesToggle({ pageId, space, canEdit, open, onToggle }: Omi
       className="ph-mask flex min-w-0 max-w-full items-center gap-1 rounded py-1 text-xs font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
     >
       <ChevronRight size={13} className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
-      <span className="truncate">{t('properties.title', { n: count })}</span>
+      <span className="truncate">{label}</span>
     </button>
   );
 }
@@ -138,8 +176,8 @@ export function PropertiesBody({ pageId, space, canEdit, canManageTypes, open, l
 
   return (
     <section aria-label={t('properties.label')} className="ph-mask shrink-0">
-      <div className={layout === 'plain' ? 'max-w-3xl' : 'folio-props-body'}>
-        <div id={propertiesBodyId(pageId)} className="max-h-[45vh] overflow-y-auto pb-2">
+      <div className={layout === 'popover' ? '' : 'folio-props-body'}>
+        <div id={propertiesBodyId(pageId)} className={layout === 'popover' ? 'max-h-[min(60vh,32rem)] overflow-y-auto' : 'max-h-[45vh] overflow-y-auto pb-2'}>
             {state.conflict && (
               <div role="alert" className="mb-2 flex flex-wrap items-center gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
                 <TriangleAlert size={14} className="shrink-0" aria-hidden="true" />
@@ -212,11 +250,17 @@ export function PropertiesBody({ pageId, space, canEdit, canManageTypes, open, l
   );
 }
 
+/** The popover's width cap, px (a phone gets the viewport minus its margins). */
+const POPOVER_WIDTH = 420;
+const POPOVER_MARGIN = 8;
+
 /**
- * Toggle and body for a page without the document editor's chrome row — a data table, a form, a board, a PDF or
- * an Office file (15.10.2026): a thin row above the page's own surface, the toggle at its top left, the open body
- * under it, left-aligned with the surface (`className` carries the caller's horizontal padding). Collapsed,
- * it costs one short line; a viewer of a page without properties sees nothing at all.
+ * The properties of a page without the document editor's chrome row — a data table, a form, a board, a PDF or
+ * an Office file — as a toggle in the page HEADER, right after the breadcrumbs (owner, 15.10.2026: a strip above the
+ * board "takes a lot of space"), and the editors in a popover under it that overlays the page instead of pushing it down.
+ * The toggle is portaled into the header's slot (PropertiesSlotContext); with no header around (a test) it renders where
+ * it stands. Closed by default and not remembered: it is a look-and-edit, not a mode. Escape, a click outside or the
+ * toggle again closes it; Escape hands focus back to the toggle. A viewer of a page without properties sees nothing.
  *
  * Who may edit (owner's rule: reading is reading): these pages have no reading / editing modes of their own —
  * the table, the board and the file viewer are the same surface for every role — so the properties are editable
@@ -224,14 +268,96 @@ export function PropertiesBody({ pageId, space, canEdit, canManageTypes, open, l
  * for everyone else. A form's "Edit form" dialog changes the definition, not the page's metadata, so it is not
  * a mode either.
  */
-export function PagePropertiesBar({ className = 'px-4', ...props }: PropertiesPanelProps & { className?: string }) {
-  const [open, setOpen] = usePropertiesOpen(props.space);
-  return (
-    <div className={`shrink-0 ${className}`} data-page-properties="">
-      <PropertiesToggle pageId={props.pageId} space={props.space} canEdit={props.canEdit} open={open} onToggle={() => setOpen((v) => !v)} />
-      <PropertiesBody {...props} open={open} layout="plain" />
+export function PagePropertiesPopover(props: PropertiesPanelProps) {
+  const { t } = useTranslation('app');
+  const slot = useContext(PropertiesSlotContext);
+  const { visible } = useView(props.pageId, props.space, props.canEdit);
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ left: number; top: number; width: number } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const close = useCallback(() => setOpen(false), []);
+  const shown = open && visible;
+
+  useOutsideClick([rootRef], close);
+
+  // The panel hangs under the toggle (absolute inside the slot, so Tab reaches it naturally), clamped to the viewport.
+  useLayoutEffect(() => {
+    if (!shown) {
+      setCoords(null);
+      return;
+    }
+    function place() {
+      const trigger = triggerRef.current;
+      const root = rootRef.current;
+      if (!trigger || !root) return;
+      const triggerRect = trigger.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      const viewport = document.documentElement.clientWidth;
+      const width = Math.min(POPOVER_WIDTH, viewport - 2 * POPOVER_MARGIN);
+      const left = Math.max(POPOVER_MARGIN, Math.min(triggerRect.left, viewport - width - POPOVER_MARGIN));
+      setCoords({ left: left - rootRect.left, top: triggerRect.bottom + 4 - rootRect.top, width });
+    }
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [shown]);
+
+  // Focus moves into the panel once it is placed; Escape closes it and returns focus to the toggle.
+  useEffect(() => {
+    if (shown && coords && !panelRef.current?.contains(document.activeElement)) panelRef.current?.focus({ preventScroll: true });
+    // Only when the panel first appears, not on every re-place.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shown, coords === null]);
+
+  useEffect(() => {
+    if (!shown) return;
+    function onKey(event: KeyboardEvent) {
+      // A field inside the panel handles its own Escape (cancel the edit) and stops it before it gets here.
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    }
+    // A click into an iframe (the PDF viewer) never reaches this document's pointerdown; the window loses focus to the frame instead.
+    function onBlur() {
+      if (document.activeElement instanceof HTMLIFrameElement) setOpen(false);
+    }
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [shown]);
+
+  const content = (
+    <div ref={rootRef} className="relative ml-1 shrink-0" data-page-properties="">
+      <PropertiesToggle
+        pageId={props.pageId}
+        space={props.space}
+        canEdit={props.canEdit}
+        open={shown}
+        onToggle={() => setOpen((v) => !v)}
+        variant="header"
+        buttonRef={triggerRef}
+      />
+      {shown && (
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-label={t('properties.label')}
+          tabIndex={-1}
+          style={{ left: coords?.left ?? 0, top: coords?.top ?? 0, width: coords?.width ?? POPOVER_WIDTH, visibility: coords ? 'visible' : 'hidden' }}
+          className="absolute z-50 max-h-[calc(100dvh-5rem)] overflow-y-auto rounded-lg border border-neutral-200 bg-white p-3 shadow-lg outline-none dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          <PropertiesBody {...props} open layout="popover" />
+        </div>
+      )}
     </div>
   );
+  if (slot === undefined) return content;
+  return slot ? createPortal(content, slot) : null;
 }
 
 /** Toggle and body together (the standalone layout; PageContent splits them across the editor's chrome). */

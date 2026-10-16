@@ -47,6 +47,8 @@ export interface HeaderProps {
   onToggleCollapse: () => void;
   /** Opens the Cmd+K quick switcher (round 5) — also triggered by the global Cmd+K/Ctrl+K listener in Shell.tsx. */
   onOpenSwitcher: () => void;
+  /** Receives the empty slot after the breadcrumbs where a board / table / form / file page mounts its Properties toggle (propertiesSlot.ts). */
+  propertiesSlotRef?: (element: HTMLElement | null) => void;
 }
 
 /**
@@ -65,7 +67,7 @@ export interface HeaderProps {
  * disambiguate. Both this page star and the sidebar's space star still get
  * a real `title` tooltip regardless (StarButton.tsx) — not just aria-label.
  */
-export function Header({ space, pageId, pagePath, title, icon, table, fileActions, presence, collapsed, onToggleCollapse, onOpenSwitcher }: HeaderProps) {
+export function Header({ space, pageId, pagePath, title, icon, table, fileActions, presence, collapsed, onToggleCollapse, onOpenSwitcher, propertiesSlotRef }: HeaderProps) {
   const { t } = useTranslation('app');
   const role = useSpaceRole(space);
   const canEdit = canEditContent(role);
@@ -112,6 +114,8 @@ export function Header({ space, pageId, pagePath, title, icon, table, fileAction
         ) : (
           <span className="text-sm text-neutral-400">{space}</span>
         )}
+        {/* The page's Properties toggle (boards, tables, forms, files) mounts here, right after the title; empty otherwise. */}
+        <div ref={propertiesSlotRef} className="flex shrink-0 items-center" data-header-properties-slot="" />
       </div>
 
       {/* Round (page presence): rendered for all three page kinds (doc/board/

@@ -248,16 +248,16 @@ async function flushAll() {
  * bypassing App.tsx entirely, so each mountReady() call supplies its own throwaway
  * client — fresh per mount so no query state leaks between tests.
  */
-function renderBoard(pageId: string) {
+function renderBoard(pageId: string, onEditingChange?: (editing: boolean) => void) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <QueryClientProvider client={queryClient}>
-      <BoardCanvas pageId={pageId} />
+      <BoardCanvas pageId={pageId} onEditingChange={onEditingChange} />
     </QueryClientProvider>
   );
 }
 
-async function mountReady(pageId = 'board-1', fetchOverrides?: FetchOverrides): Promise<HTMLElement> {
+async function mountReady(pageId = 'board-1', fetchOverrides?: FetchOverrides, onEditingChange?: (editing: boolean) => void): Promise<HTMLElement> {
   stubFetch(fetchOverrides);
   state.collabSession = buildFakeSession(pageId);
   const container = document.createElement('div');
@@ -265,7 +265,7 @@ async function mountReady(pageId = 'board-1', fetchOverrides?: FetchOverrides): 
   const root = createRoot(container);
   activeRoots.push({ root, container });
   await act(async () => {
-    root.render(renderBoard(pageId));
+    root.render(renderBoard(pageId, onEditingChange));
     await flushAll();
   });
   return container;
@@ -332,6 +332,23 @@ describe('BoardCanvas board mode toggle (DEV-PLAN Round 21)', () => {
     expect(state.schedulerFlush).not.toHaveBeenCalled();
     expect(state.lastExcalidrawProps.viewModeEnabled).toBe(true);
     expect(localStorage.getItem(BOARD_MODE_KEY)).toBe('view');
+  });
+
+  it('reports whether the board is being edited (View -> false, Edit -> true, back to View -> false) for the page\'s read-only properties', async () => {
+    const onEditingChange = vi.fn();
+    const container = await mountReady('board-1', undefined, onEditingChange);
+    expect(onEditingChange.mock.calls.at(-1)).toEqual([false]);
+
+    const [viewButton, editButton] = modeButtons(container);
+    await act(async () => {
+      editButton.click();
+    });
+    expect(onEditingChange.mock.calls.at(-1)).toEqual([true]);
+
+    await act(async () => {
+      viewButton.click();
+    });
+    expect(onEditingChange.mock.calls.at(-1)).toEqual([false]);
   });
 
   it('switching TO "Edit" does not touch the flush path either', async () => {

@@ -16,7 +16,7 @@ import { useSpaceRole } from '../auth/AuthProvider';
 import { canEditContent, canManageMembers } from '../auth/roles';
 import { OutlinePanel } from '../outline/OutlinePanel';
 import { PageChrome } from '../page-meta/PageChrome';
-import { PagePropertiesBar, PropertiesBody, PropertiesToggle, usePropertiesOpen } from '../properties/PropertiesPanel';
+import { PagePropertiesPopover, PropertiesBody, PropertiesToggle, usePropertiesOpen } from '../properties/PropertiesPanel';
 import { PageConflictBanner } from '../git/PageConflictBanner';
 import { AgentDemoNote } from '../AgentDemoNote';
 import { trackPageOpen, type PageKind } from '../../analytics';
@@ -181,6 +181,8 @@ export function PageContent({ id }: PageContentProps) {
   // header's ExportMenu can offer a view selector. Guarded by kind so a
   // stale value from a just-left table page can never ride on a doc page.
   const [tableViewState, setTableViewState] = useState<TableViewState | null>(null);
+  // The board's own View | Edit switch lives inside the canvas; the board's properties follow it (reading is reading).
+  const [boardEditing, setBoardEditing] = useState(false);
 
   useDocumentTitle(data?.title);
   useSetHeaderInfo(
@@ -251,7 +253,7 @@ export function PageContent({ id }: PageContentProps) {
     return (
       <div className="flex h-full flex-col">
         <PageConflictBanner space={data.space} pageId={data.id} />
-        {!isLocalPage && <PagePropertiesBar pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} className="px-3 pt-1" />}
+        {!isLocalPage && <PagePropertiesPopover pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} />}
         <div className="ph-mask min-h-0 flex-1">
           <TablePageView pageId={data.id} role={tableRole(role)} space={data.space} onViewState={setTableViewState} />
         </div>
@@ -267,8 +269,8 @@ export function PageContent({ id }: PageContentProps) {
     return (
       <div className="ph-mask flex h-full flex-col overflow-y-auto">
         <PageConflictBanner space={data.space} pageId={data.id} />
-        {/* Aligned with the form itself (FormPageView: a centred max-w-xl column with p-6). */}
-        <PagePropertiesBar pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} className="mx-auto w-full max-w-xl px-6 pt-3" />
+        {/* The toggle rides in the header (portal), the editors in a popover under it. */}
+        <PagePropertiesPopover pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} />
         <FormPageView pageId={data.id} space={data.space} markdown={data.markdown ?? ''} canEdit={editable} />
       </div>
     );
@@ -284,11 +286,13 @@ export function PageContent({ id }: PageContentProps) {
       <div className="flex h-full flex-col">
         <PageConflictBanner space={data.space} pageId={data.id} />
         <PageChrome pageId={data.id} space={data.space} icon={data.icon} canEdit={chromeEditable} allowCover={false} compact />
-        {!isLocalPage && <PagePropertiesBar pageId={data.id} space={data.space} canEdit={editable} canManageTypes={canManageMembers(spaceRole)} className="px-3 pt-1" />}
+        {!isLocalPage && (
+          <PagePropertiesPopover pageId={data.id} space={data.space} canEdit={editable && boardEditing} canManageTypes={canManageMembers(spaceRole)} />
+        )}
         <div className="ph-no-capture min-h-0 flex-1">
           {/* Viewers never mount BoardEditor — DEV-PLAN Round 2: "boards render
               the fetched svg statically instead of BoardEditor" for that role. */}
-          {editable ? <BoardEditor pageId={data.id} /> : <StaticBoardView svg={data.svg} title={data.title} />}
+          {editable ? <BoardEditor pageId={data.id} onEditingChange={setBoardEditing} /> : <StaticBoardView svg={data.svg} title={data.title} />}
         </div>
       </div>
     );
@@ -302,7 +306,7 @@ export function PageContent({ id }: PageContentProps) {
       <div className="flex h-full flex-col">
         <PageConflictBanner space={data.space} pageId={data.id} />
         <PageChrome pageId={data.id} space={data.space} icon={data.icon} canEdit={editable} allowCover={false} compact />
-        <PagePropertiesBar pageId={data.id} space={data.space} canEdit={chromeEditable} canManageTypes={canManageMembers(spaceRole)} className="px-3 pt-1" />
+        <PagePropertiesPopover pageId={data.id} space={data.space} canEdit={chromeEditable} canManageTypes={canManageMembers(spaceRole)} />
         <ReplaceFileDropZone space={data.space} pageId={data.id} pagePath={data.path} canEdit={chromeEditable} className="ph-no-capture min-h-0 flex-1">
           <PdfView pageId={data.id} title={data.title} version={data.updatedAt} />
         </ReplaceFileDropZone>
@@ -320,7 +324,7 @@ export function PageContent({ id }: PageContentProps) {
       <div className="flex h-full flex-col">
         <PageConflictBanner space={data.space} pageId={data.id} />
         <PageChrome pageId={data.id} space={data.space} icon={data.icon} canEdit={editable} allowCover={false} compact />
-        <PagePropertiesBar pageId={data.id} space={data.space} canEdit={chromeEditable} canManageTypes={canManageMembers(spaceRole)} className="px-3 pt-1" />
+        <PagePropertiesPopover pageId={data.id} space={data.space} canEdit={chromeEditable} canManageTypes={canManageMembers(spaceRole)} />
         <ReplaceFileDropZone space={data.space} pageId={data.id} pagePath={data.path} canEdit={chromeEditable} className="ph-no-capture min-h-0 flex-1">
           <OfficeView pageId={data.id} title={data.title} format={officeFormat(data.path) ?? 'docx'} version={data.updatedAt} />
         </ReplaceFileDropZone>

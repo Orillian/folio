@@ -201,6 +201,12 @@ export interface BoardCanvasProps {
    * is always fully editable, same as before.
    */
   shareMode?: ShareLinkMode;
+  /**
+   * Told whenever the board enters or leaves Edit mode (View | Edit toggle, and the permission behind it) — `true`
+   * only while the canvas is actually editable. The page shell uses it to keep the page's properties read-only while
+   * the board is in View. Called with `false` when the canvas unmounts.
+   */
+  onEditingChange?: (editing: boolean) => void;
 }
 
 type LoadState =
@@ -325,7 +331,7 @@ type SaveState =
  * (rendered only when `load.editable`) can never grant an edit a load didn't
  * already allow.
  */
-export default function BoardCanvas({ pageId, shareToken, shareMode }: BoardCanvasProps) {
+export default function BoardCanvas({ pageId, shareToken, shareMode, onEditingChange }: BoardCanvasProps) {
   const { t } = useTranslation('diagrams');
   const scheme = useColorScheme();
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
@@ -565,6 +571,12 @@ export default function BoardCanvas({ pageId, shareToken, shareMode }: BoardCanv
   // no new mechanism, just reusing the null/non-null gate this hook already
   // treats as "Excalidraw isn't there yet".
   const isEditingNow = load.status === 'ready' && !resolveViewModeEnabled(boardMode, load.editable);
+  const onEditingChangeRef = useRef(onEditingChange);
+  onEditingChangeRef.current = onEditingChange;
+  useEffect(() => {
+    onEditingChangeRef.current?.(isEditingNow);
+  }, [isEditingNow]);
+  useEffect(() => () => onEditingChangeRef.current?.(false), []);
   /**
    * Whether this tab may write into the shared Y.Doc at all. Before boards
    * joined the room over share links this was implicitly always true (only an

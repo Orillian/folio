@@ -1594,9 +1594,11 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
       // from INSIDE the file (doc's H1, board's header) titleFallback is only
       // a fallback, so they are deliberately left to the bytes check alone.
       const derivedTitle = isPdf || isOffice ? titleFallback(relPath, isPdf ? 'pdf' : 'office') : undefined;
-      // Index v2: a document indexed by an older parser (meta_version below INDEX_META_VERSION — every row right
+      // Index v2: a page indexed by an older parser (meta_version below INDEX_META_VERSION — every row right
       // after migration 042) is read again even though its bytes did not change, so new metadata reaches old rows.
-      const metaStale = isMd && existing !== undefined && Number(existing.meta_version) < INDEX_META_VERSION;
+      // Every kind has metadata now: a document's headings / tags / links, a table's or form's own properties
+      // (front matter), a board's / file's sidecar properties — a table that kept its fast path would never get its tags.
+      const metaStale = existing !== undefined && Number(existing.meta_version) < INDEX_META_VERSION;
       const unchanged =
         existing &&
         existing.file_mtime &&

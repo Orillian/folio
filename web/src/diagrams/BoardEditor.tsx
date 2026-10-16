@@ -22,6 +22,8 @@ export interface BoardEditorProps {
   shareToken?: string;
   /** Ignored when shareToken is absent. Omitting it (or 'view') is the safe default — see BoardCanvasProps. */
   shareMode?: ShareLinkMode;
+  /** True while the board is in Edit mode (and the user may edit), false in View — see BoardCanvasProps. */
+  onEditingChange?: (editing: boolean) => void;
 }
 
 /**
@@ -35,7 +37,7 @@ export interface BoardEditorProps {
  * baseline) instead of trying to reconcile Excalidraw's internal state
  * across two different documents.
  */
-export function BoardEditor({ pageId, shareToken, shareMode }: BoardEditorProps) {
+export function BoardEditor({ pageId, shareToken, shareMode, onEditingChange }: BoardEditorProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const height = useKeyboardSafeHeight(wrapRef);
   // `lazy()` remembers a failed import forever, so trying again means a new
@@ -49,7 +51,7 @@ export function BoardEditor({ pageId, shareToken, shareMode }: BoardEditorProps)
         fallback={(error) => <BoardEditorUnavailable error={error} onRetry={() => setAttempt((n) => n + 1)} />}
       >
         <Suspense fallback={<BoardEditorFallback />}>
-          <Canvas key={shareToken || pageId} pageId={pageId} shareToken={shareToken} shareMode={shareMode} />
+          <Canvas key={shareToken || pageId} pageId={pageId} shareToken={shareToken} shareMode={shareMode} onEditingChange={onEditingChange} />
         </Suspense>
       </ErrorBoundary>
     </div>

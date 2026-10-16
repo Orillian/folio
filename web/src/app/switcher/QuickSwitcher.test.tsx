@@ -35,7 +35,9 @@ interface Call {
   body: unknown;
 }
 
-function stubNetwork() {
+const TABLE_HIT = { id: 'h1', space: 'demo', path: 'plan/q4.md', title: 'Q4 plan', snippet: 'Roadmap for the quarter', kind: 'table', tags: ['plan', 'plan/q4'] };
+
+function stubNetwork(hits: unknown[] = [TABLE_HIT]) {
   const calls: Call[] = [];
   vi.stubGlobal(
     'fetch',
@@ -47,9 +49,7 @@ function stubNetwork() {
       if (url === '/api/me/saved-searches' && method === 'POST') return json({ id: 's3', ...JSON.parse(String(init?.body)), createdAt: '2026-10-14T00:00:00.000Z' });
       if (url.startsWith('/api/me/saved-searches/') && method === 'DELETE') return new Response(null, { status: 204 });
       if (url.startsWith('/api/search?')) {
-        return json({
-          hits: [{ id: 'h1', space: 'demo', path: 'plan/q4.md', title: 'Q4 plan', snippet: 'Roadmap for the quarter', kind: 'table', tags: ['plan', 'plan/q4'] }],
-        });
+        return json({ hits });
       }
       return json({ error: 'not found' }, 404);
     }),
@@ -119,6 +119,17 @@ describe('QuickSwitcher — search v2', () => {
     expect(within(row).getByText('#plan/q4')).toBeTruthy();
     // A table hit gets the table icon (lucide's Table2), not the plain page icon.
     expect(row.querySelector('svg.lucide-table-2, svg.lucide-table')).toBeTruthy();
+  });
+
+  it('lists a hit of every page kind, none dropped (a board / PDF / Office page found by its property tag)', async () => {
+    const kinds = ['doc', 'table', 'form', 'board', 'pdf', 'office'];
+    stubNetwork(kinds.map((kind) => ({ id: `k-${kind}`, space: 'demo', path: `x/${kind}`, title: `Hit ${kind}`, snippet: '', kind, tags: ['q3', 'roadmap'] })));
+    renderSwitcher('tag:q3');
+    for (const kind of kinds) {
+      const row = (await screen.findByText(`Hit ${kind}`)).closest('[role="option"]') as HTMLElement;
+      expect(within(row).getByText('#q3')).toBeTruthy();
+    }
+    expect(screen.queryByText('Nothing found')).toBeNull();
   });
 
   it('puts saved searches first on an empty query, runs one on click, and deletes one after a confirm', async () => {

@@ -170,7 +170,10 @@ export function Breadcrumbs({ space, pagePath, title, icon, pageId, canRename }:
       // painting past it, on top of the search box. overflow-hidden is the
       // hard backstop: whatever the children below still don't manage to
       // shrink into, this clips instead of visually bleeding rightward.
-      className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-sm text-neutral-500 dark:text-neutral-400"
+      // flex-initial (basis auto, shrink 1), not flex-1, outside rename: the trail is as wide as its text, so the
+      // page's Properties toggle (Header's slot, after this nav) sits right behind the title instead of at the far end
+      // of the empty space. While renaming the input needs the room, so it takes flex-1 then.
+      className={`flex min-w-0 ${editing ? 'flex-1' : 'flex-initial'} items-center gap-1 overflow-hidden text-sm text-neutral-500 dark:text-neutral-400`}
     >
       {/* Round 14: space-home + ancestor-directory crumbs hidden below md —
           the current page's own (still-truncating) title is what needs the

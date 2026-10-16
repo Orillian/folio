@@ -4,6 +4,7 @@
  * property type, whole-map optimistic saves, "foreign value" read-only rows, and the
  * 409 reload prompt. The network is a fetch stub keyed by method + URL.
  */
+import { useState } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -11,7 +12,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import i18next from 'i18next';
 import type { PagePropertiesResponse } from '@shared/contracts';
 import { ToastProvider } from '../ui/Toast';
-import { PagePropertiesBar, PropertiesPanel } from './PropertiesPanel';
+import { PropertiesSlotContext } from '../header/propertiesSlot';
+import { PagePropertiesPopover, PropertiesPanel } from './PropertiesPanel';
 import '../i18n/register';
 
 const BASE: PagePropertiesResponse = {
@@ -219,26 +221,63 @@ describe('PropertiesPanel', () => {
   });
 });
 
-describe('PagePropertiesBar (tables, forms, boards, files)', () => {
+describe('PagePropertiesPopover (tables, forms, boards, files)', () => {
   const TABLE: PagePropertiesResponse = { properties: { owner: 'ann', tags: ['q3'] }, types: { owner: 'text', tags: 'tags' }, foreign: [], readOnly: [], canEdit: true, etag: 'e1' };
 
-  function renderBar(canEdit: boolean) {
+  /** A stand-in for the shell: a header with the slot, a page area beside it, and something outside both. */
+  function renderPopover(canEdit: boolean, slotMode: 'ready' | 'none' | 'pending' = 'ready') {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    return render(
-      <QueryClientProvider client={client}>
-        <ToastProvider>
-          <PagePropertiesBar pageId="p1" space="demo" canEdit={canEdit} canManageTypes={false} />
-        </ToastProvider>
-      </QueryClientProvider>,
-    );
+    function Harness() {
+      const [slot, setSlot] = useState<HTMLElement | null>(null);
+      const popover = (
+        <main data-testid="page">
+          <PagePropertiesPopover pageId="p1" space="demo" canEdit={canEdit} canManageTypes={false} />
+        </main>
+      );
+      return (
+        <QueryClientProvider client={client}>
+          <ToastProvider>
+            <header data-testid="header">
+              <nav>Breadcrumbs</nav>
+              <div ref={setSlot} data-testid="slot" />
+            </header>
+            {slotMode === 'ready' ? (
+              <PropertiesSlotContext.Provider value={slot}>{popover}</PropertiesSlotContext.Provider>
+            ) : slotMode === 'pending' ? (
+              <PropertiesSlotContext.Provider value={null}>{popover}</PropertiesSlotContext.Provider>
+            ) : (
+              popover
+            )}
+            <button type="button">outside</button>
+          </ToastProvider>
+        </QueryClientProvider>
+      );
+    }
+    return render(<Harness />);
   }
 
-  it('puts the toggle on top and the editors under it; a save sends the page\'s own keys only', async () => {
-    const calls = stubNetwork(TABLE, (body) => json({ ...TABLE, properties: body.properties, etag: 'e2' }));
-    const { container } = renderBar(true);
+  it('puts the toggle in the header, closed, and takes no room in the page', async () => {
+    stubNetwork(TABLE);
+    renderPopover(true);
     const toggle = await screen.findByRole('button', { name: 'Properties (2)' });
-    expect(container.querySelector('[data-page-properties]')?.firstElementChild).toBe(toggle);
+    expect(screen.getByTestId('slot').contains(toggle)).toBe(true);
+    expect(screen.getByTestId('page').contains(toggle)).toBe(false);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByTestId('page').textContent).toBe('');
+  });
+
+  it('opens a popover under the toggle with the editors; a save sends the page\'s own keys only', async () => {
+    const calls = stubNetwork(TABLE, (body) => json({ ...TABLE, properties: body.properties, etag: 'e2' }));
+    renderPopover(true);
+    const toggle = await screen.findByRole('button', { name: 'Properties (2)' });
     await userEvent.click(toggle);
+    const dialog = screen.getByRole('dialog', { name: 'Page properties' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.getAttribute('aria-controls')).toBeTruthy();
+    expect(dialog.querySelector(`[id="${toggle.getAttribute('aria-controls')}"]`)).toBeTruthy();
+    expect(screen.getByTestId('slot').contains(dialog)).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(dialog));
     const owner = screen.getByRole('textbox', { name: 'owner' });
     await userEvent.clear(owner);
     await userEvent.type(owner, 'bob{Enter}');
@@ -246,9 +285,42 @@ describe('PagePropertiesBar (tables, forms, boards, files)', () => {
     expect(calls.find((c) => c.method === 'PUT')!.body).toEqual({ properties: { owner: 'bob', tags: ['q3'] }, etag: 'e1' });
   });
 
+  it('closes on Escape (focus back on the toggle), on a click outside, and on the toggle itself', async () => {
+    stubNetwork(TABLE);
+    renderPopover(true);
+    const toggle = await screen.findByRole('button', { name: 'Properties (2)' });
+
+    await userEvent.click(toggle);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+
+    await userEvent.click(toggle);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'outside' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    await userEvent.click(toggle);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    await userEvent.click(toggle);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('Escape inside a field only cancels that edit and keeps the popover open', async () => {
+    stubNetwork(TABLE);
+    renderPopover(true);
+    await userEvent.click(await screen.findByRole('button', { name: 'Properties (2)' }));
+    const owner = screen.getByRole('textbox', { name: 'owner' });
+    await userEvent.clear(owner);
+    await userEvent.type(owner, 'zzz{Escape}');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect((screen.getByRole('textbox', { name: 'owner' }) as HTMLInputElement).value).toBe('ann');
+  });
+
   it('is read-only without edit rights, and shows nothing at all on a page without properties', async () => {
     stubNetwork({ ...TABLE, canEdit: false });
-    renderBar(false);
+    renderPopover(false);
     await userEvent.click(await screen.findByRole('button', { name: 'Properties (2)' }));
     expect(screen.getByText('ann')).toBeTruthy();
     expect(screen.queryByRole('textbox')).toBeNull();
@@ -257,10 +329,22 @@ describe('PagePropertiesBar (tables, forms, boards, files)', () => {
     vi.unstubAllGlobals();
 
     stubNetwork({ ...TABLE, properties: {}, types: {}, canEdit: false });
-    const { container } = renderBar(false);
+    renderPopover(false);
     await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByRole('button', { name: /Properties/ })).toBeNull();
-    expect(container.querySelector('[data-page-properties]')?.textContent).toBe('');
+    expect(screen.getByTestId('slot').textContent).toBe('');
+  });
+
+  it('renders where it stands without a shell, and nothing while the shell\'s slot is not mounted yet', async () => {
+    stubNetwork(TABLE);
+    renderPopover(true, 'none');
+    const toggle = await screen.findByRole('button', { name: 'Properties (2)' });
+    expect(screen.getByTestId('page').contains(toggle)).toBe(true);
+    cleanup();
+
+    renderPopover(true, 'pending');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole('button', { name: /Properties/ })).toBeNull();
   });
 });

@@ -12,6 +12,7 @@ import { rememberLastSpace } from './lastSpace';
 import { OfflineRuntime } from './offline/OfflineRuntime';
 import { ErrorBoundary } from './ui/ErrorBoundary';
 import { PageCrashed } from './routes/PageCrashed';
+import { PropertiesSlotContext } from './header/propertiesSlot';
 
 /** Stable empty array for Header's `presence` prop before any content has published — a fresh `[]` every render would defeat any memoization downstream. */
 const EMPTY_PRESENCE: PagePresencePerson[] = [];
@@ -73,6 +74,8 @@ export function Shell() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [headerInfo, setHeaderInfo] = useState<HeaderInfo | null>(null);
   const [pagePresence, setPagePresence] = useState<PagePresencePerson[] | null>(null);
+  // The empty slot in the header after the breadcrumbs, where a board / table / form / file page portals its Properties toggle.
+  const [propertiesSlot, setPropertiesSlot] = useState<HTMLElement | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   // The switcher's starting query: empty for Cmd+K and the header button; `tag:<tag>` when a `#tag` chip in a page asks for a search (markdown/searchEvent.ts) or the sidebar's Tags section opens it.
   const [switcherQuery, setSwitcherQuery] = useState('');
@@ -176,6 +179,7 @@ export function Shell() {
             setMobileSidebarOpen((o) => !o);
           }}
           onOpenSwitcher={() => openSwitcher()}
+          propertiesSlotRef={setPropertiesSlot}
         />
         <ConflictBanner space={space} />
         {/* min-h-0 alongside flex-1: without it, a flex item's automatic
@@ -187,9 +191,11 @@ export function Shell() {
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           <SetHeaderInfoContext.Provider value={setHeaderInfo}>
             <SetPagePresenceContext.Provider value={setPagePresence}>
-              <ErrorBoundary resetKey={location.pathname} fallback={(_error, reset) => <PageCrashed onRetry={reset} />}>
-                <Outlet />
-              </ErrorBoundary>
+              <PropertiesSlotContext.Provider value={propertiesSlot}>
+                <ErrorBoundary resetKey={location.pathname} fallback={(_error, reset) => <PageCrashed onRetry={reset} />}>
+                  <Outlet />
+                </ErrorBoundary>
+              </PropertiesSlotContext.Provider>
             </SetPagePresenceContext.Provider>
           </SetHeaderInfoContext.Provider>
         </main>
