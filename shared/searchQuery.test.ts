@@ -28,13 +28,26 @@ describe('parseSearchQuery', () => {
     expect(parseSearchQuery('tag:a tag:A')).toEqual(ast({ tags: ['a'] }));
   });
 
-  it('reads kind: and status: as lists (comma, pipe or repeated), lowercased, unknown values dropped', () => {
+  it('reads kind: and status: as lists (comma, pipe or repeated), lowercased, unknown kinds dropped', () => {
     expect(parseSearchQuery('kind:doc,Table kind:board|pdf status:Draft status:archived')).toEqual(
       ast({ kinds: ['doc', 'table', 'board', 'pdf'], statuses: ['draft', 'archived'] }),
     );
     expect(parseSearchQuery('kind:doc,nonsense')).toEqual(ast({ kinds: ['doc'] }));
-    // All values unknown: the token is just text.
-    expect(parseSearchQuery('kind:nonsense status:soon')).toEqual(ast({ words: ['kind:nonsense', 'status:soon'] }));
+    // All kinds unknown: the token is just text.
+    expect(parseSearchQuery('kind:nonsense')).toEqual(ast({ words: ['kind:nonsense'] }));
+  });
+
+  it('a status: value outside draft|published|archived is a front matter status value (a vault: status:todo), OR-ed in the same operator', () => {
+    expect(parseSearchQuery('status:Todo')).toEqual(ast({ statusValues: ['todo'] }));
+    expect(parseSearchQuery('status:draft,doing status:todo')).toEqual(ast({ statuses: ['draft'], statusValues: ['doing', 'todo'] }));
+    expect(parseSearchQuery('status:"In Progress"')).toEqual(ast({ statusValues: ['in progress'] }));
+    expect(isEmptySearchQuery(parseSearchQuery('status:todo'))).toBe(false);
+    // Printed back into one operator, and read back to the same AST.
+    for (const q of ['status:draft,doing status:todo', 'status:"In Progress",draft']) {
+      const parsed = parseSearchQuery(q);
+      expect(parseSearchQuery(formatSearchQuery(parsed))).toEqual(parsed);
+    }
+    expect(formatSearchQuery(parseSearchQuery('status:draft status:todo'))).toBe('status:draft,todo');
   });
 
   it('normalizes in: to a folder prefix ending with a slash; the root names no filter', () => {

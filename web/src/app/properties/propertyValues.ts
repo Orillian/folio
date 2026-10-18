@@ -34,11 +34,14 @@ export function isFlatList(value: unknown): value is (string | number | boolean)
  * fits it; a value that does not (a string under a `number` type, say) falls back to what
  * the value actually is, so nothing is ever coerced behind the user's back. Nested maps and
  * lists of maps stay read-only: the panel shows them as JSON and never rewrites them.
+ * `status` gets Folio's draft / published / archived picker only where it is Folio's key
+ * (`folioStatus`, from the server's `folioKeys`); in a vault it is edited like any other key.
  */
-export function editorKindFor(key: string, type: PropertyType | undefined, value: unknown): EditorKind {
+export function editorKindFor(key: string, type: PropertyType | undefined, value: unknown, folioStatus = true): EditorKind {
   if (isPlainObject(value)) return 'readonly';
   if (Array.isArray(value) && !isFlatList(value)) return 'readonly';
-  if (key === 'status' && (value === undefined || value === null || (typeof value === 'string' && (STATUS_VALUES as readonly string[]).includes(value)))) {
+  // `folioStatus` false: a light-footprint space (a vault), where `status` is an ordinary property (server folioKeys).
+  if (folioStatus && key === 'status' && (value === undefined || value === null || (typeof value === 'string' && (STATUS_VALUES as readonly string[]).includes(value)))) {
     return 'status';
   }
   switch (type) {

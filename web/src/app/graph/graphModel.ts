@@ -5,7 +5,8 @@
  *
  *  - Filters, like Obsidian's: a search query in the search grammar
  *    (shared/searchQuery.ts — words, "phrases", -exclusions, tag:, kind:,
- *    status:, in:; prop: is not known on the client and matches everything)
+ *    status:, in:; prop: and a front matter `status:todo` value are not known on
+ *    the client and match everything)
  *    applied to PAGES; the toggles for tag, file and unresolved nodes; and
  *    orphans (nodes left without an edge after filtering). A tag, file or
  *    ghost node stays only while a page that is shown links to it.
@@ -133,7 +134,8 @@ export function compileQuery(q: string): ((n: GraphNode) => boolean) | null {
       if (!ast.tags.every((t) => tags.some((x) => x === t || x.startsWith(`${t}/`)))) return false;
     }
     if (ast.kinds.length && !(ast.kinds as string[]).includes(n.kind)) return false;
-    if (ast.statuses.length && !(n.status && ast.statuses.includes(n.status))) return false;
+    // `status:draft,todo`: the `todo` half is front matter the graph does not have, so the operator cannot exclude anything.
+    if (ast.statuses.length && !ast.statusValues?.length && !(n.status && ast.statuses.includes(n.status))) return false;
     if (ast.pathPrefixes.length && !ast.pathPrefixes.some((p) => (n.path ?? '').startsWith(p))) return false;
     return true;
   };

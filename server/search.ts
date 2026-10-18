@@ -39,6 +39,10 @@ import { sqlParam, visiblePagesSql } from './accessSql.js';
  *   -word        NOT (tsv @@ the word / the phrase)
  *   tag:a/b      EXISTS page_tags (tag = 'a/b' OR tag LIKE 'a/b/%'), one per tag, so tags AND
  *   kind:/status: equality against a list (OR inside one operator); a page without `status` is 'published'
+ *   status:todo  a value outside draft|published|archived (16.10.2026): the front matter `status` as text,
+ *                case-insensitive — a vault's own workflow values. Folio's page status of such a page is 'published'
+ *                (storage.ts validStatus), so `status:published` finds it as well. Same rule in every space; the
+ *                public site does not publish front matter, so there it matches nothing
  *   in:folder/   path LIKE 'folder/%' (several: OR)
  *   prop:k=v     front matter: scalar text equality (case-insensitive), a list holding v, a number equal to v, a date
  *                ('2026-10-14') on that day; prop:k — the key exists
@@ -58,7 +62,7 @@ interface SearchRow {
 
 /** The grammar in one paragraph, for the MCP tool descriptions (docs/AGENT-API.md has the table). */
 export const SEARCH_GRAMMAR_NOTE =
-  'The query takes words (all must match), "an exact phrase", -excluded words and these filters, ANDed together: tag:name (tag:a also matches a/b), kind:doc|table|board|form|pdf|office|canvas|base, status:draft|published|archived, in:folder/ (path prefix), prop:key=value or prop:key (front matter). A query of filters alone lists the matching pages, most recently changed first.';
+  'The query takes words (all must match), "an exact phrase", -excluded words and these filters, ANDed together: tag:name (tag:a also matches a/b), kind:doc|table|board|form|pdf|office|canvas|base, status:draft|published|archived (any other value, e.g. status:todo, matches the front matter status), in:folder/ (path prefix), prop:key=value or prop:key (front matter). A query of filters alone lists the matching pages, most recently changed first.';
 
 export const SEARCH_DEFAULT_LIMIT = 50;
 export const SEARCH_MAX_LIMIT = 100;
@@ -144,7 +148,16 @@ function buildSearch(ast: SearchQueryAst, params: unknown[], publicReader: boole
   }
 
   if (ast.kinds.length > 0) conditions.push(`p.kind = ANY(${sqlParam(params, ast.kinds)}::text[])`);
-  if (ast.statuses.length > 0) conditions.push(`COALESCE(p.status, 'published') = ANY(${sqlParam(params, ast.statuses)}::text[])`);
+  const statusValues = ast.statusValues ?? [];
+  if (ast.statuses.length > 0 || statusValues.length > 0) {
+    const alternatives: string[] = [];
+    if (ast.statuses.length > 0) alternatives.push(`COALESCE(p.status, 'published') = ANY(${sqlParam(params, ast.statuses)}::text[])`);
+    // The front matter is not published: an anonymous reader's `status:todo` matches nothing (never every page).
+    if (statusValues.length > 0) {
+      alternatives.push(publicReader ? 'false' : `lower(p.frontmatter ->> 'status') = ANY(${sqlParam(params, statusValues.map((v) => v.toLowerCase()))}::text[])`);
+    }
+    conditions.push(`(${alternatives.join(' OR ')})`);
+  }
   if (ast.pathPrefixes.length > 0) conditions.push(`p.path LIKE ANY(${sqlParam(params, ast.pathPrefixes.map((prefix) => `${escapeLike(prefix)}%`))}::text[])`);
   if (!publicReader) for (const prop of ast.props) conditions.push(propCondition(prop, params));
 

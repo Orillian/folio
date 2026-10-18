@@ -623,7 +623,9 @@ export function registerRoutes(app: FastifyInstance): void {
     assertNotDemoAccount(request.authUser!, 'Syncing a space with git');
     const { space } = request.params as { space: string };
     if (!(await storage.spaceExists(space))) throw notFound('space');
-    if (!(await session.canAdministerSpace(request.authUser!, space))) throw forbidden('requires space admin or instance admin');
+    // 16.10.2026 (owner): "Sync now" is for anyone who may edit the space — it only commits, pulls and pushes,
+    // which the scheduler does anyway. Destructive git actions (reset to remote, connect git) stay space-admin.
+    if (!(await session.canAdministerSpace(request.authUser!, space))) await session.requireSpaceRole(request, space, 'editor');
     session.requireWriteScope(request);
     const user = request.authUser!;
     gitSync.recordEditor(space, { name: user.name, email: user.email });

@@ -372,6 +372,12 @@ describe('save a search as a base', () => {
     const r = run(config);
     expect(r.warnings).toEqual([]);
   });
+
+  it('a vault status value (status:todo) joins Folio\'s statuses in one OR', () => {
+    const { filters } = searchToBaseFilters(parseSearchQuery('status:draft,todo'));
+    expect(filters).toEqual({ and: [{ or: ['status == "draft"', 'status == "todo"'] }] });
+    expect(searchToBaseFilters(parseSearchQuery('status:doing')).filters).toEqual({ and: ['status == "doing"'] });
+  });
 });
 
 describe('file.folder shown as the folder page title', () => {

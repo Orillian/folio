@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { Ref } from 'react';
+import type { FocusEvent, Ref } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -139,6 +139,10 @@ export function PropertiesBody({ pageId, space, canEdit, canManageTypes, open, l
   const { state, data, visible } = useView(pageId, space, canEdit);
   const [draft, setDraft] = useState<NewProperty | null>(null);
   const [adding, setAdding] = useState(false);
+  // The row whose field has focus, and the last value/type each row showed: a property another user removes while it
+  // is being edited here stays on screen (saying so) instead of vanishing under the caret (propertiesLive.ts).
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const lastSeen = useRef(new Map<string, { value: unknown; type: ReturnType<typeof effectiveType> }>());
 
   const editable = canEdit && data?.canEdit !== false && !state.conflict;
 
@@ -161,7 +165,18 @@ export function PropertiesBody({ pageId, space, canEdit, canManageTypes, open, l
   const keys = Object.keys(state.properties);
   const visibleKeys = keys.filter((key) => !readOnlyKeys.includes(key));
   const lockedKeys = keys.filter((key) => readOnlyKeys.includes(key));
-  const rowKeys = draft && !(draft.key in state.properties) ? [...visibleKeys, draft.key] : visibleKeys;
+  const removedKey =
+    editingKey !== null && !(editingKey in state.properties) && lastSeen.current.has(editingKey) && !(draft && draft.key === editingKey) ? editingKey : null;
+  const listedKeys = removedKey !== null ? [...visibleKeys, removedKey] : visibleKeys;
+  const rowKeys = draft && !(draft.key in state.properties) ? [...listedKeys, draft.key] : listedKeys;
+  for (const key of visibleKeys) lastSeen.current.set(key, { value: state.properties[key], type: effectiveType(key, state.properties[key], data.types) });
+  const folioStatus = data.folioKeys?.includes('status') ?? true;
+
+  function trackFocus(event: FocusEvent<HTMLElement>, focused: boolean) {
+    const key = (event.target as HTMLElement).closest('[data-property]')?.getAttribute('data-property') ?? null;
+    if (focused) setEditingKey(key);
+    else setEditingKey((current) => (current === key ? null : current));
+  }
 
   async function handleCommit(key: string, value: unknown) {
     const next = { ...state.properties, [key]: value };
@@ -172,6 +187,9 @@ export function PropertiesBody({ pageId, space, canEdit, canManageTypes, open, l
   }
 
   function handleRemove(key: string) {
+    // Removed HERE: not a row to keep alive as "removed by someone else".
+    lastSeen.current.delete(key);
+    setEditingKey(null);
     const next = { ...state.properties };
     delete next[key];
     void state.commit(next);
@@ -183,7 +201,7 @@ export function PropertiesBody({ pageId, space, canEdit, canManageTypes, open, l
   }
 
   return (
-    <section aria-label={t('properties.label')} className="ph-mask shrink-0">
+    <section aria-label={t('properties.label')} className="ph-mask shrink-0" onFocus={(e) => trackFocus(e, true)} onBlur={(e) => trackFocus(e, false)}>
       <div className={layout === 'popover' ? '' : 'folio-props-body'}>
         <div id={propertiesBodyId(pageId)} className={layout === 'popover' ? 'max-h-[min(60vh,32rem)] overflow-y-auto' : 'max-h-[45vh] overflow-y-auto pb-2'}>
             {state.conflict && (
@@ -205,12 +223,22 @@ export function PropertiesBody({ pageId, space, canEdit, canManageTypes, open, l
               <PropertyRow
                 key={key}
                 name={key}
-                value={key in state.properties ? state.properties[key] : emptyValueFor(draft?.type ?? 'text')}
-                type={key in state.properties ? effectiveType(key, state.properties[key], data.types) : (draft?.type ?? 'text')}
+                value={
+                  key in state.properties ? state.properties[key] : key === removedKey ? lastSeen.current.get(key)!.value : emptyValueFor(draft?.type ?? 'text')
+                }
+                type={
+                  key in state.properties
+                    ? effectiveType(key, state.properties[key], data.types)
+                    : key === removedKey
+                      ? lastSeen.current.get(key)!.type
+                      : (draft?.type ?? 'text')
+                }
                 foreign={data.foreign.includes(key)}
                 locked={SYNONYM_KEYS.includes(key)}
                 canEdit={editable}
-                draft={!(key in state.properties)}
+                draft={!(key in state.properties) && key !== removedKey}
+                folioStatus={folioStatus}
+                removedRemotely={key === removedKey}
                 onCommit={(k, v) => void handleCommit(k, v)}
                 onRemove={handleRemove}
                 onCancelDraft={() => setDraft(null)}

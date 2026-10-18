@@ -294,7 +294,7 @@ export function QuickSwitcher({ space, initialQuery = '', onClose }: QuickSwitch
         onClose();
       },
     });
-    if (canManageMembers(role)) {
+    if (canEditContent(role)) {
       list.push({
         id: 'sync',
         label: t('switcher.syncSpace'),

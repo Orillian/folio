@@ -10,7 +10,8 @@
  *   -word  /  -"a phrase"   exclusion
  *   tag:a/b                 a tag, hierarchy included (`tag:a` also matches `a/b`); a leading `#` is tolerated
  *   kind:doc,table          one or more page kinds (OR); `kind:doc kind:table` is the same
- *   status:draft            one or more of draft | published | archived (OR)
+ *   status:draft            one or more of draft | published | archived (OR) — Folio's page status; any other
+ *                           value (`status:todo`) is the front matter `status` as text (`statusValues`), OR-ed in
  *   in:folder/              path prefix (normalized to end with `/`); several are OR
  *   prop:key=value          front matter equality; `prop:key` — the key exists
  *
@@ -18,7 +19,8 @@
  *  - Operator names are case-insensitive (`TAG:x`, `Kind:Doc`); values of `tag`,
  *    `kind` and `status` are lowercased.
  *  - A token with a name that is not an operator (`foo:bar`) is a plain word. So
- *    is a `kind:`/`status:` whose values are all unknown (`kind:nonsense`).
+ *    is a `kind:` whose values are all unknown (`kind:nonsense`). A `status:` value
+ *    outside Folio's three is not unknown: a vault writes `status: todo` (16.10.2026).
  *  - An operator with an empty value (`tag:` while the user is still typing) is
  *    dropped, not searched for.
  *  - Quotes are honoured right after the colon or the equals sign too:
@@ -153,9 +155,10 @@ export function parseSearchQuery(q: string): SearchQueryAst {
         break;
       }
       case 'status': {
-        const statuses = splitValues(value).filter((v): v is PageStatus => PAGE_STATUSES.includes(v));
-        if (statuses.length === 0) pushUnique(ast.words, token.text);
-        for (const status of statuses) pushUnique(ast.statuses, status);
+        for (const status of splitValues(value)) {
+          if (PAGE_STATUSES.includes(status)) pushUnique(ast.statuses, status as PageStatus);
+          else pushUnique((ast.statusValues ??= []), status);
+        }
         break;
       }
       case 'in': {
@@ -191,7 +194,8 @@ export function formatSearchQuery(ast: SearchQueryAst): string {
   for (const e of ast.excluded) parts.push(/\s/.test(e) ? `-"${e.replace(/"/g, '')}"` : `-${e}`);
   for (const t of ast.tags) parts.push(`tag:${quoteIfNeeded(t)}`);
   if (ast.kinds.length > 0) parts.push(`kind:${ast.kinds.join(',')}`);
-  if (ast.statuses.length > 0) parts.push(`status:${ast.statuses.join(',')}`);
+  const statuses = [...ast.statuses, ...(ast.statusValues ?? [])];
+  if (statuses.length > 0) parts.push(`status:${quoteIfNeeded(statuses.join(','))}`);
   for (const prefix of ast.pathPrefixes) parts.push(`in:${quoteIfNeeded(prefix)}`);
   for (const prop of ast.props) {
     const key = quoteIfNeeded(prop.key);
@@ -209,6 +213,7 @@ export function isEmptySearchQuery(ast: SearchQueryAst): boolean {
     ast.tags.length === 0 &&
     ast.kinds.length === 0 &&
     ast.statuses.length === 0 &&
+    (ast.statusValues?.length ?? 0) === 0 &&
     ast.pathPrefixes.length === 0 &&
     ast.props.length === 0
   );

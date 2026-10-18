@@ -30,6 +30,17 @@
  * keys (`id`, `order`, … are plain keys there), and feed the same index
  * (pages_index.frontmatter, page_tags). See propertiesStoreOf.
  *
+ * `status` in a light-footprint space (16.10.2026, owner's decision): an
+ * Obsidian vault or a repository with files of its own uses `status:` for its
+ * own workflow (`todo`, `doing`, …). There it is an ORDINARY property — any
+ * value, editable, typed by `.folio/properties.json` / `.obsidian/types.json`
+ * like every other key, never "foreign". Folio's own page status still reads
+ * the same key the way it always did (storage.ts validStatus): exactly
+ * `draft` / `published` / `archived` keep their meaning, anything else counts
+ * as `published`. `folioKeys` in the response tells the client which of
+ * Folio's keys are validated on the page. Native spaces keep `status` as
+ * Folio's key (draft | published | archived).
+ *
  * Write rules (PUT replaces the editable keys with `properties`):
  *  - `id` can never change: a different value (or one the file does not have) is a 400;
  *    leaving it out keeps it.
@@ -89,7 +100,6 @@ import type { PageIndexEntry } from './storage.js';
 
 /** Folio's keys other than `id`, which has its own rule. */
 const FOLIO_VALUE_KEYS = ['order', 'status', 'icon', 'cover'] as const satisfies readonly FolioKey[];
-const FOLIO_VALUE_KEY_SET: ReadonlySet<string> = new Set(FOLIO_VALUE_KEYS);
 export const READ_ONLY_PROPERTIES = ['id'] as const;
 const MAX_VALUE_DEPTH = 6;
 
@@ -227,11 +237,27 @@ function dateLines(key: string, value: unknown, type: PropertyType): string[] | 
 // ---------------------------------------------------------------------------
 
 /** Folio's keys whose current value Folio would not write itself. */
-export function foreignFolioKeys(data: Record<string, unknown>, pageId: string): string[] {
+export function foreignFolioKeys(data: Record<string, unknown>, pageId: string, options: { plainStatus?: boolean } = {}): string[] {
   const out: string[] = [];
   if (hasOwn(data, 'id') && data.id !== pageId) out.push('id');
-  for (const key of FOLIO_VALUE_KEYS) if (hasOwn(data, key) && !folioCouldHaveWritten(key, data[key])) out.push(key);
+  for (const key of folioValueKeys(options.plainStatus === true)) if (hasOwn(data, key) && !folioCouldHaveWritten(key, data[key])) out.push(key);
   return out;
+}
+
+/** Folio's value keys a document's properties validate: all four, or without `status` where it is an ordinary property. */
+function folioValueKeys(plainStatus: boolean): readonly (typeof FOLIO_VALUE_KEYS)[number][] {
+  return plainStatus ? FOLIO_VALUE_KEYS.filter((key) => key !== 'status') : FOLIO_VALUE_KEYS;
+}
+
+/** A light-footprint space (a vault, a repository with files of its own): `status` is an ordinary property there. */
+export function statusIsPlain(entry: Pick<PageIndexEntry, 'space'>): boolean {
+  return storage.isLightFootprintSpace(entry.space);
+}
+
+/** `folioKeys` of the response: which of Folio's own keys are validated on this page (the module comment). */
+export function folioKeysOf(entry: Pick<PageIndexEntry, 'space' | 'kind'>): string[] {
+  if (propertiesStoreOf(entry.kind) !== 'frontmatter') return [];
+  return ['id', ...folioValueKeys(statusIsPlain(entry))];
 }
 
 /** Effective types: the space's declared types, plus the inferred type of every key the page has that is not declared. */
@@ -276,8 +302,8 @@ const NO_PROPERTIES = (readOnly: string[]): PagePropertiesResponse => ({ propert
 async function indexedResponse(entry: PageIndexEntry, declared: Record<string, PropertyType>, readOnly: string[]): Promise<PagePropertiesResponse> {
   const row = await queryOne<{ frontmatter: Record<string, unknown> | null }>('SELECT frontmatter FROM pages_index WHERE id = $1', [entry.id]);
   const properties = row?.frontmatter && typeof row.frontmatter === 'object' ? row.frontmatter : {};
-  const foreign = entry.kind === 'doc' ? foreignFolioKeys(properties, entry.id) : [];
-  return { properties, types: effectiveTypes(declared, properties), foreign, readOnly, canEdit: false, etag: null };
+  const foreign = entry.kind === 'doc' ? foreignFolioKeys(properties, entry.id, { plainStatus: statusIsPlain(entry) }) : [];
+  return { properties, types: effectiveTypes(declared, properties), foreign, readOnly, canEdit: false, etag: null, folioKeys: folioKeysOf(entry) };
 }
 
 /** The file a page's properties are read from right now: the page file (doc, table, form) or its sidecar. */
@@ -297,7 +323,7 @@ async function readSource(entry: PageIndexEntry): Promise<PropertiesSource> {
 
 async function responseFor(entry: PageIndexEntry, source: PropertiesSource, roleCanEdit: boolean): Promise<PagePropertiesResponse> {
   const store = propertiesStoreOf(entry.kind);
-  if (store === 'none') return NO_PROPERTIES([...READ_ONLY_PROPERTIES]);
+  if (store === 'none') return { ...NO_PROPERTIES([...READ_ONLY_PROPERTIES]), folioKeys: [] };
   const declared = (await readDeclaredTypes(entry.space)).types;
 
   if (store === 'sidecar') {
@@ -312,6 +338,7 @@ async function responseFor(entry: PageIndexEntry, source: PropertiesSource, role
       canEdit: roleCanEdit && parsed.parseable,
       etag: sidecarEtag(text),
       sidecar: sidecarRelPath(entry.relPath),
+      folioKeys: [],
     };
   }
 
@@ -321,16 +348,17 @@ async function responseFor(entry: PageIndexEntry, source: PropertiesSource, role
   if (store === 'embedded') {
     const own = ownProperties(entry.kind, block.data);
     const properties = toClientValue(own) as Record<string, unknown>;
-    return { properties, types: effectiveTypes(declared, properties), foreign: [], readOnly, canEdit: roleCanEdit && block.parseable, etag: ownEtag(properties) };
+    return { properties, types: effectiveTypes(declared, properties), foreign: [], readOnly, canEdit: roleCanEdit && block.parseable, etag: ownEtag(properties), folioKeys: [] };
   }
   const properties = toClientValue(block.data) as Record<string, unknown>;
   return {
     properties,
     types: effectiveTypes(declared, properties),
-    foreign: foreignFolioKeys(block.data, entry.id),
+    foreign: foreignFolioKeys(block.data, entry.id, { plainStatus: statusIsPlain(entry) }),
     readOnly,
     canEdit: roleCanEdit && block.parseable,
     etag: frontmatterEtag(block.text),
+    folioKeys: folioKeysOf(entry),
   };
 }
 
@@ -363,10 +391,13 @@ export function planPropertyEdits(
   current: Record<string, unknown>,
   sent: Record<string, unknown>,
   declared: Record<string, PropertyType>,
-  options: { folioKeys?: boolean } = {},
+  options: { folioKeys?: boolean; plainStatus?: boolean } = {},
 ): Map<string, FrontmatterKeyEdit> {
   // A table's / form's / sidecar's properties have no Folio keys of their own: `id`, `order`, … are plain keys there.
   const folioKeys = options.folioKeys !== false;
+  // A light-footprint space's document: `status` is one of them too (the module comment).
+  const valueKeys = folioKeys ? folioValueKeys(options.plainStatus === true) : [];
+  const valueKeySet: ReadonlySet<string> = new Set(valueKeys);
   const client = toClientValue(current) as Record<string, unknown>;
   const present = (key: string) => hasOwn(current, key);
   const sentHas = (key: string) => hasOwn(sent, key) && sent[key] !== undefined;
@@ -388,7 +419,7 @@ export function planPropertyEdits(
   if (folioKeys && sentHas('id') && !same(client.id, sent.id)) throw badRequest('id cannot be changed');
 
   // Folio's own keys.
-  for (const key of folioKeys ? FOLIO_VALUE_KEYS : []) {
+  for (const key of valueKeys) {
     if (sentHas(key)) {
       const value = sent[key];
       if (value === null) remove(key);
@@ -425,7 +456,7 @@ export function planPropertyEdits(
   // `labels` not sent: kept as the file has it (never removed by omission).
 
   // Everything else: the file's keys first (kept or removed), then the new ones in the order they were sent.
-  const special = (key: string) => key === 'tags' || key === 'labels' || (folioKeys && (key === 'id' || FOLIO_VALUE_KEY_SET.has(key)));
+  const special = (key: string) => key === 'tags' || key === 'labels' || (folioKeys && (key === 'id' || valueKeySet.has(key)));
   const keys = [...Object.keys(current), ...Object.keys(sent).filter((k) => !present(k))];
   for (const key of keys) {
     if (special(key)) continue;
@@ -484,7 +515,7 @@ export async function updatePageProperties(pageId: string, body: UpdatePagePrope
       throw new PropertiesConflictError(await responseFor(current, { raw }, roleCanEdit));
     }
     const declared = (await readDeclaredTypes(current.space)).types;
-    const edits = planPropertyEdits(block.data, body.properties, declared);
+    const edits = planPropertyEdits(block.data, body.properties, declared, { plainStatus: statusIsPlain(current) });
     keys = [...edits.keys()];
     if (edits.size === 0) return null;
     try {

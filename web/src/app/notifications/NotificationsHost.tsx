@@ -4,6 +4,7 @@ import { NOTIFICATIONS_QUERY_KEY, addNotificationToCache, useNotifications } fro
 import { subscribeNotifications } from './socket';
 import { applyTimerFrame, refreshAllTimers } from '../timer/pageTimerStore';
 import { cancelPendingTreeRefreshes, requestAllTreeRefresh, requestTreeRefresh } from '../sidebar/treeLive';
+import { applyPagePropertiesFrame, cancelPendingBaseRefreshes, refreshAllPageProperties } from '../properties/propertiesLive';
 
 /**
  * Lives once above the route tree — exactly where AssistantHost does
@@ -19,7 +20,9 @@ import { cancelPendingTreeRefreshes, requestAllTreeRefresh, requestTreeRefresh }
  * it again" (sidebar/treeLive.ts; the server half is server/treeSignal.ts).
  * It is handled here, not in the sidebar, because this is the one place that
  * owns the socket — a second subscriber would open a second connection per tab.
- * The shared page timer's `{ type: 'timer' }` frame rides it too (timer/pageTimerStore.ts).
+ * The shared page timer's `{ type: 'timer' }` frame rides it too (timer/pageTimerStore.ts),
+ * and so does `{ type: 'page-properties' }` — another user changed a page's properties
+ * (properties/propertiesLive.ts).
  */
 export function NotificationsHost() {
   const queryClient = useQueryClient();
@@ -36,6 +39,7 @@ export function NotificationsHost() {
         requestAllTreeRefresh(queryClient);
         // A running timer may have been paused or reset during the break.
         refreshAllTimers(queryClient);
+        refreshAllPageProperties(queryClient);
       },
       onEvent: (event) => {
         if (event.type === 'notification') {
@@ -52,6 +56,10 @@ export function NotificationsHost() {
           applyTimerFrame(queryClient, event);
           return;
         }
+        if (event.type === 'page-properties') {
+          applyPagePropertiesFrame(queryClient, event);
+          return;
+        }
         if (event.type !== 'refresh') return;
         // `refresh` — "something in your feed has changed" (the request was
         // closed by another administrator): there is no row of its own, read anew.
@@ -61,6 +69,7 @@ export function NotificationsHost() {
     return () => {
       controller.abort();
       cancelPendingTreeRefreshes();
+      cancelPendingBaseRefreshes();
     };
   }, [queryClient]);
 

@@ -172,6 +172,7 @@ describe('GET/PUT /api/pages/:id/properties (real PG)', () => {
       readOnly: ['id'],
       canEdit: true,
       etag: sha1(p.text.slice(0, p.text.indexOf('# Page'))),
+      folioKeys: ['id', 'order', 'status', 'icon', 'cover'],
     });
     expect((await get(p.id, 'reader')).body.canEdit).toBe(false);
     const nothing = await page('no-block', '# No block\n');

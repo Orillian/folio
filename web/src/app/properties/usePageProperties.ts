@@ -4,6 +4,7 @@ import { api, ApiError } from '../api';
 import type { PagePropertiesPayload } from '../api';
 import { useApiErrorText } from '../errorText';
 import { useToast } from '../ui/Toast';
+import { markSaving } from './propertiesLive';
 import { editableProperties, toDisplayProperties, toWireProperties } from './propertyValues';
 import type { Properties } from './propertyValues';
 import '../i18n/register';
@@ -43,6 +44,10 @@ export interface PagePropertiesState {
  * server sends one, is sent back with every PUT and refreshed from each answer; a 409 means
  * someone else changed the file in between and ends in a "reload" prompt, never in a silent
  * overwrite.
+ *
+ * Live (16.10.2026): another user's change arrives as a socket frame (propertiesLive.ts) and
+ * refetches this query — after a save in flight here, never during it. The panel then shows the
+ * fresh map; the row being typed into keeps its text (PropertyRow).
  */
 export function usePageProperties(pageId: string, space: string, enabled = true): PagePropertiesState {
   const queryClient = useQueryClient();
@@ -91,6 +96,8 @@ export function usePageProperties(pageId: string, space: string, enabled = true)
       inFlight.current = true;
       setSaving(true);
       const id = pageId;
+      // Another user's change arriving now waits for this save (propertiesLive.ts): a GET racing the PUT must not win.
+      markSaving(id, true);
       let current = first;
       try {
         for (;;) {
@@ -131,6 +138,7 @@ export function usePageProperties(pageId: string, space: string, enabled = true)
         settle(false);
       } finally {
         inFlight.current = false;
+        markSaving(id, false);
         if (pageRef.current === id) setSaving(false);
       }
     },

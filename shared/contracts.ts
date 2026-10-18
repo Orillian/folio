@@ -930,6 +930,15 @@ export interface PagePropertiesResponse {
    * tables and forms (their properties are the page file's own front matter).
    */
   sidecar?: string;
+  /**
+   * Which of Folio's own keys (`id`, `order`, `status`, `icon`, `cover`) Folio validates on THIS page — the rest of
+   * them are ordinary properties here (16.10.2026). A document in a native space: all five. A document in a
+   * light-footprint space (an Obsidian vault, a repository with files of its own): all but `status`, which is an
+   * ordinary property there (any value, typed like other keys; Folio's own page status reads `draft` / `published` /
+   * `archived` from it and takes anything else as `published`). A table, form, board or file page: none.
+   * Absent from an older server: the client then treats `status` as Folio's key, as before.
+   */
+  folioKeys?: string[];
 }
 /**
  * PUT /api/pages/:id/properties — editor+ on the page, cookie or write-scope PAT.
@@ -980,7 +989,7 @@ export interface RenameTagResult {
  *   -word             → exclusion
  *   tag:a/b           → page_tags (hierarchy: tag:a also matches a/b)
  *   kind:doc|table|board|form|pdf|office
- *   status:draft|published|archived
+ *   status:draft|published|archived (Folio's page status; any other value → the front matter `status`, e.g. status:todo)
  *   in:folder/        → path prefix
  *   prop:key=value    → front matter equality (string/number/boolean), prop:key (key exists)
  * Operators AND together; the ACL is the same SQL fragment (accessSql). `SearchHit` gains optional `tags` and `kind`.
@@ -992,6 +1001,12 @@ export interface SearchQueryAst {
   tags: string[];
   kinds: PageKind[];
   statuses: PageStatus[];
+  /**
+   * `status:` values other than Folio's three (`status:todo`, 16.10.2026): matched against the front matter `status`
+   * key as text, case-insensitively — what a vault's own status values need. OR-ed with `statuses` (one operator, one
+   * list). Optional: an AST built by hand without it has none.
+   */
+  statusValues?: string[];
   pathPrefixes: string[];
   props: { key: string; value?: string }[];
 }
@@ -2653,11 +2668,20 @@ export type MarkNotificationsReadBody = z.infer<typeof markNotificationsReadBody
  * reader of the space learns nothing about a page they are not allowed to see.
  * The refetch goes through GET /api/spaces/:space/tree, which does the page
  * access filtering as it always did.
+ *
+ * `page-properties` (16.10.2026, server/propertiesSignal.ts) is "the properties
+ * (front matter / sidecar) of this page changed — read them again": `pageId`
+ * and the new `etag` (the GET's `etag`; a tab that already holds it — the
+ * writer's own — skips the refetch). Sent only to the sessions that may read
+ * THAT page. Without `pageId` it is "many pages of this space changed" (a git
+ * sync, a tag rename across the space, a reconnect of the server's listener):
+ * the space's readers re-read whatever properties they have open there.
  */
 export type NotificationSocketEvent =
   | { type: 'notification'; item: NotificationItem }
   | { type: 'refresh' }
   | { type: 'tree'; space: string; v: number }
+  | { type: 'page-properties'; space: string; pageId?: string; etag?: string | null }
   | { type: 'timer'; key: string; timer: PageTimerState | null; rev: number; serverNow: number }
   | { type: 'ping' };
 

@@ -31,18 +31,44 @@ interface EditorProps {
 /**
  * A text-like field: Enter commits (by leaving the field, so the blur is the single commit),
  * Esc puts the stored value back, and leaving the field with an edit commits it as well.
+ *
+ * Live updates (16.10.2026): the stored value can move while the user types — another user's
+ * change arrived (properties/propertiesLive.ts). A field with focus AND an edit keeps the user's
+ * text; `remote` then holds the new stored value for the "changed by someone else" hint: Enter
+ * keeps the user's value, Esc takes the other one. A field without an edit just shows the new value.
  */
 function useFieldCommit(initial: string, parse: (text: string) => unknown, onCommit: (value: unknown) => void, onUnchanged: () => void) {
   const [draft, setDraft] = useState(initial);
+  const [remote, setRemote] = useState<string | null>(null);
   const cancelled = useRef(false);
-  // The stored value moved (our own save landed, or the page was reloaded): show it.
-  useEffect(() => setDraft(initial), [initial]);
+  const focused = useRef(false);
+  /** The stored value the current draft started from. */
+  const base = useRef(initial);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  // The stored value moved (our own save landed, another user's change, a reload): show it — unless the user is mid-edit.
+  useEffect(() => {
+    if (focused.current && draftRef.current !== base.current) {
+      setRemote(initial === base.current ? null : initial);
+      return;
+    }
+    base.current = initial;
+    setDraft(initial);
+    setRemote(null);
+  }, [initial]);
 
   return {
     draft,
     setDraft,
+    remote,
     handlers: {
+      onFocus: () => {
+        focused.current = true;
+      },
       onBlur: () => {
+        focused.current = false;
+        base.current = initial;
+        setRemote(null);
         if (cancelled.current) {
           cancelled.current = false;
           setDraft(initial);
@@ -67,18 +93,32 @@ function useFieldCommit(initial: string, parse: (text: string) => unknown, onCom
   };
 }
 
+/** Under a field being edited while another user changed its stored value. */
+function RemoteChangeHint({ value }: { value: string | null }) {
+  const { t } = useTranslation('app');
+  if (value === null) return null;
+  return (
+    <p role="status" className="px-1.5 pt-0.5 text-xs text-amber-700 dark:text-amber-300">
+      {value === '' ? t('properties.remoteCleared') : t('properties.remoteChanged', { value })}
+    </p>
+  );
+}
+
 function TextEditor({ name, value, autoFocus, onCommit, onUnchanged }: EditorProps) {
   const initial = value === null || value === undefined ? '' : String(value);
   const field = useFieldCommit(initial, (text) => text, onCommit, onUnchanged);
   return (
-    <input
-      aria-label={name}
-      value={field.draft}
-      autoFocus={autoFocus}
-      onChange={(e) => field.setDraft(e.target.value)}
-      className={FIELD_CLASS}
-      {...field.handlers}
-    />
+    <>
+      <input
+        aria-label={name}
+        value={field.draft}
+        autoFocus={autoFocus}
+        onChange={(e) => field.setDraft(e.target.value)}
+        className={FIELD_CLASS}
+        {...field.handlers}
+      />
+      <RemoteChangeHint value={field.remote} />
+    </>
   );
 }
 
@@ -86,16 +126,19 @@ function NumberEditor({ name, value, autoFocus, onCommit, onUnchanged }: EditorP
   const initial = typeof value === 'number' ? String(value) : '';
   const field = useFieldCommit(initial, parseNumberInput, onCommit, onUnchanged);
   return (
-    <input
-      aria-label={name}
-      type="number"
-      inputMode="decimal"
-      value={field.draft}
-      autoFocus={autoFocus}
-      onChange={(e) => field.setDraft(e.target.value)}
-      className={FIELD_CLASS}
-      {...field.handlers}
-    />
+    <>
+      <input
+        aria-label={name}
+        type="number"
+        inputMode="decimal"
+        value={field.draft}
+        autoFocus={autoFocus}
+        onChange={(e) => field.setDraft(e.target.value)}
+        className={FIELD_CLASS}
+        {...field.handlers}
+      />
+      <RemoteChangeHint value={field.remote} />
+    </>
   );
 }
 
@@ -103,15 +146,18 @@ function DateEditor({ name, value, kind, autoFocus, onCommit, onUnchanged }: Edi
   const initial = kind === 'date' ? dateInputValue(value) : datetimeInputValue(value);
   const field = useFieldCommit(initial, (text) => (text ? text : null), onCommit, onUnchanged);
   return (
-    <input
-      aria-label={name}
-      type={kind === 'date' ? 'date' : 'datetime-local'}
-      value={field.draft}
-      autoFocus={autoFocus}
-      onChange={(e) => field.setDraft(e.target.value)}
-      className={`${FIELD_CLASS} max-w-[16rem]`}
-      {...field.handlers}
-    />
+    <>
+      <input
+        aria-label={name}
+        type={kind === 'date' ? 'date' : 'datetime-local'}
+        value={field.draft}
+        autoFocus={autoFocus}
+        onChange={(e) => field.setDraft(e.target.value)}
+        className={`${FIELD_CLASS} max-w-[16rem]`}
+        {...field.handlers}
+      />
+      <RemoteChangeHint value={field.remote} />
+    </>
   );
 }
 
@@ -273,16 +319,20 @@ export interface PropertyRowProps {
   canEdit: boolean;
   /** Just added: nothing is stored yet, so Esc or an unchanged commit drops the row instead of keeping an empty property. */
   draft?: boolean;
+  /** `status` is Folio's own key on this page (draft / published / archived picker); false in a light-footprint space. Default true. */
+  folioStatus?: boolean;
+  /** Another user removed this property while it was being edited here: the row stays, saying so (Enter puts it back). */
+  removedRemotely?: boolean;
   onCommit: (key: string, value: unknown) => void;
   onRemove: (key: string) => void;
   onCancelDraft: () => void;
 }
 
 /** One front matter property: its name, the editor its type calls for (or a read-only view), and a remove button. */
-export function PropertyRow({ name, value, type, foreign, locked, canEdit, draft, onCommit, onRemove, onCancelDraft }: PropertyRowProps) {
+export function PropertyRow({ name, value, type, foreign, locked, canEdit, draft, folioStatus = true, removedRemotely, onCommit, onRemove, onCancelDraft }: PropertyRowProps) {
   const { t } = useTranslation('app');
   const readOnly = !canEdit || Boolean(foreign) || Boolean(locked);
-  const kind = readOnly ? 'readonly' : editorKindFor(name, type, value);
+  const kind = readOnly ? 'readonly' : editorKindFor(name, type, value, folioStatus);
 
   const editor: EditorProps = {
     name,
@@ -313,6 +363,7 @@ export function PropertyRow({ name, value, type, foreign, locked, canEdit, draft
         {(kind === 'date' || kind === 'datetime') && <DateEditor {...editor} kind={kind} />}
         {kind === 'status' && <StatusEditor {...editor} />}
         {kind === 'chips' && <ChipsEditor {...editor} type={type} />}
+        {removedRemotely && <p role="status" className="px-1.5 pt-0.5 text-xs text-amber-700 dark:text-amber-300">{t('properties.remoteRemoved')}</p>}
         {kind === 'readonly' && (
           <div className="flex flex-wrap items-start gap-2">
             <ReadOnlyValue value={value} />

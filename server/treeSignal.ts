@@ -26,6 +26,9 @@
  *      server process today (the collab rooms are in-memory too), but nothing
  *      below assumes it: every process LISTENs on its own connection and fans
  *      out to ITS OWN sockets, so N processes behind a load balancer work as is.
+ *      The same connection also LISTENs on the page-properties channel
+ *      (migration 049, propertiesSignal.ts — "the properties of this page
+ *      changed", page-ACL filtered): one listener, one reconnect loop.
  *   3. COALESCING — notes arrive per ROW (an import of 200 pages is 200+
  *      notes) and must become few refetches WITHOUT ever making a lone change
  *      wait for them. `createCoalescer` keeps two promises:
@@ -72,6 +75,7 @@ import type { Client, Notification } from 'pg';
 import * as authStore from './auth/store.js';
 import { newListenClient, query } from './db/pool.js';
 import * as notificationSocket from './notifications/socket.js';
+import * as propertiesSignal from './propertiesSignal.js';
 
 /** The NOTIFY channel the triggers in migration 031 write to. */
 export const TREE_SIGNAL_CHANNEL = 'folio_tree_changed';
@@ -169,10 +173,15 @@ export function createCoalescer(options: CoalescerOptions): Coalescer {
   };
 }
 
-export type TreeSignalOptions = Partial<Omit<CoalescerOptions, 'onFlush'>>;
+export type TreeSignalOptions = Partial<Omit<CoalescerOptions, 'onFlush'>> & {
+  /** The timings of the page-properties signal (propertiesSignal.ts), which rides the same LISTEN connection. */
+  properties?: Partial<Omit<CoalescerOptions, 'onFlush'>>;
+};
 
 interface Running {
   coalescer: Coalescer;
+  /** Per space, for propertiesSignal.ts (the page ids themselves wait there). */
+  propertiesCoalescer: Coalescer;
   client: Client | null;
   schema: string;
   stopped: boolean;
@@ -202,6 +211,10 @@ async function flush(state: Running, space: string): Promise<void> {
 }
 
 function onNotification(state: Running, message: Notification): void {
+  if (message.channel === propertiesSignal.PROPERTIES_SIGNAL_CHANNEL) {
+    onPropertiesNotification(state, message);
+    return;
+  }
   if (message.channel !== TREE_SIGNAL_CHANNEL || !message.payload) return;
   let parsed: unknown;
   try {
@@ -213,6 +226,22 @@ function onNotification(state: Running, message: Notification): void {
   const { schema, space } = parsed as { schema?: unknown; space?: unknown };
   if (typeof schema !== 'string' || typeof space !== 'string' || schema !== state.schema) return;
   state.coalescer.note(space);
+}
+
+/** `{schema, space, id}` from migration 049: the page id waits in propertiesSignal, the space is coalesced here. */
+function onPropertiesNotification(state: Running, message: Notification): void {
+  if (!message.payload) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(message.payload);
+  } catch {
+    return;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return;
+  const { schema, space, id } = parsed as { schema?: unknown; space?: unknown; id?: unknown };
+  if (typeof schema !== 'string' || typeof space !== 'string' || typeof id !== 'string' || schema !== state.schema) return;
+  propertiesSignal.recordChange(space, id);
+  state.propertiesCoalescer.note(space);
 }
 
 function scheduleReconnect(state: Running): void {
@@ -244,7 +273,11 @@ function dropClient(state: Running, client: Client): void {
 async function resync(state: Running): Promise<void> {
   try {
     const rows = await query<{ slug: string }>('SELECT slug FROM spaces');
-    for (const row of rows) state.coalescer.note(row.slug);
+    for (const row of rows) {
+      state.coalescer.note(row.slug);
+      propertiesSignal.recordSpace(row.slug);
+      state.propertiesCoalescer.note(row.slug);
+    }
   } catch {
     // The database is not answering either; the next successful connect resyncs again.
   }
@@ -265,6 +298,7 @@ async function connect(state: Running): Promise<void> {
     const { rows } = await client.query<{ schema: string }>('SELECT current_schema() AS schema');
     state.schema = rows[0].schema;
     await client.query(`LISTEN ${TREE_SIGNAL_CHANNEL}`);
+    await client.query(`LISTEN ${propertiesSignal.PROPERTIES_SIGNAL_CHANNEL}`);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(`[tree-signal] cannot listen yet, the sidebar falls back to refetch on focus and the poll: ${(err as Error).message}`);
@@ -304,11 +338,19 @@ async function connect(state: Running): Promise<void> {
  */
 export async function startTreeSignal(options: TreeSignalOptions = {}): Promise<void> {
   if (running) return;
+  const { properties: propertiesOptions, ...treeOptions } = options;
   const state: Running = {
     coalescer: createCoalescer({
       ...COALESCER_DEFAULTS,
-      ...options,
+      ...treeOptions,
       onFlush: (space) => void flush(state, space),
+    }),
+    propertiesCoalescer: createCoalescer({
+      ...propertiesSignal.PROPERTIES_COALESCER_DEFAULTS,
+      ...propertiesOptions,
+      onFlush: (space) => {
+        if (!state.stopped) void propertiesSignal.flushSpace(space);
+      },
     }),
     client: null,
     schema: 'public',
@@ -329,6 +371,8 @@ export async function stopTreeSignal(): Promise<void> {
   running = null;
   state.stopped = true;
   state.coalescer.cancelAll();
+  state.propertiesCoalescer.cancelAll();
+  propertiesSignal.clearPending();
   if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
   if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
   const client = state.client;

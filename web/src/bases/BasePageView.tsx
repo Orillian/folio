@@ -79,7 +79,8 @@ export function BasePageView({ pageId, space, canEditBase }: BasePageViewProps) 
   const [showWarnings, setShowWarnings] = useState(false);
 
   const query = useQuery({
-    queryKey: ['base', pageId, view ?? null, limit],
+    // The space at index 4: a page-properties frame of this space refreshes it (properties/propertiesLive.ts).
+    queryKey: ['base', pageId, view ?? null, limit, space],
     queryFn: () => api.getBase(pageId, { view, limit }),
     placeholderData: (prev) => prev,
   });

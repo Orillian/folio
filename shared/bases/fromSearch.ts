@@ -40,8 +40,11 @@ export function searchToBaseFilters(ast: SearchQueryAst): SearchToBase {
   const kinds = ast.kinds.map(kindStatement).filter((s): s is string => s !== undefined);
   if (kinds.length === 1) and.push(kinds[0]);
   else if (kinds.length > 1) and.push({ or: kinds });
-  if (ast.statuses.length) {
-    const st = ast.statuses.map((s) => (s === 'published' ? '(status.isEmpty() || status == "published")' : `status == ${quoteString(s)}`));
+  if (ast.statuses.length || ast.statusValues?.length) {
+    const st = [
+      ...ast.statuses.map((s) => (s === 'published' ? '(status.isEmpty() || status == "published")' : `status == ${quoteString(s)}`)),
+      ...(ast.statusValues ?? []).map((s) => `status == ${quoteString(s)}`),
+    ];
     and.push(st.length === 1 ? st[0] : { or: st });
   }
   const folders = ast.pathPrefixes.map((p) => `file.inFolder(${quoteString(p.replace(/\/+$/, ''))})`);

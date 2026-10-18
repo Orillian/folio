@@ -323,19 +323,22 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
           <SpaceSwitcher current={space} />
           {/* Round 8: moved here from the header — see Header.tsx's docblock for why. */}
           <StarButton kind="space" id={space} />
-          {canManageMembers(role) && (
+          {/* 16.10.2026: editors get the menu too, for "Sync now" and the repository link; every other item stays space-admin. */}
+          {canEditContent(role) && (
             <Menu triggerLabel={t('sidebar.spaceMenu.label')} className="shrink-0" trigger={<Settings size={15} />}>
               {(close) => (
                 <>
-                  <MenuItem
-                    icon={<Users size={14} />}
-                    onSelect={() => {
-                      close();
-                      setManagingMembers(true);
-                    }}
-                  >
-                    {t('members.menuLabel')}
-                  </MenuItem>
+                  {canManageMembers(role) && (
+                    <MenuItem
+                      icon={<Users size={14} />}
+                      onSelect={() => {
+                        close();
+                        setManagingMembers(true);
+                      }}
+                    >
+                      {t('members.menuLabel')}
+                    </MenuItem>
+                  )}
                   <MenuItem
                     icon={<RefreshCw size={14} className={sync.isPending ? 'animate-spin' : undefined} />}
                     disabled={sync.isPending || gitStatus === 'syncing'}
@@ -367,6 +370,8 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
                         {spaceGit.repoUrl}
                       </MenuItem>
                     ))}
+                  {canManageMembers(role) && (
+                    <>
                   {/* Owner ask #2: "git cannot be connected to a local space" —
                       only for a space that does NOT have one yet. See
                       ConnectGitDialog's doc comment for why this only ever
@@ -472,6 +477,8 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
                   >
                     {t('trash.title')}
                   </MenuItem>
+                    </>
+                  )}
                 </>
               )}
             </Menu>

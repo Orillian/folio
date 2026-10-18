@@ -4,6 +4,24 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ## [Unreleased]
 
+### Changed
+
+- **Properties update live.** When someone else changes a page's properties (the
+  panel, a base cell, MCP `set_page_properties`, a tag rename, the page icon, a Git
+  sync), everyone who has the page open and may read it sees the change without a
+  reload, and the bases of that space refresh. The server sends a small
+  `page-properties` event over the existing `/events` socket only to sessions that
+  may read that page. A field you are typing into is never overwritten: it says
+  "Someone else changed this to …", Enter keeps yours, Esc takes theirs.
+- **`status` is an ordinary property in a vault** (an Obsidian vault or a
+  repository with files of its own): any value, editable in the panel and in base
+  cells, typed like other keys. Folio's page status reads only `draft`,
+  `published` and `archived` from it; anything else counts as `published`. Search:
+  `status:todo` (any value other than those three) matches the front matter
+  `status`; the public site never matches it. Native Folio spaces are unchanged.
+
+- **"Sync now" for editors.** Anyone who can edit a space can sync it with Git from the space menu or the quick switcher; taking the Git version, connecting Git and the other space settings stay with space admins.
+
 ### Added
 
 - Error reporting can attach a recording of recent actions to a report (Sentry

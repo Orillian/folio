@@ -97,7 +97,8 @@ what is not there.
    not in the tree or in search, an attachment is found by name with Obsidian's rules
    and a missing one is listed among unresolved links. A `.base` file is a
    page (see "Obsidian Bases" below) and a `.canvas` is a view-only page (see 3). Properties are written only in Folio's own format: a Folio key
-   with a foreign value is shown as such and never overwritten, and `labels:` is
+   with a foreign value is shown as such and never overwritten (`status` is not a
+   Folio key in a vault: any value is an ordinary property there), and `labels:` is
    kept: new tags are written as `tags:`, an existing `labels:` is only edited in place.
    The properties of a board, a PDF or an Office file live in a sidecar under
    `.folio/`; it follows the page when the page is renamed, moved, deleted or
@@ -249,8 +250,8 @@ Link previews in Slack and Microsoft Teams ([setup](CHAT-PREVIEWS.md)).
     open, so the same base can show fewer rows to you than to an administrator.
 27. **Editing cells has limits.** You can change a cell only on a page you can
     edit, and only a note property: never a `file.*` or a `formula.*` column, and
-    never a Folio key that holds a foreign value (for example `status: todo` on a
-    document). A `base` code block inside a document is read-only; to edit cells
+    never a Folio key that holds a foreign value (for example `status: deprecated`
+    on a document in a native space; in a vault `status` is an ordinary property). A `base` code block inside a document is read-only; to edit cells
     open the base page itself. The visual editor keeps unchanged parts of the file
     byte for byte, but a filter it cannot express as a rule stays a raw
     expression you edit as text, and formulas have no autocomplete yet. Share

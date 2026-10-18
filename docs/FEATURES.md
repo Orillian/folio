@@ -228,7 +228,8 @@ the line number.
   editable (editor or above on that page; a restricted page needs its owner or
   an edit grant; a read-only token cannot), and only note properties, never
   `file.*` or `formula.*`. Folio's own keys with a foreign value are read-only
-  (for example `status: todo` on a document), and labels follow the rules of the
+  (for example `status: deprecated` on a document in a native space; in a vault
+  `status` is an ordinary property and `todo` is editable), and labels follow the rules of the
   properties API.
 - **Visual editor** ("Configure", editors on the base page). Views (add, rename,
   delete, layout, column order, sort, group, summaries, limit, card image),
@@ -587,8 +588,21 @@ it exactly as they read a space with `instance` visibility.
   `.obsidian/types.json` when that file is absent. Saving rewrites only the front
   matter block; every other byte of the file stays. `id` cannot be changed, and a
   Folio key holding a value Folio would not write itself (`status: deprecated`)
-  is shown as a foreign value and never overwritten. **Reading mode is read-only:**
-  properties are shown there, and added, edited or removed in Live and Source.
+  is shown as a foreign value and never overwritten (except `status` in a vault, see
+  below). **Reading mode is read-only:** properties are shown there, and added,
+  edited or removed in Live and Source.
+- **Properties update live.** When someone else changes a page's properties — in
+  the panel, in a base cell, through MCP, by renaming a tag or with a Git sync —
+  everyone who has the page open and may read it sees the change without a reload,
+  and the bases of that space refresh. A field you are typing into is never
+  overwritten: it shows "Someone else changed this to …", Enter keeps your value,
+  Esc takes theirs, and changes to other keys are merged.
+- **`status` in an Obsidian vault or a repository with files of its own is an
+  ordinary property:** any value (`todo`, `doing`, `In Review`), editable in the
+  panel and in a base cell, typed like any other key. Folio's own page status reads
+  only `draft`, `published` and `archived` from it and takes anything else as
+  `published`. In a native Folio space `status` stays Folio's key (draft, published,
+  archived).
 - **Properties on data tables, forms, boards and files** (PDF, Office): the same
   panel, as a thin row above the page with "Properties (N)" at its top left.
   A table or a form keeps them in its own front matter, next to Folio's reserved

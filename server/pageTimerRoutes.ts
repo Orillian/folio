@@ -17,9 +17,9 @@
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { pageTimerActionBodySchema, SPACE_TIMER_KEY_PREFIX, type PageTimerResponse, type PageTimerState } from '../shared/contracts.js';
-import * as authStore from './auth/store.js';
 import * as session from './auth/session.js';
 import { tooManyRequests } from './errors.js';
+import * as audience from './notifications/audience.js';
 import * as notificationSocket from './notifications/socket.js';
 import { applyTimerAction, currentRev, readTimer } from './pageTimer.js';
 import { rateLimited } from './rateLimit.js';
@@ -35,19 +35,10 @@ export const spaceTimerKey = (space: string): string => `${SPACE_TIMER_KEY_PREFI
 export async function fanOutTimer(args: { key: string; space: string; entry?: PageIndexEntry; timer: PageTimerState | null; rev: number }): Promise<void> {
   const { key, space, entry, timer, rev } = args;
   try {
-    const tokens = notificationSocket.openSessionTokens();
-    if (tokens.length === 0) return;
-    let allowed = await authStore.sessionsThatCanReadSpace(space, tokens);
+    let allowed = await audience.sessionsThatCanReadSpace(space);
     if (allowed.size === 0) return;
     if (entry) {
-      const checks = await Promise.all(
-        [...allowed].map(async (token) => {
-          const user = await session.userForToken(token);
-          if (!user) return null;
-          return session.roleAtLeast(await session.effectivePageRole(user, entry), 'viewer') ? token : null;
-        }),
-      );
-      allowed = new Set(checks.filter((token): token is string => token !== null));
+      allowed = await audience.sessionsThatCanReadPage(entry, allowed);
       if (allowed.size === 0) return;
     }
     notificationSocket.sendToSessions(allowed, { type: 'timer', key, timer, rev, serverNow: Date.now() });
