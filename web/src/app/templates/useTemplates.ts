@@ -1,10 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { PageKind, PageMeta, TreeNode } from '@shared/contracts';
+import type { PageKind, PageMeta, TemplateListItem, TreeNode } from '@shared/contracts';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
-import { t } from '../i18n/register';
-import '../i18n/register';
-import { TEMPLATES_FOLDER } from '../sidebar/treeUtils';
 
 export interface TemplateOption {
   id: string;
@@ -12,6 +9,8 @@ export interface TemplateOption {
   kind: PageKind;
   /** The template's emoji icon from its frontmatter, if any. */
   icon?: string;
+  /** The template's description (its `template-description` property), if any. */
+  description?: string;
 }
 
 /**
@@ -25,11 +24,12 @@ export function useTemplates(space: string, enabled = true) {
     queryFn: () => api.getTemplates(space),
     enabled,
   });
-  const templates: TemplateOption[] = (query.data?.templates ?? []).map((p: PageMeta) => ({
+  const templates: TemplateOption[] = (query.data?.templates ?? []).map((p: TemplateListItem) => ({
     id: p.id,
     title: p.title,
     kind: p.kind,
     icon: p.icon,
+    description: p.description,
   }));
   return { templates, isLoading: query.isLoading, isError: query.isError, refetch: query.refetch };
 }
@@ -72,21 +72,5 @@ export function useCreateFromTemplate(space: string, onSuccess: (page: PageMeta)
       onSuccess(page);
     },
     onError: (err) => onError(errorText(err, 'sidebar.templates.createFailed')),
-  });
-}
-
-/** A blank document in the space's `_templates/` folder — "New template". */
-export function useCreateBlankTemplate(space: string, onSuccess: (page: PageMeta) => void, onError: (message: string) => void) {
-  const errorText = useApiErrorText();
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: () => api.createPage({ space, parentPath: TEMPLATES_FOLDER, title: t('sidebar.templates.blankTitle'), kind: 'doc' }),
-    onSuccess: (page) => {
-      queryClient.invalidateQueries({ queryKey: ['tree', space] });
-      invalidateTemplates(queryClient, space);
-      onSuccess(page);
-    },
-    onError: (err) => onError(errorText(err, 'sidebar.createPageFailed')),
   });
 }

@@ -15,6 +15,7 @@ import {
   connectSpaceGitBodySchema,
   copyPageBodySchema,
   duplicatePageBodySchema,
+  createBlankTemplateBodySchema,
   createFromTemplateBodySchema,
   makeTemplateBodySchema,
   listBranchesBodySchema,
@@ -58,6 +59,7 @@ import type {
   TreeNode,
   PageMetadata,
   SpaceTagsResponse,
+  TemplateListItem,
   GraphResponse,
   UnresolvedLinksResponse,
   OrphansResponse,
@@ -104,6 +106,7 @@ import { buildSpaceZip } from './export/spaceZip.js';
 import * as importProgress from './spaceImportProgress.js';
 import * as pageAccess from './pageAccess.js';
 import { resolveCopyScope } from './copyScope.js';
+import { clearTemplateDescription, setTemplateDescription } from './templateMeta.js';
 import { findTrashItemId, recordPageChange, snapshotPageChange } from './pageChanges.js';
 import * as bootScan from './bootScan.js';
 import { isGitHubConnectEnabled } from './auth/githubConnect.js';
@@ -610,8 +613,30 @@ export function registerRoutes(app: FastifyInstance): void {
   app.get('/api/spaces/:space/templates', async (request) => {
     const { space } = request.params as { space: string };
     await session.requireSpaceRole(request, space, 'viewer');
-    const templates: PageMeta[] = await storage.listTemplates(space);
+    const templates: TemplateListItem[] = await storage.listTemplates(space);
     return { templates };
+  });
+
+  /** "New template": a blank document in `_templates/` with a name and an optional description. */
+  app.post('/api/spaces/:space/templates', async (request, reply) => {
+    const { space } = request.params as { space: string };
+    const body = parseBody(createBlankTemplateBodySchema, request.body);
+    const user = request.authUser!;
+    await session.requireSpaceRole(request, space, 'editor');
+    session.requireWriteScope(request);
+    await session.requireAgentWriteAllowed(user, space, '_templates');
+    gitSync.recordEditor(space, { name: user.name, email: user.email });
+    const meta = await storage.createPage(
+      { space, parentPath: '_templates', title: body.title, kind: 'doc' },
+      undefined,
+      resolveTextLanguage(user.lang, request.headers['accept-language']),
+    );
+    if (body.description) await setTemplateDescription(meta.id, body.description, user);
+    const after = snapshotPageChange(await storage.requireEntry(meta.id));
+    await recordPageChange(user.id, 'page.create', meta.id, space, undefined, after);
+    gitSync.noteActivity(space);
+    reply.status(201);
+    return meta;
   });
 
   /** The `_templates/` folder as a tree (any kind of page, subpages nested) — the template picker's tree. */
@@ -1256,6 +1281,8 @@ export function registerRoutes(app: FastifyInstance): void {
       liveContent: await liveCopyContent(template),
       scope,
     });
+    // The copy's root must not announce itself as a template (its subpages never carry the property).
+    await clearTemplateDescription(result.id, user);
     const after = snapshotPageChange(await storage.requireEntry(result.id));
     await recordPageChange(user.id, 'page.copy', result.id, body.space, undefined, after);
     gitSync.noteActivity(body.space);
@@ -1277,7 +1304,8 @@ export function registerRoutes(app: FastifyInstance): void {
 
     gitSync.recordEditor(entry.space, { name: user.name, email: user.email });
     const scope = await resolveCopyScope(user, entry, body.includeChildren);
-    const result = await storage.makeTemplate(id, { includeChildren: body.includeChildren, liveContent: await liveCopyContent(entry), scope });
+    const result = await storage.makeTemplate(id, { includeChildren: body.includeChildren, liveContent: await liveCopyContent(entry), scope, title: body.title });
+    if (body.description) await setTemplateDescription(result.id, body.description, user);
     const after = snapshotPageChange(await storage.requireEntry(result.id));
     await recordPageChange(user.id, 'page.copy', result.id, entry.space, undefined, after);
     gitSync.noteActivity(entry.space);

@@ -15,6 +15,11 @@ import { registerRoutes } from './routes.js';
 import * as storage from './storage.js';
 import { starterTemplates } from './starterTemplates.js';
 import { todayDateStamp } from './templateVars.js';
+import { readPageProperties } from './properties.js';
+
+async function propsOf(id: string): Promise<{ properties: Record<string, unknown> }> {
+  return readPageProperties(await storage.requireEntry(id), true);
+}
 
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify();
@@ -134,6 +139,55 @@ describe('page templates (real PG + real files, fastify inject)', () => {
 
     // The source stays where it was.
     expect((await storage.requireEntry(parent.id)).relPath.startsWith('docs/')).toBe(true);
+  });
+
+  it('make-template with a title and a description: retitled, property set, listed; from-template strips the property', async () => {
+    const source = await storage.createPage({ space, parentPath: 'docs', title: 'Checklist', kind: 'doc' });
+    await storage.createPage({ space, parentPath: 'docs/checklist', title: 'Item', kind: 'doc' });
+
+    const res = await post(`/api/pages/${source.id}/make-template`, { title: '  Release checklist ', description: ' Steps before a release.\nSecond line. ' });
+    expect(res.statusCode).toBe(201);
+    const meta = res.json() as { id: string; title: string; path: string };
+    expect(meta.title).toBe('Release checklist');
+    expect(meta.path.startsWith('_templates/release-checklist')).toBe(true);
+    expect((await storage.requireEntry(source.id)).title).toBe('Checklist');
+
+    const props = await propsOf(meta.id);
+    expect(props.properties['template-description']).toBe('Steps before a release.\nSecond line.');
+    const listed = (await storage.listTemplates(space)).find((t) => t.id === meta.id)!;
+    expect(listed.description).toBe('Steps before a release.\nSecond line.');
+    const viaRoute = (await get(`/api/spaces/${space}/templates`)).json() as { templates: Array<{ id: string; description?: string }> };
+    expect(viaRoute.templates.find((t) => t.id === meta.id)!.description).toBe('Steps before a release.\nSecond line.');
+    // A template without a description carries none.
+    expect((await storage.listTemplates(space)).find((t) => t.title === 'Sprint')!.description).toBeUndefined();
+
+    // The page made from it has no `template-description`; the template keeps it.
+    const created = await post('/api/pages/from-template', { templateId: meta.id, space, parentPath: 'work' });
+    expect(created.statusCode).toBe(201);
+    const copyId = (created.json() as { id: string }).id;
+    const copyProps = await propsOf(copyId);
+    expect(copyProps.properties).not.toHaveProperty('template-description');
+    const again = await propsOf(meta.id);
+    expect(again.properties['template-description']).toBe('Steps before a release.\nSecond line.');
+
+    // Validation: an empty title and an over-long description are refused.
+    expect((await post(`/api/pages/${source.id}/make-template`, { title: '   ' })).statusCode).toBe(400);
+    expect((await post(`/api/pages/${source.id}/make-template`, { description: 'x'.repeat(1001) })).statusCode).toBe(400);
+  });
+
+  it('POST /templates: a blank document template with a name and a description, one call', async () => {
+    const res = await post(`/api/spaces/${space}/templates`, { title: 'Weekly review', description: 'Look back at the week' });
+    expect(res.statusCode).toBe(201);
+    const meta = res.json() as { id: string; title: string; kind: string; path: string };
+    expect(meta).toMatchObject({ title: 'Weekly review', kind: 'doc' });
+    expect(meta.path.startsWith('_templates/')).toBe(true);
+    expect((await storage.listTemplates(space)).find((t) => t.id === meta.id)!.description).toBe('Look back at the week');
+
+    const bare = await post(`/api/spaces/${space}/templates`, { title: 'Bare one' });
+    expect(bare.statusCode).toBe(201);
+    expect((await storage.listTemplates(space)).find((t) => t.id === (bare.json() as { id: string }).id)!.description).toBeUndefined();
+    expect((await post(`/api/spaces/${space}/templates`, { title: '' })).statusCode).toBe(400);
+    expect((await post(`/api/spaces/${space}/templates`, { title: 'Nope' }, viewerCookie)).statusCode).toBe(403);
   });
 
   it('make-template: refuses the space root, a page already in _templates, a viewer, a missing page', async () => {

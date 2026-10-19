@@ -752,7 +752,6 @@
       "title": "Templates",
       "hint": "Page templates for this space. Right-click any page → Make template to add one.",
       "add": "New template",
-      "blankTitle": "New template",
       "empty": "No templates yet. Right-click any page → Make template, or add one with «+».",
       "offlineHint": "Needs a connection to the server",
       "badge": "Template",
@@ -774,6 +773,15 @@
         "creating": "Creating…",
         "empty": "No templates in this space yet.",
         "emptyHint": "Right-click any page → Make template, and it will show up here. Or start from a blank one."
+      },
+      "createBlankFailed": "Could not create the template",
+      "make": {
+        "name": "Template name",
+        "description": "Description",
+        "descriptionHint": "What is this template for? (optional)",
+        "includeChildren": "Include subpages",
+        "submit": "Create template",
+        "creating": "Creating…"
       }
     },
     "resizeHandle": {
@@ -883,6 +891,7 @@
       "makeTemplate": "Make template",
       "makeTemplateFailed": "Could not make a template from the page",
       "templateCreated": "Template “{{title}}” created",
+      "templateOpen": "Open",
       "moveUp": "Move up",
       "moveDown": "Move down",
       "reorderFailed": "Could not reorder the pages",

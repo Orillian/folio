@@ -23,8 +23,8 @@ import { fileURLToPath } from 'node:url';
 import type { PoolClient } from 'pg';
 import * as matterNS from 'gray-matter';
 import { ulid } from 'ulidx';
-import type { CanvasDocument, CreatePageBody, FormDoc, PageKind, PageMeta, PageStatus, SpaceAssetMode, SpaceGitStatus, SpaceInfo, SpaceVisibility, TableColumn, TableDoc, TableView, TreeNode } from '../shared/contracts.js';
-import { INDEX_META_VERSION, officeFormat } from '../shared/contracts.js';
+import type { CanvasDocument, CreatePageBody, FormDoc, PageKind, PageMeta, PageStatus, SpaceAssetMode, SpaceGitStatus, SpaceInfo, SpaceVisibility, TableColumn, TableDoc, TableView, TemplateListItem, TreeNode } from '../shared/contracts.js';
+import { INDEX_META_VERSION, officeFormat, TEMPLATE_DESCRIPTION_KEY } from '../shared/contracts.js';
 import { compileScanIgnore } from './scanIgnore.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
 import { translitSlug } from './translit.js';
@@ -2449,13 +2449,25 @@ export async function getSubtree(entry: PageIndexEntry, depth: number, allowedPa
  * folder that has no page of its own. Sorted like the tree. viewer+ (checked
  * by the route).
  */
-export async function listTemplates(space: string): Promise<PageMeta[]> {
+export async function listTemplates(space: string): Promise<TemplateListItem[]> {
   if (!(await spaceExists(space))) throw notFound('space');
   const entries = await listEntries(space);
-  return entries
+  const top = entries
     .filter((e) => (e.isIndex ? posixParent(e.dirPath) === TEMPLATES_DIR_NAME : e.dirPath === TEMPLATES_DIR_NAME))
-    .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title))
-    .map(toPageMeta);
+    .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
+  if (top.length === 0) return [];
+  // Descriptions ride the page index (`pages_index.frontmatter` holds a page's own properties): one query, no file reads.
+  const rows = await query<{ id: string; description: string | null }>(
+    `SELECT id, frontmatter->>'${TEMPLATE_DESCRIPTION_KEY}' AS description FROM pages_index WHERE space_slug = $1 AND id = ANY($2::text[])`,
+    [space, top.map((e) => e.id)],
+  );
+  const descriptions = new Map(rows.filter((r) => r.description && r.description.trim()).map((r) => [r.id, r.description!.trim()]));
+  return top.map((e) => {
+    const meta: TemplateListItem = toPageMeta(e);
+    const description = descriptions.get(e.id);
+    if (description) meta.description = description;
+    return meta;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -4533,11 +4545,13 @@ export async function createFromTemplate(
  * keeping its title (and, with `includeChildren`, its subpages). The space's
  * root page cannot be one, and a template is not made a template twice.
  */
-export async function makeTemplate(id: string, opts: { includeChildren?: boolean; liveContent?: string; scope?: CopyScope } = {}): Promise<PageMeta> {
+export async function makeTemplate(id: string, opts: { includeChildren?: boolean; liveContent?: string; scope?: CopyScope; title?: string } = {}): Promise<PageMeta> {
   const source = await requireEntry(id);
   if (isUnderTemplates(source.relPath)) throw badRequest('this page is already a template');
   if (source.isIndex && source.dirPath === '') throw badRequest('the space root cannot be a template');
-  return copyPage(id, source.space, TEMPLATES_DIR_NAME, opts.liveContent, opts.includeChildren ?? true, opts.scope);
+  const title = opts.title?.trim() || undefined;
+  const { meta } = await copyPageInternal(id, source.space, TEMPLATES_DIR_NAME, opts.liveContent, opts.includeChildren ?? true, opts.scope, title);
+  return retitleCopy(meta, title);
 }
 
 // ---------------------------------------------------------------------------

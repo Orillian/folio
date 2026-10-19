@@ -50,9 +50,11 @@ import type {
   ConfluenceImportRequest,
   FolioConfig,
   CopyPageBody,
+  CreateBlankTemplateBody,
   CreateFromTemplateBody,
   DuplicatePageBody,
   MakeTemplateBody,
+  TemplateListItem,
   CreatedApiToken,
   CreatePageBody,
   CreateSavedSearchBody,
@@ -918,7 +920,7 @@ export const api = {
   // ---------- templates (round 5; any page kind with subpages since 19.10.2026) ----------
 
   /** The top-level templates of the space (pages of its `_templates/` folder, of any kind): `{ templates: [] }`, the same wrapper-object convention as every other list endpoint. */
-  getTemplates: (space: string) => request<{ templates: PageMeta[] }>(`/api/spaces/${encodeURIComponent(space)}/templates`),
+  getTemplates: (space: string) => request<{ templates: TemplateListItem[] }>(`/api/spaces/${encodeURIComponent(space)}/templates`),
 
   /** The contents of the space's `_templates/` folder as a tree (same node shape as the page tree) — the sidebar's Templates section. */
   getTemplatesTree: async (space: string): Promise<TreeNode[]> =>
@@ -931,7 +933,14 @@ export const api = {
     return page;
   },
 
-  /** The page copied into the space's `_templates/` folder (its subpages along by default). */
+  /** "New template": a blank document in the space's `_templates/` folder, with a name and an optional description. */
+  createBlankTemplate: async (space: string, body: CreateBlankTemplateBody) => {
+    const page = await request<PageMeta>(`/api/spaces/${encodeURIComponent(space)}/templates`, { method: 'POST', body: JSON.stringify(body) });
+    notifyPageChanges();
+    return page;
+  },
+
+  /** The page copied into the space's `_templates/` folder (its subpages along by default); `title` / `description` name the template. */
   makeTemplate: async (id: string, body: MakeTemplateBody) => {
     const page = await request<PageMeta>(`/api/pages/${encodeURIComponent(id)}/make-template`, { method: 'POST', body: JSON.stringify(body) });
     notifyPageChanges();

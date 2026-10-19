@@ -251,7 +251,8 @@ both at home.
 - Outline and notes panel, backlinks, page icons and covers, glossary terms
   with hover cards.
 - Custom templates: any page in `_templates/`, even with subpages, becomes a
-  template ("Make template", "From template…"); a new space starts with three.
+  template, with a name and description ("Make template", "From template…"); a
+  new space starts with three.
 - Light and dark themes, following the system or chosen by hand.
 
 ![The same page in the dark theme](docs/images/document-dark.png)

@@ -96,8 +96,15 @@ extension differs, the last part of the path change.
   behind duplicate and import), so subpages, properties, icon and asset links
   follow, and new page ids are minted for every copy.
 - `POST /api/pages/from-template` takes `{templateId, space, parentPath, title?}`;
-  `POST /api/pages/:id/make-template` takes `{includeChildren}` (default true)
-  and is refused for the space root. In documents `{{date}}`, `{{author}}` and
+  `POST /api/pages/:id/make-template` takes `{title?, description?,
+  includeChildren}` (`includeChildren` defaults to true) and is refused for the
+  space root; `POST /api/spaces/:space/templates` takes `{title, description?}`
+  and creates a blank document template. `GET /api/spaces/:space/templates`
+  items carry `description`. The description is the template's property
+  `template-description`: the picker shows it as a second line, the sidebar as a
+  tooltip, and from-template drops it from the new page. In the web app both
+  "Make template" and the Templates "+" (and the picker's empty-state button)
+  open one dialog; it stays open and undismissable while the request runs. In documents `{{date}}`, `{{author}}` and
   `{{title}}` are substituted; unknown `{{…}}` are left alone.
 - `_templates/` is excluded in one place per consumer: the page tree, graph,
   tags, bases, search of the tree and `publicReadablePageIds`. The sidebar
@@ -756,6 +763,9 @@ Each of these was a real defect. They are here so that nobody pays twice.
 - Moving or renaming a page rewrites `[text](path)` links and images, but not
   HTML tags or reference-style links.
 - Offline mode does not cover data tables, forms, uploads or templates.
+- The copy flows (make-template, from-template, duplicate, copy) end with a
+  `scanSpace` of the whole space (mtime/size skip). On a large space with remote
+  Postgres this is the slow part; there is no scoped rescan yet.
 - Reactions exist on whiteboard shapes only, not on documents, tables or
   comments, and live in the database, not in the board's file or in Git.
 - The "Not saved" badge reports that the server has not confirmed the latest

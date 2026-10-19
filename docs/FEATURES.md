@@ -110,10 +110,14 @@ document, whiteboard, data table, form, base, or a whole page with subpages.
 subpages, properties and icon, to the chosen place. In documents `{{date}}`,
 `{{author}}` and `{{title}}` are filled in; any other `{{…}}` stays as written.
 "Make template" in a page's context menu (not for the space root, and disabled
-offline) copies a page, with its subpages, into `_templates/`. Editors also get
-a "Templates" section in the sidebar (collapsed, with a count) to add a blank
-template, rename or delete one; an open template is marked "Template" in the
-breadcrumbs. The folder is hidden from the page tree, graph, tags, bases and
+offline) opens a dialog for the template name (prefilled with the page title),
+an optional description and, when the page has children, "Include subpages",
+then copies the page into `_templates/`; the Templates section expands and a
+toast offers "Open". The description is a second line in the picker and a
+tooltip in the sidebar; pages created from the template do not get it. Editors
+also get a "Templates" section in the sidebar (collapsed, with a count) whose
+"+" opens the same dialog for a blank template, and where they rename or delete
+one; an open template is marked "Template" in the breadcrumbs. The folder is hidden from the page tree, graph, tags, bases and
 public sites. A new empty space starts with Meeting notes, How-to and Decision
 record in the creator's language (English or Ukrainian); a space cloned from Git
 gets none.

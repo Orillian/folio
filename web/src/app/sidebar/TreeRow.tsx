@@ -13,6 +13,7 @@ import { OfflineUnsupportedError, createPageOfflineAware } from '../offline/crea
 import { discardLocalPage, useIsLocalPage } from '../offline/localPages';
 import { clearPersistedState } from '../offline/ydocPersistence';
 import { TemplatePickerDialog } from '../templates/TemplatePickerDialog';
+import { MakeTemplateDialog } from '../templates/MakeTemplateDialog';
 import { invalidateTemplates } from '../templates/useTemplates';
 import { useConnectivity } from '../offline/connectivity';
 import { MoveDialog } from './MoveDialog';
@@ -76,6 +77,8 @@ export interface TreeRowProps {
    * "Copy to…", "Make template" or "From template…" — a template is edited, renamed and deleted, nothing else.
    */
   templateMode?: boolean;
+  /** Template descriptions by page id (the Templates section): a row's tooltip. */
+  descriptions?: ReadonlyMap<string, string>;
 }
 
 /** One page-tree row, recursively rendering its children when expanded. */
@@ -95,6 +98,7 @@ export function TreeRow({
   canEdit,
   conflictedIds,
   templateMode = false,
+  descriptions,
 }: TreeRowProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
@@ -109,6 +113,7 @@ export function TreeRow({
   const [creatingBase, setCreatingBase] = useState(false);
   const [copying, setCopying] = useState(false);
   const [pickingTemplate, setPickingTemplate] = useState(false);
+  const [makingTemplate, setMakingTemplate] = useState(false);
   const [changingSlug, setChangingSlug] = useState(false);
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
   const committedRef = useRef(false);
@@ -122,6 +127,9 @@ export function TreeRow({
   const isFolder = node.kind === 'folder';
   const isActive = isFolder ? activeFolderPath === node.path : activeId === node.id;
   const displayTitle = treeNodeDisplayTitle(node, siblings);
+  const description = descriptions?.get(node.id);
+  const baseTitleHint = displayTitle === node.title ? node.title : `${node.title} · ${node.path}`;
+  const rowTitleHint = description ? `${baseTitleHint}\n${description}` : baseTitleHint;
   const href = isFolder ? `/s/${space}/d/${node.path}` : `/s/${space}/p/${node.id}`;
   // Round 5: frontmatter icon (emoji) takes over the row's icon slot when
   // set — display-only here (editing happens from the page header's picker,
@@ -281,14 +289,13 @@ export function TreeRow({
   // "From template…" (the picker dialog, rendered below) is scoped to this row's own directory — Sidebar.tsx has the root-level twin.
 
   // "Make template" (the owner, 19.10.2026): the page, its subpages along, copied into the space's _templates/ folder.
-  const makeTemplate = useMutation({
-    mutationFn: () => api.makeTemplate(node.id, { includeChildren: true }),
-    onSuccess: (template) => {
-      invalidateTemplates(queryClient, space);
-      showToast(t('sidebar.tree.templateCreated', { title: template.title }), 'info');
-    },
-    onError: (err) => showToast(errorText(err, 'sidebar.tree.makeTemplateFailed')),
-  });
+  // The dialog (templates/MakeTemplateDialog.tsx) asks for a name and a description and does the server call.
+  function onTemplateMade(template: PageMeta) {
+    showToast(t('sidebar.tree.templateCreated', { title: template.title }), 'info', {
+      label: t('sidebar.tree.templateOpen'),
+      onClick: () => navigate(`/s/${space}/p/${template.id}`),
+    });
+  }
   // The space's front door can't be a template (the server answers 400); a local page isn't on the server yet.
   const isSpaceRoot = parentPath === '' && (node.path === 'index.md' || node.path === 'README.md');
 
@@ -639,7 +646,7 @@ export function TreeRow({
             className="min-w-0 flex-1 rounded border border-neutral-400 bg-white px-1 py-0 text-sm text-neutral-900 outline-none dark:border-neutral-500 dark:bg-neutral-900 dark:text-neutral-100"
           />
         ) : (
-          <span className="min-w-0 flex-1 truncate" title={displayTitle === node.title ? node.title : `${node.title} · ${node.path}`}>
+          <span className="min-w-0 flex-1 truncate" title={rowTitleHint}>
             {displayTitle}
           </span>
         )}
@@ -884,11 +891,11 @@ export function TreeRow({
                   {!templateMode && !isSpaceRoot && (
                     <MenuItem
                       icon={<LayoutTemplate size={14} />}
-                      disabled={offline || makeTemplate.isPending}
+                      disabled={offline}
                       title={offline ? t('sidebar.templates.offlineHint') : undefined}
                       onSelect={() => {
                         close();
-                        makeTemplate.mutate();
+                        setMakingTemplate(true);
                       }}
                     >
                       {t('sidebar.tree.makeTemplate')}
@@ -935,6 +942,7 @@ export function TreeRow({
               canEdit={canEdit}
               conflictedIds={conflictedIds}
               templateMode={templateMode}
+              descriptions={descriptions}
             />
           ))}
         </div>
@@ -969,6 +977,17 @@ export function TreeRow({
 
       {pickingTemplate && (
         <TemplatePickerDialog space={space} parentPath={childDirOf(node)} onClose={() => setPickingTemplate(false)} onCreated={(page) => void revealAndOpen(page)} />
+      )}
+
+      {makingTemplate && (
+        <MakeTemplateDialog
+          space={space}
+          mode="make"
+          page={{ id: node.id, title: node.title }}
+          hasChildren={hasChildren}
+          onClose={() => setMakingTemplate(false)}
+          onCreated={onTemplateMade}
+        />
       )}
 
       {creatingBase && <NewBaseDialog space={space} initialParentPath={childDirOf(node)} onClose={() => setCreatingBase(false)} />}

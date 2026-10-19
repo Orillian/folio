@@ -1262,8 +1262,25 @@ export type CreateFromTemplateBody = z.infer<typeof createFromTemplateBodySchema
 export const makeTemplateBodySchema = z.object({
   /** Bring the page's subpages along (default true). */
   includeChildren: z.boolean().default(true),
+  /** The template's name (the root copy is retitled). Omitted: the page's own title. */
+  title: z.string().trim().min(1).max(300).optional(),
+  /** The template's description, kept in its `template-description` property. Omitted or empty: none. */
+  description: z.string().trim().max(1000).optional(),
 });
 export type MakeTemplateBody = z.infer<typeof makeTemplateBodySchema>;
+
+/** POST /api/spaces/:space/templates: a blank document template — the "New template" dialog (name + description) in one round trip. */
+export const createBlankTemplateBodySchema = z.object({
+  title: z.string().trim().min(1).max(300),
+  description: z.string().trim().max(1000).optional(),
+});
+export type CreateBlankTemplateBody = z.infer<typeof createBlankTemplateBodySchema>;
+
+/** The property that holds a template's description (on the template's root page only; a page made from the template does not carry it). */
+export const TEMPLATE_DESCRIPTION_KEY = 'template-description';
+
+/** One row of GET /api/spaces/:space/templates: the template's page plus its description, when it has one. */
+export type TemplateListItem = PageMeta & { description?: string };
 
 export const renamePageBodySchema = z.object({ title: z.string().min(1) });
 export type RenamePageBody = z.infer<typeof renamePageBodySchema>;

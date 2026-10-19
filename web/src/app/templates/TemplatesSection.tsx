@@ -1,15 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight, LayoutTemplate, Plus } from 'lucide-react';
 import type { TreeNode } from '@shared/contracts';
 import { useLocalStorage } from '../hooks';
-import { useToast } from '../ui/Toast';
 import { useConnectivity } from '../offline/connectivity';
 import { TreeRow } from '../sidebar/TreeRow';
 import type { DraggedNode } from '../sidebar/TreeRow';
 import { TEMPLATES_FOLDER, collectDirectories } from '../sidebar/treeUtils';
-import { useCreateBlankTemplate, useTemplates, useTemplatesTree } from './useTemplates';
+import { MakeTemplateDialog } from './MakeTemplateDialog';
+import { OPEN_TEMPLATES_SECTION_EVENT, templatesSectionOpenKey } from './templatesSectionState';
+import { useTemplates, useTemplatesTree } from './useTemplates';
 import '../i18n/register';
 
 export interface TemplatesSectionProps {
@@ -30,10 +31,18 @@ const NO_CONFLICTS: Set<string> = new Set();
 export function TemplatesSection({ space, activeId, activeFolderPath }: TemplatesSectionProps) {
   const { t } = useTranslation('app');
   const navigate = useNavigate();
-  const showToast = useToast();
   const offline = useConnectivity() === 'offline';
 
-  const [open, setOpen] = useLocalStorage(`folio:templates-section-open:${space}`, false);
+  const [open, setOpen] = useLocalStorage(templatesSectionOpenKey(space), false);
+  // "Make template" opens the section so the new template is in sight (templatesSectionState.ts).
+  useEffect(() => {
+    const onOpen = (event: Event) => {
+      if ((event as CustomEvent<{ space?: string }>).detail?.space === space) setOpen(true);
+    };
+    window.addEventListener(OPEN_TEMPLATES_SECTION_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_TEMPLATES_SECTION_EVENT, onOpen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [space]);
   const [expandedArray, setExpandedArray] = useLocalStorage<string[]>(`folio:templates-expanded:${space}`, []);
   const expanded = useMemo(() => new Set(expandedArray), [expandedArray]);
   const setExpanded = (updater: (prev: Set<string>) => Set<string>) => {
@@ -52,14 +61,9 @@ export function TemplatesSection({ space, activeId, activeFolderPath }: Template
   }, [treeData]);
   const directories = useMemo(() => collectDirectories(nodes), [nodes]);
 
-  const createBlank = useCreateBlankTemplate(
-    space,
-    (page) => {
-      setOpen(true);
-      navigate(`/s/${space}/p/${page.id}`);
-    },
-    (message) => showToast(message),
-  );
+  // Descriptions of the top-level templates, shown as the rows' tooltips.
+  const descriptions = useMemo(() => new Map(templates.filter((tpl) => tpl.description).map((tpl) => [tpl.id, tpl.description as string])), [templates]);
+  const [creating, setCreating] = useState(false);
 
   return (
     <div className="mt-2">
@@ -86,10 +90,10 @@ export function TemplatesSection({ space, activeId, activeFolderPath }: Template
           type="button"
           aria-label={t('sidebar.templates.add')}
           title={offline ? t('sidebar.templates.offlineHint') : t('sidebar.templates.add')}
-          disabled={offline || createBlank.isPending}
+          disabled={offline}
           onClick={(e) => {
             e.stopPropagation();
-            createBlank.mutate();
+            setCreating(true);
           }}
           className="flex shrink-0 items-center justify-center rounded p-1 text-neutral-500 hover:bg-neutral-200 disabled:opacity-50 max-md:min-h-10 max-md:min-w-10 dark:text-neutral-400 dark:hover:bg-neutral-700"
         >
@@ -129,10 +133,15 @@ export function TemplatesSection({ space, activeId, activeFolderPath }: Template
                 canEdit
                 conflictedIds={NO_CONFLICTS}
                 templateMode
+                descriptions={descriptions}
               />
             ))
           )}
         </div>
+      )}
+
+      {creating && (
+        <MakeTemplateDialog space={space} mode="new" onClose={() => setCreating(false)} onCreated={(page) => navigate(`/s/${space}/p/${page.id}`)} />
       )}
     </div>
   );

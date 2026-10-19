@@ -3,7 +3,8 @@ import { ClipboardList, Database, FileText, LayoutDashboard, Plus, Table2, Waypo
 import { useTranslation } from 'react-i18next';
 import type { PageKind, PageMeta } from '@shared/contracts';
 import { Modal } from '../ui/Modal';
-import { useCreateBlankTemplate, useCreateFromTemplate, useTemplates } from './useTemplates';
+import { MakeTemplateDialog } from './MakeTemplateDialog';
+import { useCreateFromTemplate, useTemplates } from './useTemplates';
 import type { TemplateOption } from './useTemplates';
 import '../i18n/register';
 
@@ -57,15 +58,9 @@ export function TemplatePickerDialog({ space, parentPath, onClose, onCreated, on
     },
     setError,
   );
-  const createBlank = useCreateBlankTemplate(
-    space,
-    (page) => {
-      (onTemplateCreated ?? onCreated)(page);
-      onClose();
-    },
-    setError,
-  );
-  const busy = create.isPending || createBlank.isPending;
+  // "New template" (the empty state's button): the name + description dialog takes the picker's place.
+  const [creatingTemplate, setCreatingTemplate] = useState(false);
+  const busy = create.isPending;
 
   const showFilter = templates.length > TEMPLATE_FILTER_THRESHOLD;
   const needle = filter.trim().toLowerCase();
@@ -87,6 +82,19 @@ export function TemplatePickerDialog({ space, parentPath, onClose, onCreated, on
     const items = Array.from(from.closest('[role="dialog"]')?.querySelectorAll<HTMLElement>('[data-template-item]') ?? []);
     const next = items[items.indexOf(from) + delta];
     next?.focus();
+  }
+
+  if (creatingTemplate) {
+    return (
+      <MakeTemplateDialog
+        space={space}
+        mode="new"
+        onClose={onClose}
+        onCreated={(page) => {
+          (onTemplateCreated ?? onCreated)(page);
+        }}
+      />
+    );
   }
 
   return (
@@ -119,7 +127,7 @@ export function TemplatePickerDialog({ space, parentPath, onClose, onCreated, on
             disabled={busy}
             onClick={() => {
               setError(null);
-              createBlank.mutate();
+              setCreatingTemplate(true);
             }}
             className="inline-flex items-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
           >
@@ -176,7 +184,14 @@ export function TemplatePickerDialog({ space, parentPath, onClose, onCreated, on
                 ) : (
                   <KindIcon kind={template.kind} />
                 )}
-                <span className="min-w-0 flex-1 truncate">{template.title}</span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate">{template.title}</span>
+                  {template.description && (
+                    <span className="truncate text-xs text-neutral-500 dark:text-neutral-400" title={template.description}>
+                      {template.description.replace(/\s+/g, ' ')}
+                    </span>
+                  )}
+                </span>
                 <span className="shrink-0 text-xs text-neutral-400 dark:text-neutral-500">
                   {t(`sidebar.templates.kinds.${KIND_LABELS[template.kind] ?? 'doc'}`)}
                 </span>

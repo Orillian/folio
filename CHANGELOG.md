@@ -32,11 +32,21 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   template with its subpages, properties and icon to the chosen place
   (`POST /api/pages/from-template`). In documents `{{date}}`, `{{author}}` and
   `{{title}}` are filled in; other `{{…}}` are left as they are. "Make template"
-  in a page's context menu or "…" menu (`POST /api/pages/:id/make-template`)
-  copies the page, with its subpages by default, into `_templates/`; not for the
-  space root, and disabled offline. Editors get a "Templates" section in the
-  sidebar (collapsed, with a count, a "+" for a blank template, rename and delete
-  in the tree); an open template is marked "Template" in the breadcrumbs. The
+  in a page's context menu or "…" menu opens a dialog: the template name
+  (prefilled with the page title), an optional description, and an "Include
+  subpages" checkbox when the page has children. While it works the button says
+  "Creating…" and the dialog can't be dismissed; afterwards the Templates section
+  expands and a toast offers "Open". It copies the page into `_templates/`
+  (`POST /api/pages/:id/make-template` with `title`, `description` and
+  `includeChildren`); not for the space root, and disabled offline. The
+  description is stored as the template's property `template-description`: it
+  shows as a second line in the picker and as a tooltip in the sidebar, and a
+  page created from the template does not get it. Editors get a "Templates"
+  section in the sidebar (collapsed, with a count, rename and delete in the tree)
+  whose "+", like the picker's empty-state button, opens the same dialog and
+  creates a blank document template (`POST /api/spaces/:space/templates` with
+  `title` and optional `description`; the items of `GET` on it carry
+  `description`); an open template is marked "Template" in the breadcrumbs. The
   folder stays hidden from the page tree, graph, tags, bases and public sites. A
   new empty space starts with three templates in the creator's language (English
   or Ukrainian): Meeting notes, How-to, Decision record. Spaces cloned from Git
