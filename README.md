@@ -632,7 +632,9 @@ members, to you only, or to selected people with view or edit rights.
 
 - Share links for people without an account: view or edit, one page or a
   whole subtree (pages with their own access restrictions are left out),
-  revocable at any time.
+  revocable at any time. A signed-in reader who can already open the page is
+  sent to the normal page in their own account (`?as=guest` keeps the guest
+  view).
 - Forms that accept answers without an account.
 
 **For agents and scripts**

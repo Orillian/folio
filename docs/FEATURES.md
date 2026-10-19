@@ -117,10 +117,14 @@ toast offers "Open". The description is a second line in the picker and a
 tooltip in the sidebar; pages created from the template do not get it. Editors
 also get a "Templates" section in the sidebar (collapsed, with a count) whose
 "+" opens the same dialog for a blank template, and where they rename or delete
-one; an open template is marked "Template" in the breadcrumbs. The folder is hidden from the page tree, graph, tags, bases and
-public sites. A new empty space starts with Meeting notes, How-to and Decision
+one; an open template is marked "Template" in the breadcrumbs. The folder is
+hidden from the page tree, graph, tags, bases and public sites (search still
+finds it). A new empty space starts with Meeting notes, How-to and Decision
 record in the creator's language (English or Ukrainian); a space cloned from Git
-gets none.
+gets none. Limits: `{{title}}` is filled only in documents (not tables or
+forms); templates need a connection (offline mode does not cover them); two
+templates with the same title show their file names in the tree. Copies are
+fast: a page write re-indexes only the paths it touched.
 
 ## 3. Working together
 
@@ -421,7 +425,11 @@ Markdown — convenient for external agents.
 "With child pages" never includes a page that has its own access
 restrictions, nor anything below it: such a page is shared only by a link
 made for that page itself. This is checked on every visit, so restricting a
-page later also removes it from links that already exist. Of the space's
+page later also removes it from links that already exist.
+
+A signed-in reader who can open the page is sent from `/share/<token>` to the
+normal page in their own account, with their own rights; add `?as=guest` to
+keep the guest view. Of the space's
 files, a guest gets only those of the pages the link covers and the images
 and attachments those pages embed or link to. A link is a credential, so
 links are listed, created and revoked only in the browser, never with an API
