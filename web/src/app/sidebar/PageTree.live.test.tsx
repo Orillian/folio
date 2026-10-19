@@ -115,8 +115,6 @@ function stubServer(): Server {
       const method = init?.method ?? 'GET';
       const respond = (body: unknown) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
       if (method !== 'GET') return respond({});
-      // The real server has this endpoint; answering it keeps useTemplates from adding a second observer of the tree query.
-      if (url.endsWith('/templates')) return respond({ templates: [] });
       if (url.endsWith('/api/notifications')) return respond({ items: [], unread: 0 });
       if (url.endsWith('/api/spaces')) return respond({ spaces: [] });
       const treeMatch = /\/api\/spaces\/([^/]+)\/tree$/.exec(url);

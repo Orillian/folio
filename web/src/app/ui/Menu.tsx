@@ -186,11 +186,13 @@ export interface MenuItemProps {
   onSelect: () => void;
   destructive?: boolean;
   disabled?: boolean;
+  /** Tooltip — e.g. why the item is disabled. */
+  title?: string;
   /** Called when the item appears (the menu opened) and when it is pointed at: warm up what selecting it loads. */
   onPreload?: () => void;
 }
 
-export function MenuItem({ icon, children, onSelect, destructive, disabled, onPreload }: MenuItemProps) {
+export function MenuItem({ icon, children, onSelect, destructive, disabled, title, onPreload }: MenuItemProps) {
   useEffect(() => {
     onPreload?.(); // once, when the menu opens
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -199,6 +201,7 @@ export function MenuItem({ icon, children, onSelect, destructive, disabled, onPr
       type="button"
       role="menuitem"
       disabled={disabled}
+      title={title}
       onPointerEnter={onPreload}
       onFocus={onPreload}
       onClick={(e) => {

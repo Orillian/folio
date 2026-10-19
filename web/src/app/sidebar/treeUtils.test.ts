@@ -8,7 +8,6 @@ import {
   findNode,
   findNodeByPath,
   findSpaceRootPage,
-  getTemplatePages,
   getTopLevelNodes,
   isContainerNode,
   plusTargetDirFor,
@@ -107,26 +106,6 @@ describe('excludeTemplatesFolder', () => {
   it('does not touch a same-named page nested deeper (only matches at the top level)', () => {
     const nested = node('a', 'docs', [node('b', 'docs/_templates.md')], 'folder');
     expect(excludeTemplatesFolder([nested])).toEqual([nested]);
-  });
-});
-
-describe('getTemplatePages', () => {
-  it('returns the doc-kind direct children of the top-level _templates folder', () => {
-    const meeting = node('t1', '_templates/meeting.md');
-    const board = node('t2', '_templates/board.excalidraw', [], 'board');
-    const templates = node('t', '_templates', [meeting, board], 'folder');
-    expect(getTemplatePages([templates])).toEqual([meeting]);
-  });
-
-  it('returns an empty list when there is no _templates folder', () => {
-    expect(getTemplatePages([node('a', 'onboarding.md')])).toEqual([]);
-  });
-
-  it('is not recursive — a nested sub-folder inside _templates is not scanned', () => {
-    const nested = node('sub', '_templates/archived', [node('deep', '_templates/archived/old.md')], 'folder');
-    const meeting = node('t1', '_templates/meeting.md');
-    const templates = node('t', '_templates', [nested, meeting], 'folder');
-    expect(getTemplatePages([templates])).toEqual([meeting]);
   });
 });
 

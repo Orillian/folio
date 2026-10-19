@@ -20,7 +20,7 @@ The loop that makes it worth doing: the newcomer does not just read, they show w
 
 ## Set it up
 
-1. Create a space for it (**Create space**) and add the pages. Start from the structure above. A `_templates` folder in the space can hold your own starting pages.
+1. Create a space for it (**Create space**) and add the pages. Start from the structure above. A `_templates` folder in the space can hold your own starting pages, including whole page trees.
 2. Create a table "Week-one check answers" with the questions as columns, and add a form to it. Check the form on a test account before sending it to anyone.
 3. In the `.agent` folder of the space add the pages from `agent-pages/` in this folder (adapt the wording): `How to answer`, `Tone`, `Escalation`. They apply to every run of the built-in assistant in this space.
 4. Invite the newcomer with the editor role, or the viewer role if they only read.

@@ -50,7 +50,9 @@ import type {
   ConfluenceImportRequest,
   FolioConfig,
   CopyPageBody,
+  CreateFromTemplateBody,
   DuplicatePageBody,
+  MakeTemplateBody,
   CreatedApiToken,
   CreatePageBody,
   CreateSavedSearchBody,
@@ -913,19 +915,28 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  // ---------- templates (round 5, create-from-template) ----------
+  // ---------- templates (round 5; any page kind with subpages since 19.10.2026) ----------
 
-  /**
-   * Not yet in shared/contracts.ts (SERVER round-5 item) but confirmed live
-   * (2026-08-20 browser check): `{ templates: [] }`, matching every other
-   * list endpoint's wrapper-object convention in this API (listSpaces ->
-   * {spaces}, listMembers -> {members}, listUsers -> {users}, search ->
-   * {hits}) — NOT a bare array, which was this function's first (wrong)
-   * guess before that check caught it. Callers still degrade gracefully on
-   * a 404/error by falling back to a client-side tree scan for a
-   * `_templates` node's children — see app/templates/useTemplates.ts.
-   */
+  /** The top-level templates of the space (pages of its `_templates/` folder, of any kind): `{ templates: [] }`, the same wrapper-object convention as every other list endpoint. */
   getTemplates: (space: string) => request<{ templates: PageMeta[] }>(`/api/spaces/${encodeURIComponent(space)}/templates`),
+
+  /** The contents of the space's `_templates/` folder as a tree (same node shape as the page tree) — the sidebar's Templates section. */
+  getTemplatesTree: async (space: string): Promise<TreeNode[]> =>
+    (await request<{ tree: TreeNode[] }>(`/api/spaces/${encodeURIComponent(space)}/templates/tree`)).tree,
+
+  /** A template copied under `parentPath` with its subpages; the server fills {{date}}/{{author}}/{{title}}. */
+  createFromTemplate: async (body: CreateFromTemplateBody) => {
+    const page = await request<PageMeta>('/api/pages/from-template', { method: 'POST', body: JSON.stringify(body) });
+    notifyPageChanges();
+    return page;
+  },
+
+  /** The page copied into the space's `_templates/` folder (its subpages along by default). */
+  makeTemplate: async (id: string, body: MakeTemplateBody) => {
+    const page = await request<PageMeta>(`/api/pages/${encodeURIComponent(id)}/make-template`, { method: 'POST', body: JSON.stringify(body) });
+    notifyPageChanges();
+    return page;
+  },
 
   // ---------- API tokens + MCP (round 7) ----------
 

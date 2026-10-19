@@ -1,3 +1,8 @@
+/**
+ * Placeholders of a page template. Ported 1:1 from web/src/app/template.ts so
+ * a page created from a template by the server fills in the same three names
+ * the client always did.
+ */
 export interface TemplateVars {
   date: string; // YYYY-MM-DD
   author: string;

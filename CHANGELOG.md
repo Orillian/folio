@@ -24,6 +24,23 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ### Added
 
+- **Custom page templates.** Any page in the space's `_templates/` folder is a
+  template: a document, board, data table, form, base, or a whole page with
+  subpages (before, only plain documents directly in the folder worked, one menu
+  item each). "From template…" in the "+" menu (space root and every tree row)
+  opens a picker, with a filter when there are more than six; creating copies the
+  template with its subpages, properties and icon to the chosen place
+  (`POST /api/pages/from-template`). In documents `{{date}}`, `{{author}}` and
+  `{{title}}` are filled in; other `{{…}}` are left as they are. "Make template"
+  in a page's context menu or "…" menu (`POST /api/pages/:id/make-template`)
+  copies the page, with its subpages by default, into `_templates/`; not for the
+  space root, and disabled offline. Editors get a "Templates" section in the
+  sidebar (collapsed, with a count, a "+" for a blank template, rename and delete
+  in the tree); an open template is marked "Template" in the breadcrumbs. The
+  folder stays hidden from the page tree, graph, tags, bases and public sites. A
+  new empty space starts with three templates in the creator's language (English
+  or Ukrainian): Meeting notes, How-to, Decision record. Spaces cloned from Git
+  get none.
 - Error reporting can attach a recording of recent actions to a report (Sentry
   Session Replay). Everything is masked: all text, form fields and images are
   replaced by placeholders, board drawings and embedded frames are not recorded,

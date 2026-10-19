@@ -41,7 +41,9 @@ import { OfflineUnsupportedError, createPageOfflineAware, treeOfflineAware } fro
 import { listLocalPages } from '../offline/localPages';
 import { mergeLocalPages } from '../offline/treeMerge';
 import { Menu, MenuItem } from '../ui/Menu';
-import { useTemplates, useCreateFromTemplate } from '../templates/useTemplates';
+import { TemplatePickerDialog } from '../templates/TemplatePickerDialog';
+import { TemplatesSection } from '../templates/TemplatesSection';
+import { useConnectivity } from '../offline/connectivity';
 import { StarButton } from '../header/StarButton';
 import { SpaceSwitcher } from './SpaceSwitcher';
 import { PageTree } from './PageTree';
@@ -262,15 +264,10 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
     onError: (err) => showToast(errorText(err, 'sidebar.syncFailed')),
   });
 
-  // Round 5: "create from template" — _templates/ folder as the source, see
-  // templates/useTemplates.ts. Only fetched/shown for editor+ (same gate as
-  // the plain create actions right below).
-  const { templates } = useTemplates(space);
-  const createFromTemplate = useCreateFromTemplate(
-    space,
-    (page) => navigate(`/s/${space}/p/${page.id}`),
-    (message) => showToast(message),
-  );
+  // "From template…": the picker dialog (templates/TemplatePickerDialog.tsx) and the directory it creates in, or null when closed.
+  // Creating from a template is a server operation, so it waits for a connection.
+  const [templatePickerDir, setTemplatePickerDir] = useState<string | null>(null);
+  const offline = useConnectivity() === 'offline';
 
   // Round 14 off-canvas drawer, <md only: `left` (not `transform`) drives
   // the slide below — a transform on the <aside>, including the identity
@@ -541,6 +538,20 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
                   >
                     {t('sidebar.newBase')}
                   </MenuItem>
+                  {/* Any kind of template from the space's _templates/ folder, picked in a dialog; same current-context target as the other items. */}
+                  <MenuItem
+                    icon={<LayoutTemplate size={14} />}
+                    disabled={offline}
+                    title={offline ? t('sidebar.templates.offlineHint') : undefined}
+                    onSelect={() => {
+                      close();
+                      const cached = cachedPlusTargetDir();
+                      if (cached !== null) setTemplatePickerDir(cached);
+                      else void currentPlusTargetDir().then(setTemplatePickerDir, () => setTemplatePickerDir(''));
+                    }}
+                  >
+                    {t('sidebar.fromTemplate')}
+                  </MenuItem>
                   <MenuItem
                     icon={<Upload size={14} />}
                     onSelect={() => {
@@ -550,31 +561,6 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
                   >
                     {t('sidebar.uploadFile')}
                   </MenuItem>
-                  {templates.length > 0 && (
-                    <>
-                      <div className="my-1 border-t border-neutral-200 dark:border-neutral-700" />
-                      {templates.map((template) => (
-                        <MenuItem
-                          key={template.id}
-                          icon={<LayoutTemplate size={14} />}
-                          onSelect={() => {
-                            close();
-                            // Current-context target dir, same as the plain
-                            // create actions above — not append-last though:
-                            // that's this hook's own onSuccess (shared with
-                            // TreeRow's row-level template create, which this
-                            // round leaves untouched), not something to
-                            // special-case per call site.
-                            void currentPlusTargetDir().then((targetDir) => {
-                              createFromTemplate.mutate({ template, parentPath: targetDir });
-                            });
-                          }}
-                        >
-                          {t('sidebar.fromTemplate', { title: template.title })}
-                        </MenuItem>
-                      ))}
-                    </>
-                  )}
                 </>
               )}
             </Menu>
@@ -608,6 +594,8 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
               21.09.2026). Own section, own icon, never mixed into the normal
               tree above (PageTree excludes it) — and never rendered at all for
               anyone below space admin, matching what the server already hides. */}
+          {/* Custom page templates (the `_templates/` folder), editors only; collapsed until opened. */}
+          {canEditContent(role) && <TemplatesSection space={space} activeId={id} activeFolderPath={folderPath} />}
           {canManageMembers(role) && <AgentSection space={space} activeId={id} activeFolderPath={folderPath} />}
           {/* Obsidian wave 3: the space's tags as a tree; a click searches the tag in the quick switcher. */}
           <TagsSection
@@ -641,6 +629,14 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
 
         {publishing && <PublishSpaceDialog space={space} onClose={() => setPublishing(false)} />}
         {newBaseDir !== null && <NewBaseDialog space={space} initialParentPath={newBaseDir} onClose={() => setNewBaseDir(null)} />}
+        {templatePickerDir !== null && (
+          <TemplatePickerDialog
+            space={space}
+            parentPath={templatePickerDir}
+            onClose={() => setTemplatePickerDir(null)}
+            onCreated={(page) => navigate(`/s/${space}/p/${page.id}`)}
+          />
+        )}
         {editingImageStorage && <ImageStorageDialog space={space} onClose={() => setEditingImageStorage(false)} />}
         {editingScanSettings && <ScanSettingsDialog space={space} onClose={() => setEditingScanSettings(false)} />}
 

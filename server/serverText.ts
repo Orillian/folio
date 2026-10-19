@@ -13,6 +13,9 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export type ServerTextKey =
+  | 'starterTemplate.meeting-notes'
+  | 'starterTemplate.how-to'
+  | 'starterTemplate.decision-record'
   | 'table.defaultView'
   | 'table.firstField'
   | 'import.emptyPage'

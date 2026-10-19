@@ -181,20 +181,6 @@ export function findAgentFolderNode(nodes: TreeNode[]): TreeNode | undefined {
   return findNodeByPath(nodes, AGENT_FOLDER);
 }
 
-/**
- * Candidate template pages: the direct doc-kind children of the space-root
- * `_templates` folder (also takes the unwrapped top-level view — same
- * reasoning as excludeTemplatesFolder). Not recursive: a template picker
- * showing a nested sub-tree is more than DEV-PLAN asks for ("pages from the
- * space's _templates/ folder"). Board/folder children are skipped — neither
- * is a text template {{...}} substitution can apply to.
- */
-export function getTemplatePages(nodes: TreeNode[]): TreeNode[] {
-  const folder = nodes.find((n) => n.path === TEMPLATES_FOLDER);
-  if (!folder) return [];
-  return folder.children.filter((n) => n.kind === 'doc');
-}
-
 /** All directories that currently contain at least one page, for the move dialog's parent picker (always includes "" for the space root). */
 export function collectDirectories(nodes: TreeNode[]): string[] {
   const dirs = new Set<string>(['']);

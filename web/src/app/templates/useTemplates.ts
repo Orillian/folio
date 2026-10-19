@@ -1,53 +1,52 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { PageMeta } from '@shared/contracts';
+import type { PageKind, PageMeta, TreeNode } from '@shared/contracts';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
-import { useAuth } from '../auth/AuthProvider';
 import { t } from '../i18n/register';
 import '../i18n/register';
-import { getTemplatePages, getTopLevelNodes } from '../sidebar/treeUtils';
-import { substituteTemplate, todayDateStamp } from '../template';
+import { TEMPLATES_FOLDER } from '../sidebar/treeUtils';
 
 export interface TemplateOption {
   id: string;
   title: string;
+  kind: PageKind;
+  /** The template's emoji icon from its frontmatter, if any. */
+  icon?: string;
 }
 
 /**
- * Templates available for "create from template" (DEV-PLAN Round 5): tries
- * the dedicated GET /api/spaces/:space/templates endpoint first (a SERVER
- * round-5 item, not confirmed landed — see api.ts's getTemplates docblock),
- * falling back on any error (404 included) to a client-side scan of the
- * already-fetched page tree for the top-level `_templates` folder's direct
- * doc-kind children (treeUtils.ts's getTemplatePages).
- *
- * The tree-scan fallback shares the ['tree', space] query cache with
- * PageTree/Sidebar rather than issuing its own fetch — it's only *enabled*
- * once the endpoint has already failed, but by then the tree is normally
- * already cached (the sidebar showing this menu implies the tree loaded),
- * so it resolves instantly rather than triggering a visible extra request.
+ * Templates available for "From template…": the top-level pages of the
+ * space's `_templates/` folder, of any kind (GET /api/spaces/:space/templates).
+ * `enabled` lets a caller fetch only once the picker is actually opened.
  */
-export function useTemplates(space: string): { templates: TemplateOption[]; isLoading: boolean } {
-  const endpoint = useQuery({
+export function useTemplates(space: string, enabled = true) {
+  const query = useQuery({
     queryKey: ['templates', space],
     queryFn: () => api.getTemplates(space),
-    retry: false,
+    enabled,
   });
+  const templates: TemplateOption[] = (query.data?.templates ?? []).map((p: PageMeta) => ({
+    id: p.id,
+    title: p.title,
+    kind: p.kind,
+    icon: p.icon,
+  }));
+  return { templates, isLoading: query.isLoading, isError: query.isError, refetch: query.refetch };
+}
 
-  const tree = useQuery({
-    queryKey: ['tree', space],
-    queryFn: () => api.getTree(space),
-    enabled: endpoint.isError,
+/** The whole `_templates/` tree (templates with their subpages) for the sidebar's Templates section; fetched only when `enabled`. */
+export function useTemplatesTree(space: string, enabled: boolean) {
+  return useQuery<TreeNode[]>({
+    queryKey: ['templates-tree', space],
+    queryFn: () => api.getTemplatesTree(space),
+    enabled,
   });
+}
 
-  if (endpoint.data) {
-    return { templates: endpoint.data.templates.map((p: PageMeta) => ({ id: p.id, title: p.title })), isLoading: false };
-  }
-  if (endpoint.isError) {
-    const nodes = tree.data ? getTemplatePages(getTopLevelNodes(tree.data)) : [];
-    return { templates: nodes.map((n) => ({ id: n.id, title: n.title })), isLoading: tree.isLoading };
-  }
-  return { templates: [], isLoading: endpoint.isFetching };
+/** After anything that adds, renames or removes a template. */
+export function invalidateTemplates(queryClient: ReturnType<typeof useQueryClient>, space: string) {
+  queryClient.invalidateQueries({ queryKey: ['templates', space] });
+  queryClient.invalidateQueries({ queryKey: ['templates-tree', space] });
 }
 
 export interface CreateFromTemplateArgs {
@@ -57,36 +56,37 @@ export interface CreateFromTemplateArgs {
 }
 
 /**
- * Create + PUT-with-substitution in one mutation: POST create (title =
- * the template's own title, like any other quick-created page — there's no
- * "name your page" prompt in this flow, matching the existing New
- * page/New board affordances), then GET the template's markdown and PUT it
- * back substituted ({{date}}/{{author}}/{{title}} — see template.ts) onto
- * the freshly created page. The template's own frontmatter (icon/cover, if
- * any) rides along unchanged as part of that same markdown — deliberate:
- * the simplest, most literal reading of "create = POST create + PUT with
- * substitution" is a faithful copy of the template body, not a selective one.
+ * Creates a page (with its subpages) from a template in one server call:
+ * the server copies the template and fills {{date}}/{{author}}/{{title}}.
+ * The new page keeps the template's own title, like any other
+ * quick-created page — there is no "name your page" prompt in this flow.
  */
 export function useCreateFromTemplate(space: string, onSuccess: (page: PageMeta) => void, onError: (message: string) => void) {
   const errorText = useApiErrorText();
-  const { user } = useAuth();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ template, parentPath }: CreateFromTemplateArgs) => {
-      const created = await api.createPage({ space, parentPath, title: template.title, kind: 'doc' });
-      const source = await api.getPage(template.id);
-      const substituted = substituteTemplate(source.markdown ?? '', {
-        date: todayDateStamp(),
-        author: user.name,
-        title: template.title,
-      });
-      return api.updatePage(created.id, { markdown: substituted });
-    },
+    mutationFn: ({ template, parentPath }: CreateFromTemplateArgs) => api.createFromTemplate({ templateId: template.id, space, parentPath }),
     onSuccess: (page) => {
       queryClient.invalidateQueries({ queryKey: ['tree', space] });
       onSuccess(page);
     },
     onError: (err) => onError(errorText(err, 'sidebar.templates.createFailed')),
+  });
+}
+
+/** A blank document in the space's `_templates/` folder — "New template". */
+export function useCreateBlankTemplate(space: string, onSuccess: (page: PageMeta) => void, onError: (message: string) => void) {
+  const errorText = useApiErrorText();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => api.createPage({ space, parentPath: TEMPLATES_FOLDER, title: t('sidebar.templates.blankTitle'), kind: 'doc' }),
+    onSuccess: (page) => {
+      queryClient.invalidateQueries({ queryKey: ['tree', space] });
+      invalidateTemplates(queryClient, space);
+      onSuccess(page);
+    },
+    onError: (err) => onError(errorText(err, 'sidebar.createPageFailed')),
   });
 }

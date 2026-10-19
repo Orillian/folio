@@ -285,6 +285,15 @@ export function Breadcrumbs({ space, pagePath, title, icon, pageId, canRename }:
           {displayTitle}
         </span>
       )}
+      {/* A page of the space's _templates/ folder: it is a template, not a page of the wiki. */}
+      {pagePath.startsWith('_templates/') && (
+        <span
+          className="hidden shrink-0 rounded-full border border-neutral-300 px-2 py-0.5 text-[11px] font-medium leading-none text-neutral-500 sm:inline dark:border-neutral-600 dark:text-neutral-400"
+          title={t('sidebar.templates.badgeHint')}
+        >
+          {t('sidebar.templates.badge')}
+        </span>
+      )}
     </nav>
   );
 }

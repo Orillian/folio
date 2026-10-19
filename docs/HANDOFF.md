@@ -87,6 +87,24 @@ extension differs, the last part of the path change.
   `files: restore <path> to <sha7>`), so it is one more commit and also puts
   the old extension back.
 
+### Page templates
+
+- A template is any page under `_templates/` of a space (routes in
+  `server/routes.ts`, placeholders in `server/templateVars.ts`, starters in
+  `server/starterTemplates.ts`). There is no separate
+  storage: creating from a template reuses the page copy machinery (the one
+  behind duplicate and import), so subpages, properties, icon and asset links
+  follow, and new page ids are minted for every copy.
+- `POST /api/pages/from-template` takes `{templateId, space, parentPath, title?}`;
+  `POST /api/pages/:id/make-template` takes `{includeChildren}` (default true)
+  and is refused for the space root. In documents `{{date}}`, `{{author}}` and
+  `{{title}}` are substituted; unknown `{{…}}` are left alone.
+- `_templates/` is excluded in one place per consumer: the page tree, graph,
+  tags, bases, search of the tree and `publicReadablePageIds`. The sidebar
+  "Templates" section is the only place that lists them.
+- A new empty space gets three starter templates written from the server i18n
+  bundles in the creator's language; a space cloned from Git gets none.
+
 ### Real-time collaboration
 
 One Yjs document per open page, in a room named by the page id, over
@@ -561,6 +579,9 @@ PostgreSQL, not in Git.
   external `/mcp` endpoint keeps all 23. The skip list is
   `MCP_ONLY_TOOL_NAMES` in `server/assistant/tools.ts`, pinned in
   `toolAccess.test.ts`.
+- `_templates/` never leaks: not into the page tree, graph, tags, bases, public
+  sites, and not into the public page set. A new place that lists pages has to
+  skip it, and the sidebar "Templates" section stays the one exception.
 
 ## Lessons that cost something
 
@@ -719,6 +740,9 @@ Each of these was a real defect. They are here so that nobody pays twice.
 - The conversion of old `<ins>`/`<u>` underline to `++` exists as a function
   (`web/src/editor/underline-migrate.ts`) with no runner in the application:
   old pages keep rendering underlined without it.
+- `{{title}}` is substituted only in documents, not in the text of data tables
+  or forms. The subpages of a template appear only in the Templates section
+  tree, nowhere else.
 - Page access is not inherited by child pages, and there is no "close the
   whole subtree" mode.
 - No user groups, no SSO or SCIM.

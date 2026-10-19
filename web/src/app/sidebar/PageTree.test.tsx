@@ -23,8 +23,7 @@ import { ToastProvider } from '../ui/Toast';
 import { PageTree } from './PageTree';
 import '../i18n/register';
 
-// The tree row's "create from template" hook reads the session; nothing in
-// these tests depends on who the user is.
+// The session the rows read; nothing in these tests depends on who the user is.
 vi.mock('../auth/AuthProvider', () => ({
   useAuth: () => ({
     user: { id: 'u1', name: 'Test User', email: 't@t.local', isAdmin: false, createdAt: '' },
@@ -99,11 +98,6 @@ function stubFetch(options: { failPut?: boolean } = {}): Call[] {
     vi.fn((url: string, init?: RequestInit) => {
       const method = init?.method ?? 'GET';
       calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-      if (url.endsWith('/templates')) {
-        // Endpoint not live in this fixture -> useTemplates falls back to the
-        // already-cached tree, exactly as it does against a real server.
-        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({ error: 'not found' }) });
-      }
       if (method === 'PUT' && options.failPut) {
         return Promise.resolve({ ok: false, status: 400, json: () => Promise.resolve({ error: 'the server refused' }) });
       }
@@ -414,9 +408,6 @@ describe('PageTree — refetches on window focus (picks up changes made elsewher
         if ((init?.method ?? 'GET') !== 'GET') {
           return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
         }
-        if (url.endsWith('/templates')) {
-          return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({ error: 'not found' }) });
-        }
         const tree = restored
           ? {
               tree: [
@@ -441,7 +432,8 @@ describe('PageTree — refetches on window focus (picks up changes made elsewher
     // The "other tab" restores the page; this tab's cache doesn't know yet.
     restored = true;
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-    fireEvent(document, new Event('visibilitychange'));
+    // bubbles: react-query listens on window, and a real visibilitychange bubbles from document to it.
+    fireEvent(document, new Event('visibilitychange', { bubbles: true }));
     fireEvent(window, new Event('focus'));
 
     await waitFor(() => expect(screen.getAllByText('Restored').length).toBeGreaterThan(0));

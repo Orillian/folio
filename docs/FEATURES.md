@@ -103,6 +103,21 @@ a page cover and icon; image attachments.
 A link to a Folio page is shown in Reading mode as the **page title**, not as
 a URL.
 
+**Templates.** A template is any page in the space's `_templates/` folder: a
+document, whiteboard, data table, form, base, or a whole page with subpages.
+"From template…" in the "+" menu (space root and every tree row) opens a picker
+(with a filter when there are more than six) and copies the template, with its
+subpages, properties and icon, to the chosen place. In documents `{{date}}`,
+`{{author}}` and `{{title}}` are filled in; any other `{{…}}` stays as written.
+"Make template" in a page's context menu (not for the space root, and disabled
+offline) copies a page, with its subpages, into `_templates/`. Editors also get
+a "Templates" section in the sidebar (collapsed, with a count) to add a blank
+template, rename or delete one; an open template is marked "Template" in the
+breadcrumbs. The folder is hidden from the page tree, graph, tags, bases and
+public sites. A new empty space starts with Meeting notes, How-to and Decision
+record in the creator's language (English or Ukrainian); a space cloned from Git
+gets none.
+
 ## 3. Working together
 
 Real-time collaborative editing (Yjs) works for **documents, tables and

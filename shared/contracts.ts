@@ -1243,6 +1243,28 @@ export const duplicatePageBodySchema = z.object({
 });
 export type DuplicatePageBody = z.infer<typeof duplicatePageBodySchema>;
 
+/**
+ * POST /api/pages/from-template (the owner, 19.10.2026): a template from the
+ * space's `_templates/` folder copied under `parentPath` — any kind, its
+ * subpages along — with {{date}}/{{author}}/{{title}} filled in its documents.
+ */
+export const createFromTemplateBodySchema = z.object({
+  templateId: z.string().min(1),
+  space: z.string().min(1),
+  /** Parent directory relative to the space root; "" for the root — as CreatePageBody.parentPath. */
+  parentPath: z.string(),
+  /** Title of the new root page. Omitted: the template's own title. */
+  title: z.string().trim().min(1).max(300).optional(),
+});
+export type CreateFromTemplateBody = z.infer<typeof createFromTemplateBodySchema>;
+
+/** POST /api/pages/:id/make-template: the page copied into the space's `_templates/` folder. */
+export const makeTemplateBodySchema = z.object({
+  /** Bring the page's subpages along (default true). */
+  includeChildren: z.boolean().default(true),
+});
+export type MakeTemplateBody = z.infer<typeof makeTemplateBodySchema>;
+
 export const renamePageBodySchema = z.object({ title: z.string().min(1) });
 export type RenamePageBody = z.infer<typeof renamePageBodySchema>;
 

@@ -748,7 +748,33 @@
       "fetchError": "couldn't fetch branches — enter one manually"
     },
     "templates": {
-      "createFailed": "Could not create a page from the template"
+      "createFailed": "Could not create a page from the template",
+      "title": "Templates",
+      "hint": "Page templates for this space. Right-click any page → Make template to add one.",
+      "add": "New template",
+      "blankTitle": "New template",
+      "empty": "No templates yet. Right-click any page → Make template, or add one with «+».",
+      "offlineHint": "Needs a connection to the server",
+      "badge": "Template",
+      "badgeHint": "This page is a template: it does not appear in the page tree and can be used from «From template…»",
+      "kinds": {
+        "doc": "Page",
+        "board": "Board",
+        "table": "Table",
+        "form": "Form",
+        "base": "Base",
+        "canvas": "Canvas"
+      },
+      "picker": {
+        "title": "Create from template",
+        "filter": "Filter templates…",
+        "loading": "Loading templates…",
+        "loadFailed": "Could not load the templates.",
+        "noMatch": "No template matches.",
+        "creating": "Creating…",
+        "empty": "No templates in this space yet.",
+        "emptyHint": "Right-click any page → Make template, and it will show up here. Or start from a blank one."
+      }
     },
     "resizeHandle": {
       "label": "Resize the sidebar",
@@ -780,7 +806,7 @@
     "createPageFailed": "Could not create the page",
     "uploadPdfFailed": "Could not upload the file",
     "syncFailed": "Could not sync the space",
-    "fromTemplate": "From template: \"{{title}}\"",
+    "fromTemplate": "From template…",
     "spaceHome": "Space home",
     "scanSettings": {
       "title": "Indexing & files",
@@ -854,6 +880,9 @@
       "duplicate": "Duplicate",
       "duplicateTitle": "{{title}} (copy)",
       "duplicateFailed": "Could not duplicate the page",
+      "makeTemplate": "Make template",
+      "makeTemplateFailed": "Could not make a template from the page",
+      "templateCreated": "Template “{{title}}” created",
       "moveUp": "Move up",
       "moveDown": "Move down",
       "reorderFailed": "Could not reorder the pages",

@@ -12,7 +12,9 @@ import { useToast } from '../ui/Toast';
 import { OfflineUnsupportedError, createPageOfflineAware } from '../offline/createPage';
 import { discardLocalPage, useIsLocalPage } from '../offline/localPages';
 import { clearPersistedState } from '../offline/ydocPersistence';
-import { useTemplates, useCreateFromTemplate } from '../templates/useTemplates';
+import { TemplatePickerDialog } from '../templates/TemplatePickerDialog';
+import { invalidateTemplates } from '../templates/useTemplates';
+import { useConnectivity } from '../offline/connectivity';
 import { MoveDialog } from './MoveDialog';
 import { CopyDialog } from './CopyDialog';
 import { ChangeSlugDialog } from './ChangeSlugDialog';
@@ -69,6 +71,11 @@ export interface TreeRowProps {
   canEdit: boolean;
   /** Page ids with unresolved git conflict markers in their own file (SpaceGitInfo.conflicts) — draws a small warning dot next to the row's title. Owned by PageTree, threaded down unchanged. */
   conflictedIds: Set<string>;
+  /**
+   * The row belongs to the sidebar's Templates section (the `_templates/` folder): no reordering, moving, dragging,
+   * "Copy to…", "Make template" or "From template…" — a template is edited, renamed and deleted, nothing else.
+   */
+  templateMode?: boolean;
 }
 
 /** One page-tree row, recursively rendering its children when expanded. */
@@ -87,6 +94,7 @@ export function TreeRow({
   setDragged,
   canEdit,
   conflictedIds,
+  templateMode = false,
 }: TreeRowProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
@@ -100,6 +108,7 @@ export function TreeRow({
   const [moving, setMoving] = useState(false);
   const [creatingBase, setCreatingBase] = useState(false);
   const [copying, setCopying] = useState(false);
+  const [pickingTemplate, setPickingTemplate] = useState(false);
   const [changingSlug, setChangingSlug] = useState(false);
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
   const committedRef = useRef(false);
@@ -168,8 +177,13 @@ export function TreeRow({
     <span className="w-[14px] shrink-0" aria-hidden="true" />
   );
 
+  // Making a template and creating from one are server operations: no connection, no item.
+  const offline = useConnectivity() === 'offline';
+
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['tree', space] });
+    // Cheap when the Templates section is closed (only active queries refetch); keeps it in step with renames/deletes made there.
+    invalidateTemplates(queryClient, space);
     queryClient.invalidateQueries({ queryKey: ['page', node.id] });
   }
 
@@ -197,6 +211,7 @@ export function TreeRow({
    */
   async function revealAndOpen(page: PageMeta) {
     queryClient.invalidateQueries({ queryKey: ['page', node.id] });
+    invalidateTemplates(queryClient, space);
     const fresh = await queryClient.fetchQuery({ queryKey: ['tree', space], queryFn: () => api.getTree(space) });
     const holder = findNodeByPath(fresh.tree, dirname(page.path));
     setExpanded((prev) => new Set(prev).add(holder?.id ?? node.id));
@@ -263,10 +278,19 @@ export function TreeRow({
   const replaceInputRef = useRef<HTMLInputElement>(null);
   const replaceFile = useReplaceFilePage(space, node.id);
 
-  // Round 5: "create from template", scoped to this row's own directory —
-  // see templates/useTemplates.ts and Sidebar.tsx's root-level twin.
-  const { templates } = useTemplates(space);
-  const createFromTemplate = useCreateFromTemplate(space, revealAndOpen, (message) => showToast(message));
+  // "From template…" (the picker dialog, rendered below) is scoped to this row's own directory — Sidebar.tsx has the root-level twin.
+
+  // "Make template" (the owner, 19.10.2026): the page, its subpages along, copied into the space's _templates/ folder.
+  const makeTemplate = useMutation({
+    mutationFn: () => api.makeTemplate(node.id, { includeChildren: true }),
+    onSuccess: (template) => {
+      invalidateTemplates(queryClient, space);
+      showToast(t('sidebar.tree.templateCreated', { title: template.title }), 'info');
+    },
+    onError: (err) => showToast(errorText(err, 'sidebar.tree.makeTemplateFailed')),
+  });
+  // The space's front door can't be a template (the server answers 400); a local page isn't on the server yet.
+  const isSpaceRoot = parentPath === '' && (node.path === 'index.md' || node.path === 'README.md');
 
   const rename = useMutation({
     mutationFn: (title: string) => api.renamePage(node.id, { title }),
@@ -400,7 +424,7 @@ export function TreeRow({
 
   const isBeingDragged = dragged?.node.id === node.id;
   /** Folder pseudo-nodes have no page id to move or order — they are drop targets only. */
-  const isDraggable = canEdit && !isFolder && !editing && !isLocal;
+  const isDraggable = canEdit && !isFolder && !editing && !isLocal && !templateMode;
 
   function cancelSpringOpen() {
     if (springOpenRef.current !== null) {
@@ -418,7 +442,7 @@ export function TreeRow({
 
   /** The plan for dropping the currently-dragged row here, or null if that drop must be refused. */
   function planFor(zone: DropZone): DropPlan | null {
-    if (!dragged || !canEdit) return null;
+    if (!dragged || !canEdit || templateMode) return null;
     return computeDropPlan({
       dragged: dragged.node,
       draggedParentPath: dragged.parentPath,
@@ -718,22 +742,19 @@ export function TreeRow({
                   >
                     {t('sidebar.uploadFile')}
                   </MenuItem>
-                  {templates.length > 0 && (
-                    <>
-                      <div className="my-1 border-t border-neutral-200 dark:border-neutral-700" />
-                      {templates.map((template) => (
-                        <MenuItem
-                          key={template.id}
-                          icon={<LayoutTemplate size={14} />}
-                          onSelect={() => {
-                            close();
-                            createFromTemplate.mutate({ template, parentPath: childDirOf(node) });
-                          }}
-                        >
-                          {t('sidebar.fromTemplate', { title: template.title })}
-                        </MenuItem>
-                      ))}
-                    </>
+                  {/* Any kind of template, picked in a dialog; created in this row's own directory. */}
+                  {!templateMode && (
+                    <MenuItem
+                      icon={<LayoutTemplate size={14} />}
+                      disabled={offline || isLocal}
+                      title={offline ? t('sidebar.templates.offlineHint') : undefined}
+                      onSelect={() => {
+                        close();
+                        setPickingTemplate(true);
+                      }}
+                    >
+                      {t('sidebar.fromTemplate')}
+                    </MenuItem>
                   )}
                 </>
               )}
@@ -753,6 +774,8 @@ export function TreeRow({
                   </MenuItem>
                 ) : (
                 <>
+                  {!templateMode && (
+                    <>
                   <MenuItem
                     icon={<ArrowUp size={14} />}
                     disabled={reorder.isPending || !canReorder(siblings, node.id, 'up')}
@@ -774,6 +797,8 @@ export function TreeRow({
                     {t('sidebar.tree.moveDown')}
                   </MenuItem>
                   <div className="my-1 border-t border-neutral-200 dark:border-neutral-700" />
+                    </>
+                  )}
                   <MenuItem
                     icon={<Copy size={14} />}
                     onSelect={() => {
@@ -823,6 +848,7 @@ export function TreeRow({
                       {t('files.replace.action')}
                     </MenuItem>
                   )}
+                  {!templateMode && (
                   <MenuItem
                     icon={<Move size={14} />}
                     onSelect={() => {
@@ -832,6 +858,7 @@ export function TreeRow({
                   >
                     {t('sidebar.tree.move')}
                   </MenuItem>
+                  )}
                   <MenuItem
                     icon={<Files size={14} />}
                     disabled={duplicate.isPending}
@@ -842,15 +869,31 @@ export function TreeRow({
                   >
                     {t('sidebar.tree.duplicate')}
                   </MenuItem>
-                  <MenuItem
-                    icon={<CopyPlus size={14} />}
-                    onSelect={() => {
-                      close();
-                      setCopying(true);
-                    }}
-                  >
-                    {t('sidebar.tree.copyTo')}
-                  </MenuItem>
+                  {!templateMode && (
+                    <MenuItem
+                      icon={<CopyPlus size={14} />}
+                      onSelect={() => {
+                        close();
+                        setCopying(true);
+                      }}
+                    >
+                      {t('sidebar.tree.copyTo')}
+                    </MenuItem>
+                  )}
+                  {/* Not for the space root, a local page or a row of the Templates section itself. */}
+                  {!templateMode && !isSpaceRoot && (
+                    <MenuItem
+                      icon={<LayoutTemplate size={14} />}
+                      disabled={offline || makeTemplate.isPending}
+                      title={offline ? t('sidebar.templates.offlineHint') : undefined}
+                      onSelect={() => {
+                        close();
+                        makeTemplate.mutate();
+                      }}
+                    >
+                      {t('sidebar.tree.makeTemplate')}
+                    </MenuItem>
+                  )}
                   <MenuItem
                     icon={<Trash2 size={14} />}
                     destructive
@@ -891,6 +934,7 @@ export function TreeRow({
               setDragged={setDragged}
               canEdit={canEdit}
               conflictedIds={conflictedIds}
+              templateMode={templateMode}
             />
           ))}
         </div>
@@ -921,6 +965,10 @@ export function TreeRow({
           {t(hasChildren ? 'sidebar.tree.deleteConfirmBodyWithChildren' : 'sidebar.tree.deleteConfirmBody', { title: node.title })}{' '}
           <code className="rounded bg-neutral-100 px-1 py-0.5 text-xs dark:bg-neutral-800">data/.trash</code>.
         </ConfirmDialog>
+      )}
+
+      {pickingTemplate && (
+        <TemplatePickerDialog space={space} parentPath={childDirOf(node)} onClose={() => setPickingTemplate(false)} onCreated={(page) => void revealAndOpen(page)} />
       )}
 
       {creatingBase && <NewBaseDialog space={space} initialParentPath={childDirOf(node)} onClose={() => setCreatingBase(false)} />}

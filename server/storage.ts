@@ -46,6 +46,8 @@ import { carryFrontmatterKeys, mergeFrontmatter, writeFrontmatterKeys, type Foli
 import * as propsSidecar from './propsSidecar.js';
 import { ownProperties, reservedKeysOf } from './reservedPropertyKeys.js';
 import * as spaceFiles from './spaceFiles.js';
+import { starterTemplates, type StarterLanguage } from './starterTemplates.js';
+import { substituteTemplate, todayDateStamp } from './templateVars.js';
 
 // gray-matter is CJS (`export =`). `import * as matterNS` typechecks and runs fine
 // under tsx/Node, but under Vite/Vitest's esbuild-based CJS interop the callable
@@ -2151,6 +2153,23 @@ export async function countAgentPages(spaces: readonly string[]): Promise<Map<st
 export async function getTree(space: string, allowedPageIds?: ReadonlySet<string>): Promise<TreeNode[]> {
   if (!(await spaceExists(space))) throw notFound('space');
   const entries = (await listEntries(space)).filter((e) => !isUnderTemplates(e.relPath) && (!allowedPageIds || allowedPageIds.has(e.id)));
+  return buildTreeFromEntries(space, entries);
+}
+
+/**
+ * The subtree of the space's `_templates/` folder, in the node shape getTree
+ * returns (children nested) — the template picker's tree. `[]` when the space
+ * has no such folder. Page access is applied like getTree does.
+ */
+export async function getTemplatesTree(space: string, allowedPageIds?: ReadonlySet<string>): Promise<TreeNode[]> {
+  if (!(await spaceExists(space))) throw notFound('space');
+  const entries = (await listEntries(space)).filter((e) => isUnderTemplates(e.relPath) && (!allowedPageIds || allowedPageIds.has(e.id)));
+  if (entries.length === 0) return [];
+  const root = buildTreeFromEntries(space, entries)[0];
+  return root.children.find((n) => n.path === TEMPLATES_DIR_NAME)?.children ?? [];
+}
+
+function buildTreeFromEntries(space: string, entries: PageIndexEntry[]): TreeNode[] {
 
   const selfForDir = new Map<string, PageIndexEntry>();
   for (const e of entries) if (e.isIndex) selfForDir.set(e.dirPath, e);
@@ -2423,11 +2442,20 @@ export async function getSubtree(entry: PageIndexEntry, depth: number, allowedPa
   return collectDirChildren(rootDir, depth).map((s) => s.node);
 }
 
-/** _templates/*.md — round 5's "create from template". viewer+ (checked by the route). */
+/**
+ * The space's templates: what is listed directly in `_templates/` — a leaf
+ * page of any kind or a directory-index page `_templates/X/index.md`. A
+ * template's own subpages are not templates, and neither is anything inside a
+ * folder that has no page of its own. Sorted like the tree. viewer+ (checked
+ * by the route).
+ */
 export async function listTemplates(space: string): Promise<PageMeta[]> {
   if (!(await spaceExists(space))) throw notFound('space');
   const entries = await listEntries(space);
-  return entries.filter((e) => isUnderTemplates(e.relPath) && e.kind === 'doc').map(toPageMeta);
+  return entries
+    .filter((e) => (e.isIndex ? posixParent(e.dirPath) === TEMPLATES_DIR_NAME : e.dirPath === TEMPLATES_DIR_NAME))
+    .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title))
+    .map(toPageMeta);
 }
 
 // ---------------------------------------------------------------------------
@@ -2924,7 +2952,7 @@ export async function renameSpace(space: string, name: string): Promise<SpaceInf
 }
 
 /** Empty space (round 1/2 behavior, now git-initialized instead of a plain directory). */
-export async function createSpace(name: string, createdBy: string | null): Promise<SpaceInfo> {
+export async function createSpace(name: string, createdBy: string | null, opts: { starterTemplates?: boolean; language?: StarterLanguage } = {}): Promise<SpaceInfo> {
   const trimmed = name.trim();
   if (!trimmed) throw badRequest('space name is required');
   const slug = await uniqueSpaceSlug(trimmed);
@@ -2932,6 +2960,14 @@ export async function createSpace(name: string, createdBy: string | null): Promi
   const dir = repoDir(slug);
   await fs.mkdir(dir, { recursive: true });
   await persistDocFrontmatter(path.join(dir, 'index.md'), { id: ulid() }, `# ${trimmed}\n`);
+  if (opts.starterTemplates) {
+    // Written before the initial commit, so they ride `init: create space`.
+    const templatesDir = path.join(dir, TEMPLATES_DIR_NAME);
+    await fs.mkdir(templatesDir, { recursive: true });
+    for (const t of starterTemplates(opts.language)) {
+      await persistDocFrontmatter(path.join(templatesDir, `${t.stem}.md`), { id: ulid(), icon: t.icon }, t.markdown);
+    }
+  }
   await writeFolioMeta(path.join(dir, `${slug}${FOLIO_META_EXT}`), trimmed); // rides the SAME initial commit as index.md, right below
   await git.initWithCommit(dir, 'init: create space');
 
@@ -4282,6 +4318,19 @@ export async function copyPage(
   includeChildren = true,
   scope?: CopyScope,
 ): Promise<PageMeta> {
+  return (await copyPageInternal(id, toSpace, toParentPathRaw, liveContent, includeChildren, scope)).meta;
+}
+
+/** copyPage, also saying which ids it gave out (the root's and every page of the subtree), and taking the name the copy's file/directory is built from (`stemTitle`, default: the source's title). */
+async function copyPageInternal(
+  id: string,
+  toSpace: string,
+  toParentPathRaw: string,
+  liveContent?: string,
+  includeChildren = true,
+  scope?: CopyScope,
+  stemTitle?: string,
+): Promise<{ meta: PageMeta; copiedIds: string[] }> {
   const source = await requireEntry(id);
   // The routes have refused a page the caller cannot open before they get here; this keeps the rule true for any other caller.
   if (scope?.hiddenPageIds.has(source.id)) throw forbidden('this page is not available to you');
@@ -4299,7 +4348,7 @@ export async function copyPage(
       const srcDirAbs = path.dirname(source.absPath);
       guardNoSelfNesting(srcDirAbs, destParentDirAbs);
 
-      const stem = translitSlug(copyStemFor(source));
+      const stem = translitSlug(stemTitle && source.kind !== 'pdf' && source.kind !== 'office' ? stemTitle : copyStemFor(source));
       const uniqueDirRel = await uniqueRelPath(toSpace, toParentPath, stem, '');
       const destDirAbs = path.join(spaceDir(toSpace), uniqueDirRel);
 
@@ -4314,14 +4363,14 @@ export async function copyPage(
       await copySubtreeSidecars(source.space, srcDirAbs, toSpace, destDirAbs, copied);
       await scanSpace(toSpace);
       if (scope) await restrictCopies(sourceEntries, copied, scope.actorId);
-      return toPageMeta(await requireEntry(copiedId));
+      return { meta: toPageMeta(await requireEntry(copiedId)), copiedIds: copied.map((c) => c.copyId) };
     }
 
     // Single-file copy (previous behavior, unchanged for includeChildren=false
     // and for any source that isn't a directory-index page).
     const copiedId = ulid();
     const copied: CopiedSubtree['copied'] = [{ sourceAbs: source.absPath, copyId: copiedId }];
-    const stem = translitSlug(copyStemFor(source));
+    const stem = translitSlug(stemTitle && source.kind !== 'pdf' && source.kind !== 'office' ? stemTitle : copyStemFor(source));
     const ext =
       source.kind === 'board'
         ? '.excalidraw.svg'
@@ -4402,7 +4451,7 @@ export async function copyPage(
 
     await scanSpace(toSpace);
     if (scope) await restrictCopies(sourceEntries, copied, scope.actorId);
-    return toPageMeta(await requireEntry(copiedId));
+    return { meta: toPageMeta(await requireEntry(copiedId)), copiedIds: copied.map((c) => c.copyId) };
   });
 }
 
@@ -4429,6 +4478,11 @@ export function duplicateParentPath(entry: PageIndexEntry): string {
 export async function duplicatePage(id: string, liveContent?: string, title?: string, scope?: CopyScope): Promise<PageMeta> {
   const source = await requireEntry(id);
   const copied = await copyPage(id, source.space, duplicateParentPath(source), liveContent, true, scope);
+  return retitleCopy(copied, title);
+}
+
+/** Gives a fresh copy's root page the title `title` (when it has one and differs); a file page (pdf/office/canvas/base) is named by its file. */
+async function retitleCopy(copied: PageMeta, title?: string): Promise<PageMeta> {
   const clean = title?.trim();
   if (!clean || clean === copied.title) return copied;
   if (copied.kind === 'doc') return renameDocDirect(copied.id, clean);
@@ -4438,6 +4492,52 @@ export async function duplicatePage(id: string, liveContent?: string, title?: st
   if (copied.kind === 'form') return renameFormDirect(copied.id, clean);
   if (copied.kind === 'board') return setBoardTitle(copied.id, clean);
   return copied;
+}
+
+/**
+ * "New page from a template": the template (any kind, its subpages along)
+ * copied under `parentPath`, then {{date}}/{{author}}/{{title}} filled in
+ * every copied document. {{title}} is the new root's title — `title`, or the
+ * template's own. The copy's file name is built from that title too. The copies
+ * have no live editing room yet, so their files are rewritten directly.
+ */
+export async function createFromTemplate(
+  templateId: string,
+  space: string,
+  parentPath: string,
+  opts: { title?: string; author: string; liveContent?: string; scope?: CopyScope },
+): Promise<PageMeta> {
+  const template = await requireEntry(templateId);
+  if (template.space !== space || !isUnderTemplates(template.relPath)) throw badRequest('not a template of this space');
+  if (isUnderTemplates(normalizeDirParam(parentPath))) throw badRequest('a page cannot be created inside the templates folder');
+  const finalTitle = opts.title?.trim() || template.title;
+  const { meta, copiedIds } = await copyPageInternal(templateId, space, parentPath, opts.liveContent, true, opts.scope, finalTitle);
+
+  const vars = { date: todayDateStamp(), author: opts.author, title: finalTitle };
+  for (const copyId of copiedIds) {
+    const entry = await getEntry(copyId);
+    if (!entry || entry.kind !== 'doc') continue;
+    const body = await readFreshDocBody(copyId);
+    const filled = substituteTemplate(body, vars);
+    if (filled === body) continue;
+    await withDocFileLock(copyId, async () => {
+      await persistDocFrontmatter(entry.absPath, { id: docFileId(entry.space, entry.id), order: entry.explicitOrder, status: entry.explicitStatus, icon: entry.icon, cover: entry.cover }, filled);
+    });
+    await patchEntryContent(entry, filled);
+  }
+  return retitleCopy(toPageMeta(await requireEntry(meta.id)), finalTitle);
+}
+
+/**
+ * "Use as template": the page copied into the space's `_templates/` folder,
+ * keeping its title (and, with `includeChildren`, its subpages). The space's
+ * root page cannot be one, and a template is not made a template twice.
+ */
+export async function makeTemplate(id: string, opts: { includeChildren?: boolean; liveContent?: string; scope?: CopyScope } = {}): Promise<PageMeta> {
+  const source = await requireEntry(id);
+  if (isUnderTemplates(source.relPath)) throw badRequest('this page is already a template');
+  if (source.isIndex && source.dirPath === '') throw badRequest('the space root cannot be a template');
+  return copyPage(id, source.space, TEMPLATES_DIR_NAME, opts.liveContent, opts.includeChildren ?? true, opts.scope);
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,8 @@ import {
   connectSpaceGitBodySchema,
   copyPageBodySchema,
   duplicatePageBodySchema,
+  createFromTemplateBodySchema,
+  makeTemplateBodySchema,
   listBranchesBodySchema,
   movePageBodySchema,
   renamePageBodySchema,
@@ -529,7 +531,11 @@ export function registerRoutes(app: FastifyInstance): void {
         throw err;
       }
     } else {
-      space = await storage.createSpace(body.name, user.id);
+      // An empty space starts with three ready templates, in the creator's language.
+      space = await storage.createSpace(body.name, user.id, {
+        starterTemplates: true,
+        language: resolveTextLanguage(user.lang, request.headers['accept-language']) === 'uk' ? 'uk' : 'en',
+      });
     }
     await authStore.setMembership(space.slug, user.id, 'admin');
     if (body.importId) importProgress.finishSpaceImport(body.importId);
@@ -606,6 +612,15 @@ export function registerRoutes(app: FastifyInstance): void {
     await session.requireSpaceRole(request, space, 'viewer');
     const templates: PageMeta[] = await storage.listTemplates(space);
     return { templates };
+  });
+
+  /** The `_templates/` folder as a tree (any kind of page, subpages nested) — the template picker's tree. */
+  app.get('/api/spaces/:space/templates/tree', async (request) => {
+    const { space } = request.params as { space: string };
+    await session.requireSpaceRole(request, space, 'viewer');
+    const allowed = await session.readablePageIds(request.authUser!, space);
+    const tree: TreeNode[] = await storage.getTemplatesTree(space, allowed);
+    return { tree };
   });
 
   app.get('/api/spaces/:space/git', async (request) => {
@@ -1211,6 +1226,60 @@ export function registerRoutes(app: FastifyInstance): void {
     const result = await storage.duplicatePage(id, await liveCopyContent(entry), body.title, scope);
     const after = snapshotPageChange(await storage.requireEntry(result.id));
     await recordPageChange(request.authUser!.id, 'page.copy', result.id, entry.space, undefined, after);
+    gitSync.noteActivity(entry.space);
+    reply.status(201);
+    return result;
+  });
+
+  /**
+   * "New page from a template" (the owner, 19.10.2026): a template of the
+   * space's `_templates/` folder — any kind, its subpages along — copied under
+   * `parentPath`, its documents' {{date}}/{{author}}/{{title}} filled in.
+   */
+  app.post('/api/pages/from-template', async (request, reply) => {
+    const body = parseBody(createFromTemplateBodySchema, request.body);
+    const user = request.authUser!;
+    const template = await session.requirePageRole(request, body.templateId, 'viewer');
+    if (template.space !== body.space) throw badRequest('the template belongs to another space');
+    if (!storage.isUnderTemplates(template.relPath)) throw badRequest('the page is not a template');
+    const parentPath = storage.normalizeDirParam(body.parentPath);
+    if (storage.isUnderTemplates(parentPath)) throw badRequest('a page cannot be created inside the templates folder');
+    await session.requireSpaceRole(request, body.space, 'editor');
+    session.requireWriteScope(request);
+    await session.requireAgentWriteAllowed(user, body.space, parentPath);
+
+    gitSync.recordEditor(body.space, { name: user.name, email: user.email });
+    const scope = await resolveCopyScope(user, template, true);
+    const result = await storage.createFromTemplate(template.id, body.space, parentPath, {
+      title: body.title,
+      author: user.name,
+      liveContent: await liveCopyContent(template),
+      scope,
+    });
+    const after = snapshotPageChange(await storage.requireEntry(result.id));
+    await recordPageChange(user.id, 'page.copy', result.id, body.space, undefined, after);
+    gitSync.noteActivity(body.space);
+    reply.status(201);
+    return result;
+  });
+
+  /** "Use as template": the page copied into the space's `_templates/` folder (title kept). The same gates as /duplicate, the destination being `_templates`. */
+  app.post('/api/pages/:id/make-template', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = parseBody(makeTemplateBodySchema, request.body ?? {});
+    const user = request.authUser!;
+    const entry = await session.requirePageRole(request, id, 'viewer');
+    await session.requireSpaceRole(request, entry.space, 'editor');
+    session.requireWriteScope(request);
+    await session.requireAgentWriteAllowed(user, entry.space, '_templates');
+    if (storage.isUnderTemplates(entry.relPath)) throw badRequest('this page is already a template');
+    if (entry.isIndex && entry.dirPath === '') throw badRequest('the space root cannot be a template');
+
+    gitSync.recordEditor(entry.space, { name: user.name, email: user.email });
+    const scope = await resolveCopyScope(user, entry, body.includeChildren);
+    const result = await storage.makeTemplate(id, { includeChildren: body.includeChildren, liveContent: await liveCopyContent(entry), scope });
+    const after = snapshotPageChange(await storage.requireEntry(result.id));
+    await recordPageChange(user.id, 'page.copy', result.id, entry.space, undefined, after);
     gitSync.noteActivity(entry.space);
     reply.status(201);
     return result;
