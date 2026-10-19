@@ -6,6 +6,13 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ### Changed
 
+- **Copying pages is about ten times faster on large spaces.** Make template,
+  From template, Duplicate, Copy and New page reindex only the pages they wrote
+  instead of rescanning the whole space, and the "is this a folder" lookup walks
+  new range indexes (migration 050) instead of every file of the space. On a
+  6150-page space with 5 ms per database query, duplicating a page with 40
+  subpages went from 12.7 s to 1.3 s.
+
 - **A share link opens in your own account.** If you are signed in and can open
   the page yourself, `/share/<token>` takes you to the normal page
   (`/s/<space>/p/<id>`) with your sidebar and rights instead of the guest view.

@@ -113,6 +113,29 @@ export async function syncScannedFiles(space: string, files: readonly ScannedFil
 }
 
 /**
+ * The files a SCOPED scan met (a copied folder's attachments): new and changed rows are written, nothing is
+ * removed — the rest of the space was not looked at. Returns the paths that were not indexed before.
+ */
+export async function addScannedFiles(space: string, files: readonly ScannedFile[]): Promise<{ added: string[] }> {
+  const wanted = files.filter((f) => storable(f.path) && !isUnlistedFilePath(f.path));
+  if (wanted.length === 0) return { added: [] };
+  const existing = await query<{ path: string; size: string; mtime: Date }>('SELECT path, size, mtime FROM space_files WHERE space_slug = $1 AND path = ANY($2::text[])', [
+    space,
+    wanted.map((f) => f.path),
+  ]);
+  const known = new Map(existing.map((r) => [r.path, r]));
+  const write: ScannedFile[] = [];
+  const added: string[] = [];
+  for (const file of wanted) {
+    const row = known.get(file.path);
+    if (!row) added.push(file.path);
+    if (!row || Number(row.size) !== file.size || new Date(row.mtime).getTime() !== file.mtime.getTime()) write.push(file);
+  }
+  if (write.length > 0) await upsertRows(space, write);
+  return { added };
+}
+
+/**
  * One file written outside a scan (a repo-mode upload): indexed now, and the
  * links that could mean it re-resolved. Best effort — the next scan corrects
  * whatever this misses; never throws.

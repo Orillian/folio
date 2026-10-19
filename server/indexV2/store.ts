@@ -110,69 +110,131 @@ export async function indexCanvasMeta(page: IndexedPage, doc: CanvasDocument, fr
 }
 
 async function writePageMeta(page: IndexedPage, meta: ParsedPageMeta, frontmatter: Record<string, unknown> | null | undefined): Promise<ParsedPageMeta> {
-  const sourceDir = posixParent(page.relPath);
+  await writePagesMeta([{ page, meta, frontmatter }]);
+  return meta;
+}
+
+interface ParsedMetaItem {
+  page: IndexedPage;
+  meta: ParsedPageMeta;
+  frontmatter: Record<string, unknown> | null | undefined;
+}
+
+/** Replaces the rows of every page of `items` in ONE transaction (one statement per table, however many pages). */
+async function writePagesMeta(items: readonly ParsedMetaItem[]): Promise<void> {
+  if (items.length === 0) return;
   // No pages and no files known yet: the kinds are provisional (phase 2 settles them); the space makes `/files/<space>/…` a path of the space.
-  const provisional: PageLookup = { ...NO_PAGES, space: page.space, appHost: instanceHost() };
-  const links = meta.links.map((l) => ({ ...l, target: classifyLinkTarget(l.syntax, l.linkPath, sourceDir, provisional) }));
+  const classified = items.map(({ page, meta, frontmatter }) => {
+    const sourceDir = posixParent(page.relPath);
+    const provisional: PageLookup = { ...NO_PAGES, space: page.space, appHost: instanceHost() };
+    return { page, meta, frontmatter, links: meta.links.map((l) => ({ ...l, target: classifyLinkTarget(l.syntax, l.linkPath, sourceDir, provisional) })) };
+  });
+  const ids = [...new Set(classified.map((c) => c.page.id))].sort();
+  const rowsOf = <T,>(pick: (c: (typeof classified)[number]) => T[]): T[] => classified.flatMap(pick);
   await withTransaction(async (client) => {
     // Two saves of one page (a debounced write-back and a REST PUT) index one after the other: without the row
     // lock the second DELETE would not see the first one's fresh rows and both sets would stay. NO KEY UPDATE
-    // does not block the FK checks (KEY SHARE) of links pointing at this page.
-    await client.query('SELECT 1 FROM pages_index WHERE id = $1 FOR NO KEY UPDATE', [page.id]);
-    await client.query('DELETE FROM page_headings WHERE page_id = $1', [page.id]);
-    await client.query('DELETE FROM page_blocks WHERE page_id = $1', [page.id]);
-    await client.query('DELETE FROM page_tags WHERE page_id = $1', [page.id]);
-    await client.query('DELETE FROM page_links WHERE source_page_id = $1', [page.id]);
-    if (meta.headings.length > 0) {
+    // does not block the FK checks (KEY SHARE) of links pointing at this page. Locked in id order, so two
+    // batches that share pages cannot wait for each other.
+    await client.query('SELECT 1 FROM pages_index WHERE id = ANY($1::text[]) ORDER BY id FOR NO KEY UPDATE', [ids]);
+    await client.query('DELETE FROM page_headings WHERE page_id = ANY($1::text[])', [ids]);
+    await client.query('DELETE FROM page_blocks WHERE page_id = ANY($1::text[])', [ids]);
+    await client.query('DELETE FROM page_tags WHERE page_id = ANY($1::text[])', [ids]);
+    await client.query('DELETE FROM page_links WHERE source_page_id = ANY($1::text[])', [ids]);
+    const headings = rowsOf((c) => c.meta.headings.map((h) => ({ id: c.page.id, h })));
+    if (headings.length > 0) {
       await client.query(
         `INSERT INTO page_headings (page_id, position, level, text, slug, line)
-         SELECT $1, * FROM unnest($2::int[], $3::smallint[], $4::text[], $5::text[], $6::int[])`,
+         SELECT * FROM unnest($1::text[], $2::int[], $3::smallint[], $4::text[], $5::text[], $6::int[])`,
         [
-          page.id,
-          meta.headings.map((h) => h.position),
-          meta.headings.map((h) => h.level),
-          meta.headings.map((h) => clean(h.text)),
-          meta.headings.map((h) => clean(h.slug)),
-          meta.headings.map((h) => h.line),
+          headings.map((r) => r.id),
+          headings.map((r) => r.h.position),
+          headings.map((r) => r.h.level),
+          headings.map((r) => clean(r.h.text)),
+          headings.map((r) => clean(r.h.slug)),
+          headings.map((r) => r.h.line),
         ],
       );
     }
-    if (meta.blocks.length > 0) {
+    const blocks = rowsOf((c) => c.meta.blocks.map((b) => ({ id: c.page.id, b })));
+    if (blocks.length > 0) {
       await client.query(
         `INSERT INTO page_blocks (page_id, block_id, line)
-         SELECT $1, * FROM unnest($2::text[], $3::int[]) ON CONFLICT (page_id, block_id) DO NOTHING`,
-        [page.id, meta.blocks.map((b) => b.blockId), meta.blocks.map((b) => b.line)],
+         SELECT * FROM unnest($1::text[], $2::text[], $3::int[]) ON CONFLICT (page_id, block_id) DO NOTHING`,
+        [blocks.map((r) => r.id), blocks.map((r) => r.b.blockId), blocks.map((r) => r.b.line)],
       );
     }
-    if (meta.tags.length > 0) {
+    const tags = rowsOf((c) => c.meta.tags.map((t) => ({ id: c.page.id, t })));
+    if (tags.length > 0) {
       await client.query(
         `INSERT INTO page_tags (page_id, tag, source, line)
-         SELECT $1, * FROM unnest($2::text[], $3::text[], $4::int[])`,
-        [page.id, meta.tags.map((t) => clean(t.tag)), meta.tags.map((t) => t.source), meta.tags.map((t) => t.line)],
+         SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::int[])`,
+        [tags.map((r) => r.id), tags.map((r) => clean(r.t.tag)), tags.map((r) => r.t.source), tags.map((r) => r.t.line)],
       );
     }
+    const links = rowsOf((c) => c.links.map((l) => ({ id: c.page.id, l })));
     if (links.length > 0) {
       await client.query(
         `INSERT INTO page_links (source_page_id, target_path, link_path, syntax, kind, fragment, fragment_kind, fragment_key, display_text, line, context)
-         SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int[], $11::text[])`,
+         SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int[], $11::text[])`,
         [
-          page.id,
-          links.map((l) => clean(l.target.targetPath)),
-          links.map((l) => clean(l.linkPath)),
-          links.map((l) => l.syntax),
-          links.map((l) => l.target.kind),
-          links.map((l) => clean(l.fragment)),
-          links.map((l) => l.fragmentKind),
-          links.map((l) => clean(l.fragmentKey)),
-          links.map((l) => clean(l.displayText)),
-          links.map((l) => l.line),
-          links.map((l) => clean(l.context)),
+          links.map((r) => r.id),
+          links.map((r) => clean(r.l.target.targetPath)),
+          links.map((r) => clean(r.l.linkPath)),
+          links.map((r) => r.l.syntax),
+          links.map((r) => r.l.target.kind),
+          links.map((r) => clean(r.l.fragment)),
+          links.map((r) => r.l.fragmentKind),
+          links.map((r) => clean(r.l.fragmentKey)),
+          links.map((r) => clean(r.l.displayText)),
+          links.map((r) => r.l.line),
+          links.map((r) => clean(r.l.context)),
         ],
       );
     }
-    await client.query('UPDATE pages_index SET frontmatter = $2::jsonb, meta_version = $3 WHERE id = $1', [page.id, frontmatterJson(frontmatter), INDEX_META_VERSION]);
+    await client.query(
+      `UPDATE pages_index p SET frontmatter = v.fm::jsonb, meta_version = $3
+         FROM unnest($1::text[], $2::text[]) AS v(id, fm) WHERE p.id = v.id`,
+      [classified.map((c) => c.page.id), classified.map((c) => frontmatterJson(c.frontmatter)), INDEX_META_VERSION],
+    );
   });
-  return meta;
+}
+
+/** A page of a batch: a document (its body is parsed) or a canvas (its cards are). */
+export interface PageMetaInput {
+  page: IndexedPage;
+  body: string;
+  frontmatter: Record<string, unknown> | null | undefined;
+  canvas?: CanvasDocument;
+}
+
+/** Pages written per transaction by indexPagesMeta. */
+const META_BATCH_PAGES = 50;
+
+/**
+ * Phase 1 for several pages at once: the same rows indexPageMeta / indexCanvasMeta write, but one transaction
+ * (a handful of statements) per `META_BATCH_PAGES` pages instead of a dozen round trips per page — what a subtree
+ * copy of a remote database waits for. A batch that fails is written page by page, so one odd page costs only itself;
+ * `onError` hears about those. Does NOT resolve — call resolveLinks next.
+ */
+export async function indexPagesMeta(inputs: readonly PageMetaInput[], onError: (page: IndexedPage, err: unknown) => void): Promise<void> {
+  for (let i = 0; i < inputs.length; i += META_BATCH_PAGES) {
+    const chunk = inputs.slice(i, i + META_BATCH_PAGES);
+    const parsed: ParsedMetaItem[] = [];
+    for (const input of chunk) {
+      try {
+        const meta = input.canvas ? parseCanvasMeta(input.canvas, input.frontmatter) : await parsePageMetaAsync(input.body, input.frontmatter);
+        parsed.push({ page: input.page, meta, frontmatter: input.frontmatter });
+      } catch (err) {
+        onError(input.page, err);
+      }
+    }
+    try {
+      await writePagesMeta(parsed);
+    } catch (err) {
+      for (const item of parsed) await writePagesMeta([item]).catch((e) => onError(item.page, e));
+    }
+  }
 }
 
 export type ResolveScope =
@@ -283,9 +345,10 @@ async function loadFiles(space: string, wanted: Wanted | null, allPagePaths: str
         : new Set(
             (
               await query<{ d: string }>(
+                // A prefix test as a byte-order range ('0' follows '/'), so migration 050's indexes serve it.
                 `SELECT d FROM unnest($2::text[]) AS d
-                  WHERE EXISTS (SELECT 1 FROM space_files f WHERE f.space_slug = $1 AND left(f.path, length(d) + 1) = d || '/')
-                     OR EXISTS (SELECT 1 FROM pages_index p WHERE p.space_slug = $1 AND left(p.path, length(d) + 1) = d || '/')`,
+                  WHERE EXISTS (SELECT 1 FROM space_files f WHERE f.space_slug = $1 AND f.path COLLATE "C" >= d || '/' AND f.path COLLATE "C" < d || '0')
+                     OR EXISTS (SELECT 1 FROM pages_index p WHERE p.space_slug = $1 AND p.path COLLATE "C" >= d || '/' AND p.path COLLATE "C" < d || '0')`,
                 [space, wanted.folders],
               )
             ).map((r) => r.d),

@@ -1572,7 +1572,57 @@ function sameJson(a: unknown, b: unknown): boolean {
   }
 }
 
-export async function scanSpace(space: string, onProgress?: (progress: ScanProgress) => void, restoredAccess?: RestoredAccess): Promise<ScanStats> {
+/**
+ * What a scoped scan (scanPaths) looks at: folders walked whole and single page files, as POSIX paths relative
+ * to the content root. Nothing outside them is read, and nothing is deleted from the index.
+ */
+export interface ScanScope {
+  dirs?: readonly string[];
+  files?: readonly string[];
+}
+
+/** A scope the scan would not walk the same way a whole-space scan does (a dot folder, an `assets/` folder, an ignored top-level entry, a path that is not tidy). */
+class ScanScopeRefused extends Error {
+  constructor() {
+    super('scan scope is not walkable');
+  }
+}
+
+function scopeIsWalkable(scope: ScanScope, ignoredAtRoot: (name: string, isDir: boolean) => boolean): boolean {
+  const paths = [...(scope.dirs ?? []), ...(scope.files ?? [])];
+  return paths.every((p) => {
+    const segments = p.split('/');
+    if (segments.some((seg) => seg === '' || seg === '.' || seg === '..' || seg.startsWith('.') || seg === 'assets')) return false;
+    return !ignoredAtRoot(segments[0], segments.length > 1 || (scope.dirs ?? []).includes(p));
+  });
+}
+
+/**
+ * scanSpace for a KNOWN set of new or changed paths — what the page writes (create, copy, duplicate, make
+ * template, from template, upload) have just put on disk. Reads and indexes only those files (and the
+ * attachments of those folders), so the cost does not grow with the space: no walk of the whole tree, no
+ * mirror of the whole index. The same rows come out as from a full scan, because it is the same per-file
+ * code. It removes nothing — a write that DELETES or MOVES pages still needs the full scan — and it falls back
+ * to one whenever the scope is not one it can walk faithfully, or the scoped pass fails.
+ */
+export async function scanPaths(space: string, scope: ScanScope): Promise<ScanStats> {
+  try {
+    return await scanSpaceImpl(space, undefined, undefined, scope);
+  } catch (err) {
+    if (err instanceof ScanScopeRefused) return scanSpace(space);
+    if (isConnectionFailure(err)) throw err;
+    // eslint-disable-next-line no-console
+    console.error(`[scan] ${space}: scoped scan failed, scanning the whole space:`, err);
+    return scanSpace(space);
+  }
+}
+
+export function scanSpace(space: string, onProgress?: (progress: ScanProgress) => void, restoredAccess?: RestoredAccess): Promise<ScanStats> {
+  return scanSpaceImpl(space, onProgress, restoredAccess);
+}
+
+/** The scan itself; with a `scope` it only visits those paths (see scanPaths) and skips every whole-space step: the stale-row cleanup, the files-index mirror, the sidecar comparison. */
+async function scanSpaceImpl(space: string, onProgress?: (progress: ScanProgress) => void, restoredAccess?: RestoredAccess, scope?: ScanScope): Promise<ScanStats> {
   const startedAt = Date.now();
   const appliedRules = new Set<PageAccessRule>();
   const root = spaceDir(space);
@@ -1580,10 +1630,16 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   // The space's own ignore list (+ the defaults), read per scan so a PATCH on any instance is honoured by the next one.
   const scanIgnoreRow = await queryOne<{ scan_ignore: string[] | null }>('SELECT scan_ignore FROM spaces WHERE slug = $1', [space]);
   const ignoredAtRoot = compileScanIgnore(scanIgnoreRow?.scan_ignore);
+  if (scope && !scopeIsWalkable(scope, ignoredAtRoot)) throw new ScanScopeRefused();
 
   const existingRows = await query<{ path: string; file_mtime: string | null; file_size: string | null; kind: string; title: string; meta_version: number }>(
-    'SELECT path, file_mtime, file_size, kind, title, meta_version FROM pages_index WHERE space_slug = $1',
-    [space],
+    scope
+      ? `SELECT path, file_mtime, file_size, kind, title, meta_version FROM pages_index p
+          WHERE space_slug = $1
+            AND (path = ANY($2::text[])
+                 OR EXISTS (SELECT 1 FROM unnest($3::text[]) d WHERE p.path COLLATE "C" >= d || '/' AND p.path COLLATE "C" < d || '0'))`
+      : 'SELECT path, file_mtime, file_size, kind, title, meta_version FROM pages_index WHERE space_slug = $1',
+    scope ? [space, [...(scope.files ?? [])], [...(scope.dirs ?? [])]] : [space],
   );
   const existingByPath = new Map(existingRows.map((r) => [r.path, r]));
   const stillPresent = new Set<string>();
@@ -1602,7 +1658,10 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   let totalFiles = 0;
   // Property sidecars of boards / PDFs / Office pages (propsSidecar.ts): read once per scan — they are few and
   // small — so a sidecar changed by git is indexed even when its page file did not change.
-  const sidecars = await propsSidecar.listSidecars(root).catch(() => new Map<string, string>());
+  // A scoped scan reads just the sidecars of the pages it indexes.
+  const sidecars = scope ? new Map<string, string>() : await propsSidecar.listSidecars(root).catch(() => new Map<string, string>());
+  const sidecarTextOf = async (relPath: string): Promise<string | null> =>
+    scope ? await propsSidecar.readSidecarText(root, relPath).catch(() => null) : (sidecars.get(relPath) ?? null);
   // Wave 3: every non-page file the walk meets, for the files index (spaceFiles.ts) — mirrored after the walk.
   const scannedFiles: spaceFiles.ScannedFile[] = [];
   const noteFile = async (abs: string, relPath: string): Promise<void> => {
@@ -1611,7 +1670,7 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
     if (st?.isFile()) scannedFiles.push({ path: relPath, size: st.size, mtime: st.mtime });
   };
 
-  if (onProgress) {
+  if (onProgress && !scope) {
     async function count(absDir: string, isRoot: boolean): Promise<void> {
       const dirents = await fs.readdir(absDir, { withFileTypes: true }).catch(() => []);
       for (const dirent of dirents) {
@@ -1630,6 +1689,141 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
     }
     await count(root, true);
     onProgress({ processedFiles, totalFiles });
+  }
+
+  /** One candidate page file met by the walk (or named by a scoped scan): indexed unless its bytes are unchanged. */
+  async function visitPageFile(abs: string, relPath: string, name: string, hasIndexMd: boolean, mode: 'pages' | 'files' | 'agent'): Promise<void> {
+    const lower = name.toLowerCase();
+    // Round 26: `.table.md` MUST be checked BEFORE plain `.md` — a table file also
+    // ends in `.md`, so `isMd` is deliberately defined to EXCLUDE anything `isTable`
+    // already claimed. Getting this order backwards would misindex every table file
+    // as an ordinary doc (and, since a table's rows/columns live in frontmatter that
+    // a doc's parser never expects, silently mangle it) — see the mandatory
+    // storage.test.ts collision test for what this guards against.
+    const isTable = lower.endsWith('.table.md');
+    // Round FORMS: same load-bearing ordering as isTable — `.form.md` also
+    // ends in `.md`, so isMd below deliberately excludes it too.
+    const isForm = !isTable && lower.endsWith('.form.md');
+    const isMd = !isTable && !isForm && lower.endsWith('.md');
+    const isBoard = lower.endsWith('.excalidraw.svg');
+    // Round PDF: case-insensitive, same as every other extension check here
+    // (a repo checked out on a case-preserving filesystem can hold `.PDF`).
+    const isPdf = lower.endsWith('.pdf');
+    // Round OFFICE: same case-insensitive rule; officeFormat is the one
+    // source of truth for which of the three extensions this is.
+    const isOffice = officeFormat(lower) !== undefined;
+    // Obsidian canvas (16.10.2026): a JSON Canvas file, read-only — never written (indexCanvasFile).
+    const isCanvas = lower.endsWith('.canvas');
+    // Obsidian Bases (16.10.2026): a `.base` file is a view over pages (indexBaseFile).
+    const isBase = lower.endsWith('.base');
+    // Anything else — including a `.folio` metadata file (round 22) — is never a page:
+    // skipped here, so it can never enter pages_index/the tree/search in the first place.
+    if (!isMd && !isBoard && !isTable && !isForm && !isPdf && !isOffice && !isCanvas && !isBase) {
+      if (isUnsupportedMarkdown(lower)) skippedUnsupported++;
+      // Not a page: a file of the space (wave 3) — never one under `.agent/`, never a `*.folio` metadata file.
+      if (mode === 'pages') await noteFile(abs, relPath);
+      return;
+    }
+
+    const reportProcessed = () => {
+      processedFiles++;
+      onProgress?.({ processedFiles, totalFiles });
+    };
+
+    const stat = await fs.stat(abs).catch(() => null);
+    if (!stat) return;
+    stillPresent.add(relPath);
+
+    const existing = existingByPath.get(relPath);
+    // The mtime+size fast path skips a file whose BYTES are the same — but
+    // the title is derived from the PATH and the current titleFallback rule,
+    // not from the bytes. When that rule changes (16.09: a file page's title
+    // gained its extension), every already-indexed file stayed on its old
+    // title forever, because nothing ever re-derived it. Comparing the
+    // derived title too costs one pure string call per file and makes such a
+    // change self-healing on the next scan — for pages whose title comes
+    // from INSIDE the file (doc's H1, board's header) titleFallback is only
+    // a fallback, so they are deliberately left to the bytes check alone.
+    const derivedTitle = isPdf || isOffice || isCanvas ? titleFallback(relPath, isPdf ? 'pdf' : isOffice ? 'office' : 'canvas') : isBase ? titleFallback(relPath, 'base') : undefined;
+    // Index v2: a page indexed by an older parser (meta_version below INDEX_META_VERSION — every row right
+    // after migration 042) is read again even though its bytes did not change, so new metadata reaches old rows.
+    // Every kind has metadata now: a document's headings / tags / links, a table's or form's own properties
+    // (front matter), a board's / file's sidecar properties — a table that kept its fast path would never get its tags.
+    const metaStale = existing !== undefined && Number(existing.meta_version) < INDEX_META_VERSION;
+    const unchanged =
+      existing &&
+      existing.file_mtime &&
+      existing.file_size !== null &&
+      new Date(existing.file_mtime).getTime() === stat.mtime.getTime() &&
+      Number(existing.file_size) === stat.size &&
+      (derivedTitle === undefined || existing.title === derivedTitle) &&
+      !metaStale;
+    if (unchanged) {
+      filesSkipped++;
+      reportProcessed();
+      return;
+    }
+    filesRead++;
+
+    // README.md is the directory's index only when this directory has no index.md.
+    const isIndex = isMd && (name === 'index.md' || (name === 'README.md' && !hasIndexMd));
+    // One file must not be able to sink the scan of a whole space. Before
+    // this, any throw from a single file's indexing or upsert aborted
+    // scanSpace outright — and during createSpaceFromRepo that meant a bare
+    // 500 for the whole import (prod, 15.09: a repo's `_tasks` folder). The
+    // unparseable-frontmatter case is handled precisely in indexDocFile; this
+    // is the backstop for the ones nobody has named yet (the documented
+    // (space_slug, path) trap when a file is replaced without its id, and
+    // whatever an arbitrary external repository brings along). A skipped
+    // file keeps its existing row: it was already added to `stillPresent`
+    // above, so the cleanup below won't delete what it failed to refresh.
+    let entry: PageIndexEntry | null;
+    try {
+      entry = isTable
+        ? await indexTableFile(space, relPath, abs, stat.mtime)
+        : isForm
+          ? await indexFormFile(space, relPath, abs, stat.mtime)
+          : isMd
+            ? await indexDocFile(space, relPath, abs, stat.mtime, isIndex, stat.size)
+            : isPdf
+              ? await indexPdfFile(space, relPath, abs, stat.mtime)
+              : isOffice
+                ? await indexOfficeFile(space, relPath, abs, stat.mtime)
+                : isCanvas
+                  ? await indexCanvasFile(space, relPath, abs, stat.mtime)
+                : isBase
+                  ? await indexBaseFile(space, relPath, abs, stat.mtime)
+                  : await indexBoardFile(space, relPath, abs, stat.mtime);
+      if (entry) {
+        // Page access that travelled with a trash item (see RestoredAccess): by id first, then by the path the file landed on.
+        const rule = restoredAccess ? (restoredAccess.byId.get(entry.id) ?? restoredAccess.byPath.get(entry.relPath)) : undefined;
+        const give = rule && !appliedRules.has(rule) ? rule : undefined;
+        await upsertPagesIndexRow(entry, stat.mtime, stat.size, give);
+        if (give) appliedRules.add(give);
+      }
+    } catch (err) {
+      failedFiles++;
+      lastFailure = err;
+      // eslint-disable-next-line no-console
+      console.warn(`[scan] ${space}/${relPath}: skipped, could not index:`, err instanceof Error ? err.message.split('\n')[0] : err);
+      reportProcessed();
+      return;
+    }
+    if (!entry) return;
+    readPaths.push(entry.relPath);
+    if (entry.kind === 'doc') pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: entry.body ?? '', frontmatter: entry.frontmatter });
+    // A table's / form's own properties, a board's / file's sidecar: tags and `prop:` of the page (no body to parse).
+    else if (entry.kind === 'table' || entry.kind === 'form') pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: '', frontmatter: entry.frontmatter ?? {} });
+    else if (propsSidecar.usesSidecar(entry.kind)) {
+      pendingMeta.push({
+        id: entry.id,
+        relPath: entry.relPath,
+        body: '',
+        frontmatter: propsSidecar.parseSidecar(await sidecarTextOf(entry.relPath)).data,
+        canvas: entry.canvasDoc,
+      });
+    }
+    reportProcessed();
   }
 
   /**
@@ -1680,141 +1874,20 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
         await noteFile(abs, relPath);
         continue;
       }
-      const lower = name.toLowerCase();
-      // Round 26: `.table.md` MUST be checked BEFORE plain `.md` — a table file also
-      // ends in `.md`, so `isMd` is deliberately defined to EXCLUDE anything `isTable`
-      // already claimed. Getting this order backwards would misindex every table file
-      // as an ordinary doc (and, since a table's rows/columns live in frontmatter that
-      // a doc's parser never expects, silently mangle it) — see the mandatory
-      // storage.test.ts collision test for what this guards against.
-      const isTable = lower.endsWith('.table.md');
-      // Round FORMS: same load-bearing ordering as isTable — `.form.md` also
-      // ends in `.md`, so isMd below deliberately excludes it too.
-      const isForm = !isTable && lower.endsWith('.form.md');
-      const isMd = !isTable && !isForm && lower.endsWith('.md');
-      const isBoard = lower.endsWith('.excalidraw.svg');
-      // Round PDF: case-insensitive, same as every other extension check here
-      // (a repo checked out on a case-preserving filesystem can hold `.PDF`).
-      const isPdf = lower.endsWith('.pdf');
-      // Round OFFICE: same case-insensitive rule; officeFormat is the one
-      // source of truth for which of the three extensions this is.
-      const isOffice = officeFormat(lower) !== undefined;
-      // Obsidian canvas (16.10.2026): a JSON Canvas file, read-only — never written (indexCanvasFile).
-      const isCanvas = lower.endsWith('.canvas');
-      // Obsidian Bases (16.10.2026): a `.base` file is a view over pages (indexBaseFile).
-      const isBase = lower.endsWith('.base');
-      // Anything else — including a `.folio` metadata file (round 22) — is never a page:
-      // skipped here, so it can never enter pages_index/the tree/search in the first place.
-      if (!isMd && !isBoard && !isTable && !isForm && !isPdf && !isOffice && !isCanvas && !isBase) {
-        if (isUnsupportedMarkdown(lower)) skippedUnsupported++;
-        // Not a page: a file of the space (wave 3) — never one under `.agent/`, never a `*.folio` metadata file.
-        if (mode === 'pages') await noteFile(abs, relPath);
-        continue;
-      }
-
-      const reportProcessed = () => {
-        processedFiles++;
-        onProgress?.({ processedFiles, totalFiles });
-      };
-
-      const stat = await fs.stat(abs).catch(() => null);
-      if (!stat) continue;
-      stillPresent.add(relPath);
-
-      const existing = existingByPath.get(relPath);
-      // The mtime+size fast path skips a file whose BYTES are the same — but
-      // the title is derived from the PATH and the current titleFallback rule,
-      // not from the bytes. When that rule changes (16.09: a file page's title
-      // gained its extension), every already-indexed file stayed on its old
-      // title forever, because nothing ever re-derived it. Comparing the
-      // derived title too costs one pure string call per file and makes such a
-      // change self-healing on the next scan — for pages whose title comes
-      // from INSIDE the file (doc's H1, board's header) titleFallback is only
-      // a fallback, so they are deliberately left to the bytes check alone.
-      const derivedTitle = isPdf || isOffice || isCanvas ? titleFallback(relPath, isPdf ? 'pdf' : isOffice ? 'office' : 'canvas') : isBase ? titleFallback(relPath, 'base') : undefined;
-      // Index v2: a page indexed by an older parser (meta_version below INDEX_META_VERSION — every row right
-      // after migration 042) is read again even though its bytes did not change, so new metadata reaches old rows.
-      // Every kind has metadata now: a document's headings / tags / links, a table's or form's own properties
-      // (front matter), a board's / file's sidecar properties — a table that kept its fast path would never get its tags.
-      const metaStale = existing !== undefined && Number(existing.meta_version) < INDEX_META_VERSION;
-      const unchanged =
-        existing &&
-        existing.file_mtime &&
-        existing.file_size !== null &&
-        new Date(existing.file_mtime).getTime() === stat.mtime.getTime() &&
-        Number(existing.file_size) === stat.size &&
-        (derivedTitle === undefined || existing.title === derivedTitle) &&
-        !metaStale;
-      if (unchanged) {
-        filesSkipped++;
-        reportProcessed();
-        continue;
-      }
-      filesRead++;
-
-      // README.md is the directory's index only when this directory has no index.md.
-      const isIndex = isMd && (name === 'index.md' || (name === 'README.md' && !hasIndexMd));
-      // One file must not be able to sink the scan of a whole space. Before
-      // this, any throw from a single file's indexing or upsert aborted
-      // scanSpace outright — and during createSpaceFromRepo that meant a bare
-      // 500 for the whole import (prod, 15.09: a repo's `_tasks` folder). The
-      // unparseable-frontmatter case is handled precisely in indexDocFile; this
-      // is the backstop for the ones nobody has named yet (the documented
-      // (space_slug, path) trap when a file is replaced without its id, and
-      // whatever an arbitrary external repository brings along). A skipped
-      // file keeps its existing row: it was already added to `stillPresent`
-      // above, so the cleanup below won't delete what it failed to refresh.
-      let entry: PageIndexEntry | null;
-      try {
-        entry = isTable
-          ? await indexTableFile(space, relPath, abs, stat.mtime)
-          : isForm
-            ? await indexFormFile(space, relPath, abs, stat.mtime)
-            : isMd
-              ? await indexDocFile(space, relPath, abs, stat.mtime, isIndex, stat.size)
-              : isPdf
-                ? await indexPdfFile(space, relPath, abs, stat.mtime)
-                : isOffice
-                  ? await indexOfficeFile(space, relPath, abs, stat.mtime)
-                  : isCanvas
-                    ? await indexCanvasFile(space, relPath, abs, stat.mtime)
-                  : isBase
-                    ? await indexBaseFile(space, relPath, abs, stat.mtime)
-                    : await indexBoardFile(space, relPath, abs, stat.mtime);
-        if (entry) {
-          // Page access that travelled with a trash item (see RestoredAccess): by id first, then by the path the file landed on.
-          const rule = restoredAccess ? (restoredAccess.byId.get(entry.id) ?? restoredAccess.byPath.get(entry.relPath)) : undefined;
-          const give = rule && !appliedRules.has(rule) ? rule : undefined;
-          await upsertPagesIndexRow(entry, stat.mtime, stat.size, give);
-          if (give) appliedRules.add(give);
-        }
-      } catch (err) {
-        failedFiles++;
-        lastFailure = err;
-        // eslint-disable-next-line no-console
-        console.warn(`[scan] ${space}/${relPath}: skipped, could not index:`, err instanceof Error ? err.message.split('\n')[0] : err);
-        reportProcessed();
-        continue;
-      }
-      if (!entry) continue;
-      readPaths.push(entry.relPath);
-      if (entry.kind === 'doc') pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: entry.body ?? '', frontmatter: entry.frontmatter });
-      // A table's / form's own properties, a board's / file's sidecar: tags and `prop:` of the page (no body to parse).
-      else if (entry.kind === 'table' || entry.kind === 'form') pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: '', frontmatter: entry.frontmatter ?? {} });
-      else if (propsSidecar.usesSidecar(entry.kind)) {
-        pendingMeta.push({
-          id: entry.id,
-          relPath: entry.relPath,
-          body: '',
-          frontmatter: propsSidecar.parseSidecar(sidecars.get(entry.relPath) ?? null).data,
-          canvas: entry.canvasDoc,
-        });
-      }
-      reportProcessed();
+      await visitPageFile(abs, relPath, name, hasIndexMd, mode);
     }
   }
 
-  await walk(root, '');
+  if (scope) {
+    for (const dir of scope.dirs ?? []) await walk(path.join(root, ...dir.split('/')), dir);
+    for (const rel of scope.files ?? []) {
+      const abs = path.join(root, ...rel.split('/'));
+      const dirNames = await fs.readdir(path.dirname(abs)).catch(() => [] as string[]);
+      await visitPageFile(abs, rel, path.basename(rel), dirNames.includes('index.md'), 'pages');
+    }
+  } else {
+    await walk(root, '');
+  }
 
   // Tolerating individual files must not hide a SYSTEMIC failure — but the
   // first version of this guard decided "systemic" by counting ("every file we
@@ -1828,8 +1901,11 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   if (restoredAccess) await reconcileRestoredAccess(space, restoredAccess, appliedRules);
 
   // Paths whose page went away (or moved: its row now carries the new path): links that meant them are re-resolved.
-  const removedPaths = existingRows.map((r) => r.path).filter((p) => !stillPresent.has(p));
-  if (stillPresent.size > 0) {
+  // (A scoped scan has not seen the rest of the space, so it removes nothing.)
+  const removedPaths = scope ? [] : existingRows.map((r) => r.path).filter((p) => !stillPresent.has(p));
+  if (scope) {
+    // nothing to clean up
+  } else if (stillPresent.size > 0) {
     await query('DELETE FROM pages_index WHERE space_slug = $1 AND NOT (path = ANY($2::text[]))', [space, [...stillPresent]]);
   } else {
     await query('DELETE FROM pages_index WHERE space_slug = $1', [space]);
@@ -1840,9 +1916,15 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   let filePaths: string[] = [];
   let indexedFiles = 0;
   try {
-    const synced = await spaceFiles.syncScannedFiles(space, scannedFiles);
-    filePaths = [...synced.added, ...synced.removed];
-    indexedFiles = synced.total;
+    if (scope) {
+      // Only the files the scoped walk met (a copied folder's attachments): written, never mirrored against the whole space.
+      if (scannedFiles.length > 0) filePaths = (await spaceFiles.addScannedFiles(space, scannedFiles)).added;
+      indexedFiles = scannedFiles.length;
+    } else {
+      const synced = await spaceFiles.syncScannedFiles(space, scannedFiles);
+      filePaths = [...synced.added, ...synced.removed];
+      indexedFiles = synced.total;
+    }
   } catch (err) {
     if (isConnectionFailure(err)) throw err;
     // eslint-disable-next-line no-console
@@ -1850,46 +1932,60 @@ export async function scanSpace(space: string, onProgress?: (progress: ScanProgr
   }
 
   // A sidecar that changed (or went away) while its page file did not: the page's properties are indexed again.
-  try {
-    const queued = new Set(pendingMeta.map((p) => p.id));
-    const rows = await query<{ id: string; path: string; kind: string; frontmatter: Record<string, unknown> | null }>(
-      `SELECT id, path, kind, frontmatter FROM pages_index WHERE space_slug = $1 AND kind = ANY($2::text[])`,
-      [space, ['board', 'pdf', 'office', 'canvas', 'base']],
-    );
-    for (const row of rows) {
-      if (queued.has(row.id)) continue;
-      const data = propsSidecar.parseSidecar(sidecars.get(row.path) ?? null).data;
-      if (sameJson(data, row.frontmatter ?? {})) continue;
-      // A canvas is indexed from its cards as well: re-read them, or the property change would wipe its links.
-      const canvas = row.kind === 'canvas' ? ((await readCanvasDocument(path.join(root, row.path))) ?? { nodes: [], edges: [] }) : undefined;
-      pendingMeta.push({ id: row.id, relPath: row.path, body: '', frontmatter: data, canvas });
+  // (A scoped scan indexes the sidecars of its own pages and compares nothing else.)
+  if (!scope) {
+    try {
+      const queued = new Set(pendingMeta.map((p) => p.id));
+      const rows = await query<{ id: string; path: string; kind: string; frontmatter: Record<string, unknown> | null }>(
+        `SELECT id, path, kind, frontmatter FROM pages_index WHERE space_slug = $1 AND kind = ANY($2::text[])`,
+        [space, ['board', 'pdf', 'office', 'canvas', 'base']],
+      );
+      for (const row of rows) {
+        if (queued.has(row.id)) continue;
+        const data = propsSidecar.parseSidecar(sidecars.get(row.path) ?? null).data;
+        if (sameJson(data, row.frontmatter ?? {})) continue;
+        // A canvas is indexed from its cards as well: re-read them, or the property change would wipe its links.
+        const canvas = row.kind === 'canvas' ? ((await readCanvasDocument(path.join(root, row.path))) ?? { nodes: [], edges: [] }) : undefined;
+        pendingMeta.push({ id: row.id, relPath: row.path, body: '', frontmatter: data, canvas });
+      }
+    } catch (err) {
+      if (isConnectionFailure(err)) throw err;
+      // eslint-disable-next-line no-console
+      console.error(`[scan] ${space}: could not compare the property sidecars:`, err);
     }
-  } catch (err) {
-    if (isConnectionFailure(err)) throw err;
-    // eslint-disable-next-line no-console
-    console.error(`[scan] ${space}: could not compare the property sidecars:`, err);
   }
 
   // Index v2, phase 1: the documents read in this scan (their links raw, unresolved).
   // Cooperative (15.10.2026: a big document held the event loop for 339 s on prod): a big body is parsed in chunks
   // with a yield between them (indexV2/parse.ts parsePageMetaAsync), and each body is let go once indexed.
-  for (const p of pendingMeta) {
-    const page = { id: p.id, space, relPath: p.relPath };
-    await (p.canvas ? pageIndex.indexCanvasMeta(page, p.canvas, p.frontmatter) : pageIndex.indexPageMeta(page, p.body, p.frontmatter)).catch((err) => {
-      // eslint-disable-next-line no-console
-      console.error(`[index] failed to index ${space}/${p.relPath}:`, err);
-    });
-    p.body = '';
+  if (scope) {
+    // A handful of pages (a copy): written together, a few statements instead of a dozen round trips each.
+    await pageIndex.indexPagesMeta(
+      pendingMeta.map((p) => ({ page: { id: p.id, space, relPath: p.relPath }, body: p.body, frontmatter: p.frontmatter, canvas: p.canvas })),
+      (page, err) => {
+        // eslint-disable-next-line no-console
+        console.error(`[index] failed to index ${space}/${page.relPath}:`, err);
+      },
+    );
+  } else {
+    for (const p of pendingMeta) {
+      const page = { id: p.id, space, relPath: p.relPath };
+      await (p.canvas ? pageIndex.indexCanvasMeta(page, p.canvas, p.frontmatter) : pageIndex.indexPageMeta(page, p.body, p.frontmatter)).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error(`[index] failed to index ${space}/${p.relPath}:`, err);
+      });
+      p.body = '';
+    }
   }
   // Phase 2: resolve against the pages as they are now. Only when something changed, so an idle rescan stays free;
   // a small change resolves just the links it can affect, a big one (a first scan, a pull) the whole space.
   if (readPaths.length > 0 || removedPaths.length > 0 || filePaths.length > 0) {
     const changedPaths = [...readPaths, ...removedPaths, ...filePaths];
-    const scope: pageIndex.ResolveScope =
+    const resolveScope: pageIndex.ResolveScope =
       changedPaths.length > pageIndex.SCOPED_RESOLVE_MAX_PATHS
         ? 'all'
         : { sourceIds: pendingMeta.map((p) => p.id), changedPaths, targetIds: pendingMeta.map((p) => p.id) };
-    await pageIndex.resolveLinks(space, scope).catch((err) => {
+    await pageIndex.resolveLinks(space, resolveScope).catch((err) => {
       // eslint-disable-next-line no-console
       console.error(`[index] failed to resolve the links of ${space}:`, err);
     });
@@ -2568,6 +2664,8 @@ export async function createPage(body: CreatePageBody, initial?: CreatePageIniti
     let id = body.id ?? ulid();
     if (body.id && (await getEntry(body.id))) throw conflict('a page with this id already exists');
     let relPath: string;
+    // Every page file this call writes, for the scoped scan below (a form brings its table).
+    const writtenFiles: string[] = [];
     if (body.kind === 'board') {
       relPath = await uniqueRelPath(body.space, parentPath, translitSlug(title), '.excalidraw.svg');
       // QA-3: the header must carry the TITLE too, not just the id. A board has no
@@ -2656,6 +2754,7 @@ export async function createPage(body: CreatePageBody, initial?: CreatePageIniti
         rows: [],
       };
       await fs.writeFile(path.join(spaceDir(body.space), tableRelPath), serializeTableFile(tableDoc), 'utf8');
+      writtenFiles.push(tableRelPath);
 
       const formDoc: FormDoc = {
         meta: { id, version: 1 },
@@ -2691,7 +2790,7 @@ export async function createPage(body: CreatePageBody, initial?: CreatePageIniti
         await persistDocFrontmatter(abs, { id }, docBody ?? `# ${title}\n`);
       }
     }
-    await scanSpace(body.space);
+    await scanPathsOrAll(body.space, { files: [relPath, ...writtenFiles] }, id);
     const entry = await getEntry(id);
     if (!entry) throw new Error('internal: page created but not indexed');
     return toPageMeta(entry);
@@ -2720,8 +2819,12 @@ export async function uploadFilePage(space: string, parentPathRaw: string, origi
 
     await fs.writeFile(destAbs, bytes);
 
-    await scanSpace(space);
-    const entryId = await getEntryIdByExactPath(space, relPath);
+    await scanPaths(space, { files: [relPath] });
+    let entryId = await getEntryIdByExactPath(space, relPath);
+    if (!entryId) {
+      await scanSpace(space);
+      entryId = await getEntryIdByExactPath(space, relPath);
+    }
     if (!entryId) throw new Error('internal: file uploaded but not indexed');
     return toPageMeta(await requireEntry(entryId));
   });
@@ -4373,7 +4476,7 @@ async function copyPageInternal(
         liveContent,
       );
       await copySubtreeSidecars(source.space, srcDirAbs, toSpace, destDirAbs, copied);
-      await scanSpace(toSpace);
+      await scanPathsOrAll(toSpace, { dirs: [uniqueDirRel] }, copiedId);
       if (scope) await restrictCopies(sourceEntries, copied, scope.actorId);
       return { meta: toPageMeta(await requireEntry(copiedId)), copiedIds: copied.map((c) => c.copyId) };
     }
@@ -4448,6 +4551,7 @@ async function copyPageInternal(
 
     // Leaf page + includeChildren: bring the sibling `X/` children directory
     // along too, if the source has one — same fresh-id sweep, order kept.
+    let copiedChildDirRel: string | undefined;
     if (includeChildren && !source.isIndex) {
       const childStem = relPathStem(source.relPath, source.kind);
       const childSrcDirAbs = path.join(path.dirname(source.absPath), childStem);
@@ -4458,13 +4562,20 @@ async function copyPageInternal(
         const swept = await copySubtreeAssigningFreshIds(toSpace, childSrcDirAbs, destChildDirAbs, copyFilter(source.space, childSrcDirAbs, sourceEntries, scope));
         await copySubtreeSidecars(source.space, childSrcDirAbs, toSpace, destChildDirAbs, swept.copied);
         copied.push(...swept.copied);
+        copiedChildDirRel = path.relative(spaceDir(toSpace), destChildDirAbs).split(path.sep).join('/');
       }
     }
 
-    await scanSpace(toSpace);
+    await scanPathsOrAll(toSpace, { files: [relPath], dirs: copiedChildDirRel ? [copiedChildDirRel] : [] }, copiedId);
     if (scope) await restrictCopies(sourceEntries, copied, scope.actorId);
     return { meta: toPageMeta(await requireEntry(copiedId)), copiedIds: copied.map((c) => c.copyId) };
   });
+}
+
+/** scanPaths for a write that created the page `expectId`; when the scoped pass left it out of the index, the whole space is scanned after all. */
+async function scanPathsOrAll(space: string, scope: ScanScope, expectId: string): Promise<void> {
+  await scanPaths(space, scope);
+  if (!(await getEntry(expectId))) await scanSpace(space);
 }
 
 /**

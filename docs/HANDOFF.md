@@ -511,6 +511,10 @@ PostgreSQL, not in Git.
 
 ## What must never break
 
+- Page writes (create, copy, duplicate, make template, from template) reindex
+  only the paths they touched (a scoped scan); a full `scanSpace` remains the
+  fallback and the boot/Git path. Folder-prefix lookups use byte-order range
+  indexes (migration 050, `COLLATE "C"`), never `left(path, n) = ...`.
 - A share payload carries `ownAccess` only for a signed-in reader whose own
   role on that page is viewer or higher; a guest or an outsider must never learn
   the page's space or id from it.
@@ -766,9 +770,6 @@ Each of these was a real defect. They are here so that nobody pays twice.
 - Moving or renaming a page rewrites `[text](path)` links and images, but not
   HTML tags or reference-style links.
 - Offline mode does not cover data tables, forms, uploads or templates.
-- The copy flows (make-template, from-template, duplicate, copy) end with a
-  `scanSpace` of the whole space (mtime/size skip). On a large space with remote
-  Postgres this is the slow part; there is no scoped rescan yet.
 - Reactions exist on whiteboard shapes only, not on documents, tables or
   comments, and live in the database, not in the board's file or in Git.
 - The "Not saved" badge reports that the server has not confirmed the latest

@@ -57,6 +57,8 @@ describe('share links route (real PG, fastify inject)', () => {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, 'diagram.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     await fs.writeFile(path.join(dir, 'unrelated.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    // Files put on disk from outside are indexed by a scan (creating a page scans only its own file).
+    await storage.scanSpace(space);
 
     const otherMeta = await storage.createPage({ space, parentPath: '', title: 'Other', kind: 'doc' });
     await storage.writeDocBody(otherMeta.id, '# Other\n\n![[unrelated.png]]\n');
