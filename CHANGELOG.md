@@ -6,6 +6,13 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ### Changed
 
+- **A share link opens in your own account.** If you are signed in and can open
+  the page yourself, `/share/<token>` takes you to the normal page
+  (`/s/<space>/p/<id>`) with your sidebar and rights instead of the guest view.
+  `GET /api/share/:token` adds `ownAccess` only for such a reader (never for a
+  guest or a signed-in outsider) and answers with `Cache-Control: private,
+  no-store`. Add `?as=guest` to the link to see what a guest sees.
+
 - **Properties update live.** When someone else changes a page's properties (the
   panel, a base cell, MCP `set_page_properties`, a tag rename, the page icon, a Git
   sync), everyone who has the page open and may read it sees the change without a

@@ -1852,6 +1852,16 @@ export function registerPublicShareRoutes(app: FastifyInstance): void {
       payload.children = subtreeFromCollected(scope.collected);
       payload.rootPageId = scope.root.id;
     }
+
+    // A signed-in visitor who could already open this page by their own rights is sent to their own account
+    // (the client replaces the location). Only such a visitor sees the field, so it reveals nothing new; the
+    // answer depends on the cookie, so it must never be shared between visitors by a cache.
+    reply.header('Cache-Control', 'private, no-store');
+    const viewer = await session.userForToken(request.cookies?.[session.SESSION_COOKIE_NAME]);
+    if (viewer) {
+      const role = await session.effectivePageRole(viewer, entry).catch(() => undefined);
+      if (session.roleAtLeast(role, 'viewer')) payload.ownAccess = { space: entry.space, pageId: entry.id };
+    }
     return payload;
   });
 

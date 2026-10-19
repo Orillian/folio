@@ -1911,6 +1911,12 @@ export interface SharedPagePayload {
    * that the client can build navigation links /share/<token>/p/<pageId> relative to it.
    */
   rootPageId?: string;
+  /**
+   * Present only when the request carried a valid session whose user can open this very page by their own
+   * rights: the in-app location (`/s/<space>/p/<pageId>`) the client switches to. Never set for a guest or
+   * for a signed-in user without access of their own.
+   */
+  ownAccess?: { space: string; pageId: string };
 }
 
 // ---------- invitations by link (round 9) ----------

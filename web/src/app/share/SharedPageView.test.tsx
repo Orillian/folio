@@ -251,3 +251,38 @@ describe('SharedPageView — doc edit link resolves the REAL role, not the link\
     expect(screen.getByTestId('page-editor').getAttribute('data-readonly')).toBe('false');
   });
 });
+
+describe('SharedPageView — own account', () => {
+  function stubLocation() {
+    const replace = vi.fn();
+    vi.stubGlobal('location', { ...window.location, hash: '#sec', replace });
+    return replace;
+  }
+
+  it('replaces the location with the in-app page URL and shows no guest view when the payload carries ownAccess', async () => {
+    const replace = stubLocation();
+    stubFetchByUrl({ '/api/share/t1': docPayload({}, { ownAccess: { space: 'sp', pageId: 'root1' } }) });
+    renderShare('/share/t1');
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/s/sp/p/root1#sec'));
+    expect(screen.queryByTestId('markdown-body')).toBeNull();
+  });
+
+  it('?as=guest keeps the guest view even with ownAccess', async () => {
+    const replace = stubLocation();
+    stubFetchByUrl({ '/api/share/t1': docPayload({}, { ownAccess: { space: 'sp', pageId: 'root1' } }) });
+    renderShare('/share/t1?as=guest');
+
+    await waitFor(() => expect(screen.getByTestId('markdown-body')).toBeTruthy());
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('without ownAccess the guest view stays and the location is untouched', async () => {
+    const replace = stubLocation();
+    stubFetchByUrl({ '/api/share/t1': docPayload({}) });
+    renderShare('/share/t1');
+
+    await waitFor(() => expect(screen.getByTestId('markdown-body')).toBeTruthy());
+    expect(replace).not.toHaveBeenCalled();
+  });
+});

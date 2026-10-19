@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router';
+import { Link, useParams, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { Eye, Pencil } from 'lucide-react';
 import type { SharedPagePayload, SpaceRole, SubtreeNode } from '@shared/contracts';
@@ -71,6 +71,17 @@ export function SharedPageView() {
 
   useDocumentTitle(data?.page.title);
 
+  // Signed in with rights of their own on this page: continue in the account instead of the guest view.
+  // `?as=guest` keeps the guest view, so the owner can still preview what a guest sees. /share lives outside
+  // the authenticated router tree, hence a full location replace; nothing of the guest view is shown meanwhile.
+  const [searchParams] = useSearchParams();
+  const ownAccess = searchParams.get('as') === 'guest' ? undefined : data?.ownAccess;
+  useEffect(() => {
+    if (!ownAccess) return;
+    const target = `/s/${encodeURIComponent(ownAccess.space)}/p/${encodeURIComponent(ownAccess.pageId)}${window.location.hash}`;
+    window.location.replace(target);
+  }, [ownAccess]);
+
   // The nav's root row needs the ROOT page's title, which a child payload
   // doesn't carry — read it from the root query's cache when the guest came
   // through the root (the usual path); a direct deep link falls back to a
@@ -87,6 +98,10 @@ export function SharedPageView() {
       currentId={data.page.id}
     />
   ) : null;
+
+  if (ownAccess) {
+    return <div className="min-h-screen bg-white p-8 text-sm text-neutral-400 dark:bg-neutral-950">{t('ui.loading')}</div>;
+  }
 
   return (
     <div className="flex h-full min-h-screen flex-col bg-white dark:bg-neutral-950">

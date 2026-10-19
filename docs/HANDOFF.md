@@ -511,6 +511,9 @@ PostgreSQL, not in Git.
 
 ## What must never break
 
+- A share payload carries `ownAccess` only for a signed-in reader whose own
+  role on that page is viewer or higher; a guest or an outsider must never learn
+  the page's space or id from it.
 - Files are the source of truth. Nothing that matters may exist only in the
   database, except what the table above lists.
 - The collaborative-editing snapshot is not a cache. Deleting it or dropping

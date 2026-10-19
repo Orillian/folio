@@ -177,6 +177,32 @@ describe('F-02: a subtree share excludes restricted pages and everything below t
     await shares.revokeShare(id);
   });
 
+  it('ownAccess: only a signed-in user who can open the page by their own rights gets it; guests and outsiders never do', async () => {
+    const stamp = Date.now();
+    const outsider = await authStore.createUser({ email: `acl-share-outsider-${stamp}@example.com`, name: 'Outsider', passwordHash: 'x', isAdmin: false });
+    const cookieOf = async (u: User) => `${session.SESSION_COOKIE_NAME}=${(await authStore.createSession(u.id)).token}`;
+    const { token, id } = await link(root.id, editor.id, true);
+    try {
+      const guest = await app.inject({ method: 'GET', url: `/api/share/${token}` });
+      expect((guest.json() as SharedPagePayload).ownAccess).toBeUndefined();
+      expect(guest.body).not.toContain('ownAccess');
+
+      const member = await app.inject({ method: 'GET', url: `/api/share/${token}`, headers: { cookie: await cookieOf(editor) } });
+      expect((member.json() as SharedPagePayload).ownAccess).toEqual({ space, pageId: root.id });
+      expect(member.headers['cache-control']).toBe('private, no-store');
+
+      const child = await app.inject({ method: 'GET', url: `/api/share/${token}?page=${open.id}`, headers: { cookie: await cookieOf(editor) } });
+      expect((child.json() as SharedPagePayload).ownAccess).toEqual({ space, pageId: open.id });
+
+      const stranger = await app.inject({ method: 'GET', url: `/api/share/${token}`, headers: { cookie: await cookieOf(outsider) } });
+      expect(stranger.statusCode).toBe(200);
+      expect((stranger.json() as SharedPagePayload).ownAccess).toBeUndefined();
+      expect(stranger.body).not.toContain('ownAccess');
+    } finally {
+      await shares.revokeShare(id);
+    }
+  });
+
   it('public Markdown: neither page is collated, with or without ?children=1', async () => {
     const { token, id } = await link(root.id, editor.id, true);
     for (const url of [`/share/${token}.md`, `/share/${token}.md?children=1`]) {
