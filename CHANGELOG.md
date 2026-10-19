@@ -6,6 +6,9 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ### Changed
 
+- **Starter templates have descriptions.** The three templates a new space starts
+  with (Meeting notes, How-to, Decision record) carry a `template-description` in
+  the creator's language, shown as the second line in the "From template…" picker.
 - **Copying pages is about ten times faster on large spaces.** Make template,
   From template, Duplicate, Copy and New page reindex only the pages they wrote
   instead of rescanning the whole space, and the "is this a folder" lookup walks

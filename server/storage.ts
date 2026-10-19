@@ -3080,7 +3080,9 @@ export async function createSpace(name: string, createdBy: string | null, opts: 
     const templatesDir = path.join(dir, TEMPLATES_DIR_NAME);
     await fs.mkdir(templatesDir, { recursive: true });
     for (const t of starterTemplates(opts.language)) {
-      await persistDocFrontmatter(path.join(templatesDir, `${t.stem}.md`), { id: ulid(), icon: t.icon }, t.markdown);
+      // The description rides as a key of its own (template-description), merged in next to Folio's.
+      const described = `---\n${TEMPLATE_DESCRIPTION_KEY}: ${JSON.stringify(t.description)}\n---\n`;
+      await persistDocFrontmatter(path.join(templatesDir, `${t.stem}.md`), { id: ulid(), icon: t.icon }, t.markdown, { raw: described });
     }
   }
   await writeFolioMeta(path.join(dir, `${slug}${FOLIO_META_EXT}`), trimmed); // rides the SAME initial commit as index.md, right below

@@ -40,5 +40,8 @@
   "chat.teamsPasteAgain": "To connect Folio to Teams, paste a Folio link into a Teams message and choose Connect Folio on the preview.",
   "starterTemplate.meeting-notes": "# Meeting notes\n\n**Date:** {{date}}\n**Author:** {{author}}\n\n## Attendees\n\n- Name\n\n## Agenda\n\n1. Topic\n\n## Notes\n\nWrite the discussion here.\n\n## Action items\n\n- [ ] Task (owner, due date)\n",
   "starterTemplate.how-to": "# How-to\n\n## Goal\n\nWhat this guide helps to achieve.\n\n## Prerequisites\n\n- What is needed before starting\n\n## Steps\n\n1. First step\n2. Second step\n3. Third step\n\n## Result\n\nWhat it should look like when done.\n\n## Troubleshooting\n\n- Problem: how to fix it\n",
-  "starterTemplate.decision-record": "# Decision record\n\n**Status:** Proposed\n**Date:** {{date}}\n\n## Context\n\nWhat problem is being solved and what forces are at play.\n\n## Decision\n\nWhat was decided.\n\n## Alternatives considered\n\n- Option and why it was not chosen\n\n## Consequences\n\nWhat becomes easier or harder after this decision.\n"
+  "starterTemplate.decision-record": "# Decision record\n\n**Status:** Proposed\n**Date:** {{date}}\n\n## Context\n\nWhat problem is being solved and what forces are at play.\n\n## Decision\n\nWhat was decided.\n\n## Alternatives considered\n\n- Option and why it was not chosen\n\n## Consequences\n\nWhat becomes easier or harder after this decision.\n",
+  "starterTemplate.meeting-notes.description": "Attendees, agenda, notes and action items",
+  "starterTemplate.how-to.description": "A goal, numbered steps and the expected result",
+  "starterTemplate.decision-record.description": "Context, the decision, alternatives and consequences"
 }

@@ -222,6 +222,9 @@ describe('starter templates (real PG + real files)', () => {
     expect(templates.map((t) => t.title).sort()).toEqual(expected.sort());
     expect(expected).not.toContain('Meeting notes');
     expect(templates.every((t) => t.icon)).toBe(true);
+    // Each starter carries its description (the picker's second line), from the same bundle.
+    expect(templates.map((t) => t.description).sort()).toEqual(starterTemplates('uk').map((t) => t.description).sort());
+    expect(templates.every((t) => t.description)).toBe(true);
 
     const bare = await storage.createSpace(`Bare ${Date.now()}`, null);
     slugs.push(bare.slug);

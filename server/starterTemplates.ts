@@ -15,6 +15,8 @@ export interface StarterTemplate {
   stem: string;
   icon: string;
   markdown: string;
+  /** The template's `template-description` property: the second line in the template picker. */
+  description: string;
 }
 
 const STARTERS = [
@@ -24,5 +26,10 @@ const STARTERS = [
 ] as const;
 
 export function starterTemplates(language: StarterLanguage = 'en'): StarterTemplate[] {
-  return STARTERS.map(({ stem, icon }) => ({ stem, icon, markdown: serverText(`starterTemplate.${stem}`, language) }));
+  return STARTERS.map(({ stem, icon }) => ({
+    stem,
+    icon,
+    markdown: serverText(`starterTemplate.${stem}`, language),
+    description: serverText(`starterTemplate.${stem}.description`, language),
+  }));
 }
