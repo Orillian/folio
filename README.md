@@ -65,6 +65,7 @@ Short walkthroughs, no slides. The voice in the videos is synthetic.
 - [Publish a space as a public website, with Ask AI for visitors](https://youtu.be/L8Qd4gm_0d4) — one setting makes a space a read-only site on a path, a subdomain or your own domain; visitors search it, download pages and ask Folio AI (1:21)
 - [The editor and Mermaid diagrams](https://youtu.be/MfK7bhKoxSs) — live Markdown, a source view of the same page, and diagrams you edit visually or as code (1:04)
 - [Is your wiki's AI assistant helping? Folio AI analytics](https://youtu.be/7aszLTDQV8w) — instance admins see rated conversations and unanswered questions, add the missing page, and the same question gets an answer with its source (1:21)
+- [Publish Claude artifacts into your team wiki](https://youtu.be/F4pZzJLTf-U) — one casual line to Claude Code: the dashboard becomes an interactive page of the wiki, keeps the reader's filters after a reload, is a folder in Git, and opens for a guest by a share link (1:33)
 
 ---
 
@@ -411,6 +412,8 @@ in search, in Git, under the same access rights as everything else.
   repository: `index.html`, an `artifact.yaml` manifest, the source and assets.
   Move, copy, trash, share links, public sites and history work like for any
   page.
+
+A short walkthrough: [Publish Claude artifacts into your team wiki](https://youtu.be/F4pZzJLTf-U) (1:33).
 
 Folio shows the finished page; it does not build React or TSX itself, so an
 agent sends HTML that already runs, and calls to Claude, to your own APIs or to
