@@ -691,6 +691,10 @@ Each of these was a real defect. They are here so that nobody pays twice.
   same credentials as fetch and push.
 - A health endpoint that checks the process only is green while the database
   is down.
+- Every download or export response needs an explicit `Cache-Control`, and
+  `no-store` for anything built from live data. A CDN such as Cloudflare caches
+  by file extension (`.pdf`, `.docx`) and ignores that the route is
+  authenticated, so without the header every export after the first is stale.
 - Do not pace every refresh. Throttling all of them delayed the last change
   of a burst; only intermediate progress refreshes may be spaced out. Measure
   the interval from the start of an API call, not from when it returns.

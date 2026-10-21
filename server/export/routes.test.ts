@@ -169,6 +169,7 @@ describe('R23 export — HTTP routes (real PG, fastify inject)', () => {
       const res = await app.inject({ method: 'GET', url: `/share/${token}.md` });
       expect(res.headers['x-folio-export-pages']).toBe('1');
       expect(res.headers['x-folio-export-truncated']).toBe('false');
+      expect(res.headers['cache-control']).toBe('no-store');
       await shares.revokeShare(link.id);
     });
   });
@@ -271,6 +272,7 @@ describe('R23 export — HTTP routes (real PG, fastify inject)', () => {
       expect(res.statusCode).toBe(200);
       expect(res.headers['content-type']).toBe('text/markdown; charset=utf-8');
       expect(res.headers['content-disposition']).toContain('filename="manual.md"');
+      expect(res.headers['cache-control']).toBe('no-store');
       expect(res.body).toContain('# Manual');
       expect(res.body).not.toContain('Child text.'); // no subtree unless asked
     });

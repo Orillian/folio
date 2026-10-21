@@ -95,6 +95,15 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   "Report a problem" button that attaches the crash to the report. With no
   `SENTRY_DSN` the issue link is hidden too.
 
+### Fixed
+
+- **Page exports are no longer served stale behind a CDN.** Export routes sent no
+  `Cache-Control`, so Cloudflare, which caches `.pdf` and `.docx` URLs by extension,
+  returned the first file for every later export even after the page was edited.
+  Every page export (Markdown, PDF, DOCX, YAML, the public-site routes and
+  `/share/<token>.md`) now answers with `Cache-Control: no-store`
+  ([#7](https://github.com/evergreen-it-dev/folio/issues/7)).
+
 ## [0.4.0] - 2026-10-16
 
 A graph of how your pages link, Obsidian canvases and bases, and a few tools for

@@ -77,6 +77,8 @@ function contentDisposition(kind: 'inline' | 'attachment', filename: string): st
  * present, never silent.
  */
 function setExportHeaders(reply: FastifyReply, pageCount: number, truncation: ExportTruncation | null): void {
+  // Exports are rebuilt from the live page on every request; an extension-keyed CDN cache (Cloudflare on .pdf/.docx) would otherwise serve the first export forever.
+  reply.header('Cache-Control', 'no-store');
   reply.header('X-Folio-Export-Pages', String(pageCount));
   reply.header('X-Folio-Export-Truncated', truncation ? truncation.reason : 'false');
   if (truncation) reply.header('X-Folio-Export-Truncation-Detail', truncation.message.replace(/[^\x20-\x7e]/g, '_'));
@@ -298,7 +300,6 @@ export function registerPublicExportRoutes(app: FastifyInstance): void {
     reply.header('Content-Type', 'text/markdown; charset=utf-8');
     // Not for search engines — this is "unlisted", exactly like GET /api/share/:token.
     reply.header('X-Robots-Tag', 'noindex');
-    reply.header('Cache-Control', 'no-store');
     reply.header('Content-Disposition', contentDisposition('inline', `${slugOf(scope.root)}.md`));
     setExportHeaders(reply, assembled.pageCount, assembled.truncation);
     return reply.send(assembled.markdown);
