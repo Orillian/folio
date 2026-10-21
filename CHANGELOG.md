@@ -120,6 +120,10 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ### Fixed
 
+- **Vite 8.2.4** (development dependency): fixes GHSA-698v-4r3x-3vcv in
+  `launch-editor`, which did not escape `%` in arguments on Windows (Dependabot
+  alert #16). Only the dev server opened files in an editor that way; builds and
+  the running server are unaffected.
 - **Page exports are no longer served stale behind a CDN.** Export routes sent no
   `Cache-Control`, so Cloudflare, which caches `.pdf` and `.docx` URLs by extension,
   returned the first file for every later export even after the page was edited.
