@@ -507,5 +507,6 @@ export async function getPageAtSha(pageId: string, sha: string): Promise<PageAtS
   // here would restore a form with no fields at all.
   if (entry.kind === 'table' || entry.kind === 'form') return { markdown: raw }; // raw file — schema-in-frontmatter must survive a restore
   if (entry.kind === 'base') return { markdown: raw }; // a `.base` is YAML, never a document with front matter
+  if (entry.kind === 'artifact') return { markdown: raw }; // an artifact bundle is a folder: `git show` lists its files at that commit (never restored through Folio)
   return { markdown: stripFrontmatterBody(raw) };
 }

@@ -46,6 +46,8 @@ import { carryFrontmatterKeys, mergeFrontmatter, writeFrontmatterKeys, type Foli
 import * as propsSidecar from './propsSidecar.js';
 import { ownProperties, reservedKeysOf } from './reservedPropertyKeys.js';
 import * as spaceFiles from './spaceFiles.js';
+import { ARTIFACT_DIR_SUFFIX, artifactStem, isArtifactDirName, parseArtifactManifest } from './artifact/manifest.js';
+import * as artifactBundle from './artifact/bundle.js';
 import { starterTemplates, type StarterLanguage } from './starterTemplates.js';
 import { substituteTemplate, todayDateStamp } from './templateVars.js';
 
@@ -72,7 +74,7 @@ export interface PageIndexEntry {
   /** POSIX path relative to the space's CONTENT ROOT (repo dir + rootPath), e.g. "architecture/data-flow.md". */
   relPath: string;
   absPath: string;
-  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base';
+  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'artifact';
   /** True when this entry represents its containing directory in the tree (index.md, or README.md when index.md is absent there). */
   isIndex: boolean;
   /** POSIX dir containing this file, relative to the content root ("" for root-level files). */
@@ -186,6 +188,13 @@ async function pathExists(p: string): Promise<boolean> {
 }
 
 /** Guards a `parentPath`/`toParentPath` param: no leading "/", no "..", no traversal tricks. */
+/** normalizeDirParam for the folder a page is written INTO: never inside an artifact bundle (nothing in one is a page). */
+export function normalizePageParentDir(p: string): string {
+  const dir = normalizeDirParam(p);
+  if (artifactBundleOfRel(dir)) throw badRequest('a page cannot be placed inside an artifact');
+  return dir;
+}
+
 export function normalizeDirParam(p: string): string {
   const segments = (p ?? '')
     .split('/')
@@ -344,6 +353,8 @@ function titleFallback(relPath: string, kind: PageKind): string {
   if (kind === 'canvas') return base.slice(0, -'.canvas'.length);
   // An Obsidian base keeps its stem, as Obsidian names it.
   if (kind === 'base') return base.slice(0, -'.base'.length);
+  // An artifact bundle `q3.artifact/` without a manifest title: its folder name without the suffix.
+  if (kind === 'artifact') return artifactStem(base);
   return base.slice(0, -'.md'.length);
 }
 
@@ -667,7 +678,7 @@ interface PagesIndexRow {
   id: string;
   space_slug: string;
   path: string;
-  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base';
+  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'artifact';
   title: string;
   sort_order: number | null;
   status: PageStatus | null;
@@ -713,7 +724,7 @@ async function upsertPagesIndexRow(entry: PageIndexEntry, fileMtime: Date, fileS
   const plainText =
     entry.kind === 'doc'
       ? await docIndexTextAsync(entry.body ?? '')
-      : entry.kind === 'table' || entry.kind === 'form' || entry.kind === 'canvas'
+      : entry.kind === 'table' || entry.kind === 'form' || entry.kind === 'canvas' || entry.kind === 'artifact'
         ? (entry.body ?? '')
         : null;
   // The row of an id never silently moves to ANOTHER space ($16 false): two
@@ -1094,7 +1105,7 @@ function takeIdClaim(abs: string): string | undefined {
   return claimed;
 }
 
-type IndexOnlyKind = 'doc' | 'pdf' | 'office' | 'canvas' | 'base';
+type IndexOnlyKind = 'doc' | 'pdf' | 'office' | 'canvas' | 'base' | 'artifact';
 
 function pathIdFor(kind: IndexOnlyKind, space: string, relPath: string, attempt: number): string {
   const seed = attempt === 0 ? `${space}\0${relPath}` : `${space}\0${relPath}\0${attempt}`;
@@ -1146,7 +1157,7 @@ async function claimIdsForMove(space: string, srcAbs: string, destAbs: string): 
   const srcRel = path.relative(spaceDir(space), srcAbs).split(path.sep).join('/');
   const rows = await query<{ id: string; path: string }>(
     `SELECT id, path FROM pages_index
-      WHERE space_slug = $1 AND kind IN ('doc', 'pdf', 'office', 'canvas', 'base')
+      WHERE space_slug = $1 AND kind IN ('doc', 'pdf', 'office', 'canvas', 'base', 'artifact')
         AND (path = $2 OR substr(path, 1, length($3)) = $3)`,
     [space, srcRel, `${srcRel}/`],
   );
@@ -1323,6 +1334,105 @@ export async function rewriteCanvasFile(id: string, transform: (raw: string) => 
  */
 function indexBaseFile(space: string, relPath: string, abs: string, mtime: Date): Promise<PageIndexEntry | null> {
   return indexBinaryFile('base', space, relPath, abs, mtime);
+}
+
+/**
+ * Artifacts (21.10.2026, docs/spec-artifacts.md): a `<slug>.artifact/` DIRECTORY is
+ * one kind:'artifact' page — the first page kind that is a folder. The scan never
+ * walks into it (nothing inside is a page or a file of the files index). The id
+ * lives in pages_index only (resolveIndexOnlyId, like a pdf's; "size" there is the
+ * bundle fingerprint), order in the row; title and icon come from artifact.yaml
+ * (the folder name without the suffix when it has none), properties are the
+ * manifest's non-reserved keys (the page index gets them as front matter).
+ * Searchable by its title and the visible text of its entry page.
+ */
+async function indexArtifactDir(space: string, relPath: string, abs: string, fingerprint: { mtime: Date; size: number }): Promise<PageIndexEntry | null> {
+  const st = await fs.lstat(abs).catch(() => null);
+  if (!st?.isDirectory()) return null;
+  const id = await resolveIndexOnlyId('artifact', space, relPath, abs, fingerprint.size);
+  const existing = await queryOne<{ sort_order: number | null }>('SELECT sort_order FROM pages_index WHERE id = $1', [id]);
+  const info = parseArtifactManifest(await artifactBundle.readManifestText(abs), path.basename(abs));
+  return {
+    id,
+    space,
+    relPath,
+    absPath: abs,
+    kind: 'artifact',
+    isIndex: false,
+    dirPath: posixParent(relPath),
+    title: info.manifest.title ?? titleFallback(relPath, 'artifact'),
+    order: existing?.sort_order ?? ORDER_SENTINEL,
+    explicitOrder: existing?.sort_order ?? undefined,
+    status: 'published',
+    icon: info.manifest.icon,
+    updatedAt: fingerprint.mtime.toISOString(),
+    body: await artifactBundle.bundleSearchText(abs, info),
+    frontmatter: info.properties,
+  };
+}
+
+/** fs.cp filter of a bundle copy: no dot entries, no symlinks (the bundle root itself always passes). */
+function bundleCopyFilter(rootAbs: string): (src: string) => Promise<boolean> {
+  const root = path.resolve(rootAbs);
+  return async (src) => {
+    if (path.resolve(src) === root) return true;
+    if (path.basename(src).startsWith('.')) return false;
+    const st = await fs.lstat(src).catch(() => null);
+    return !!st && !st.isSymbolicLink();
+  };
+}
+
+/**
+ * A new artifact page: `<stem>.artifact/` (unique under `parentPath`) written by
+ * `write` (which gets the bundle's absolute path and writes the whole bundle —
+ * artifact/bundle.ts writeBundleDir), then indexed. The deterministic path id, unless
+ * `id` is given. Returns the page.
+ */
+export async function createArtifactPage(space: string, parentPathRaw: string, stem: string, write: (dirAbs: string) => Promise<void>): Promise<PageMeta> {
+  if (!(await spaceExists(space))) throw notFound('space');
+  const parentPath = normalizePageParentDir(parentPathRaw);
+  return withSpaceLock(space, async () => {
+    await fs.mkdir(path.join(spaceDir(space), parentPath), { recursive: true });
+    const relPath = await uniqueRelPath(space, parentPath, stem || 'artifact', ARTIFACT_DIR_SUFFIX);
+    const abs = path.join(spaceDir(space), relPath);
+    claimPageId(abs, await freePathId('artifact', space, relPath));
+    await write(abs);
+    await scanPaths(space, { files: [relPath] });
+    let id = await getEntryIdByExactPath(space, relPath);
+    if (!id) {
+      await scanSpace(space);
+      id = await getEntryIdByExactPath(space, relPath);
+    }
+    if (!id) throw new Error('internal: artifact written but not indexed');
+    return toPageMeta(await requireEntry(id));
+  });
+}
+
+/**
+ * Rewrites an existing artifact page under the space lock: `write` gets the bundle's
+ * absolute path (and the entry as it is now) and replaces what it must — the whole
+ * bundle, or only artifact.yaml. The id is pinned to the path, the page re-indexed at
+ * once (title, icon, search text, properties).
+ */
+export async function rewriteArtifactPage<T>(id: string, write: (dirAbs: string, entry: PageIndexEntry) => Promise<T>): Promise<{ meta: PageMeta; result: T }> {
+  const first = await requireEntry(id);
+  if (first.kind !== 'artifact') throw badRequest('page is not an artifact');
+  return withSpaceLock(first.space, async () => {
+    const entry = await requireEntry(id);
+    if (entry.kind !== 'artifact') throw badRequest('page is not an artifact');
+    const result = await write(entry.absPath, entry);
+    claimPageId(entry.absPath, id);
+    await scanPaths(entry.space, { files: [entry.relPath] });
+    return { meta: toPageMeta(await requireEntry(id)), result };
+  });
+}
+
+/** `a/q3.artifact/x` -> `a/q3.artifact`; undefined outside a bundle. A folder named `x.artifact` IS a bundle too. */
+function artifactBundleOfRel(relDir: string): string | undefined {
+  if (!relDir) return undefined;
+  const parts = relDir.split('/');
+  for (let i = 0; i < parts.length; i++) if (isArtifactDirName(parts[i])) return parts.slice(0, i + 1).join('/');
+  return undefined;
 }
 
 /**
@@ -1680,7 +1790,8 @@ async function scanSpaceImpl(space: string, onProgress?: (progress: ScanProgress
         if (!isAgentRoot && (dirent.name.startsWith('.') || dirent.name === 'assets')) continue;
         if (isRoot && ignoredAtRoot(dirent.name, dirent.isDirectory())) continue;
         const abs = path.join(absDir, dirent.name);
-        if (dirent.isDirectory()) await count(abs, false);
+        if (dirent.isDirectory() && isArtifactDirName(dirent.name)) totalFiles++; // a bundle is one page, never walked
+        else if (dirent.isDirectory()) await count(abs, false);
         else if (dirent.isFile()) {
           const lower = dirent.name.toLowerCase();
           if (lower.endsWith('.md') || lower.endsWith('.excalidraw.svg') || lower.endsWith('.pdf') || officeFormat(lower) || lower.endsWith('.canvas') || lower.endsWith('.base')) totalFiles++; // `.form.md` is also `.md`, already counted
@@ -1827,6 +1938,58 @@ async function scanSpaceImpl(space: string, onProgress?: (progress: ScanProgress
   }
 
   /**
+   * One artifact bundle (`<slug>.artifact/`) met by the walk or named by a scoped scan: indexed as ONE page
+   * unless its fingerprint (newest mtime + total size of everything inside) is unchanged. Never walked into.
+   */
+  async function visitArtifactDir(abs: string, relPath: string): Promise<void> {
+    const st = await fs.lstat(abs).catch(() => null);
+    if (!st?.isDirectory()) return;
+    const fingerprint = await artifactBundle.bundleFingerprint(abs);
+    stillPresent.add(relPath);
+    const existing = existingByPath.get(relPath);
+    const metaStale = existing !== undefined && Number(existing.meta_version) < INDEX_META_VERSION;
+    if (
+      existing &&
+      existing.kind === 'artifact' &&
+      existing.file_mtime &&
+      existing.file_size !== null &&
+      new Date(existing.file_mtime).getTime() === fingerprint.mtime.getTime() &&
+      Number(existing.file_size) === fingerprint.size &&
+      !metaStale
+    ) {
+      filesSkipped++;
+      processedFiles++;
+      onProgress?.({ processedFiles, totalFiles });
+      return;
+    }
+    filesRead++;
+    let entry: PageIndexEntry | null;
+    try {
+      entry = await indexArtifactDir(space, relPath, abs, fingerprint);
+      if (entry) {
+        const rule = restoredAccess ? (restoredAccess.byId.get(entry.id) ?? restoredAccess.byPath.get(entry.relPath)) : undefined;
+        const give = rule && !appliedRules.has(rule) ? rule : undefined;
+        await upsertPagesIndexRow(entry, fingerprint.mtime, fingerprint.size, give);
+        if (give) appliedRules.add(give);
+      }
+    } catch (err) {
+      failedFiles++;
+      lastFailure = err;
+      // eslint-disable-next-line no-console
+      console.warn(`[scan] ${space}/${relPath}: skipped, could not index:`, err instanceof Error ? err.message.split('\n')[0] : err);
+      processedFiles++;
+      onProgress?.({ processedFiles, totalFiles });
+      return;
+    }
+    processedFiles++;
+    onProgress?.({ processedFiles, totalFiles });
+    if (!entry) return;
+    readPaths.push(entry.relPath);
+    // The manifest's own keys are the page's properties: tags and `prop:` of the page (no body to parse for links).
+    pendingMeta.push({ id: entry.id, relPath: entry.relPath, body: '', frontmatter: entry.frontmatter ?? {} });
+  }
+
+  /**
    * `mode`: 'pages' — the usual walk (pages indexed, every other file noted for
    * the files index); 'files' — inside an `assets/` folder: nothing is a page
    * there (as before), every file is a file; 'agent' — inside `.agent/`: pages
@@ -1856,11 +2019,21 @@ async function scanSpaceImpl(space: string, onProgress?: (progress: ScanProgress
         await removeOrphanTempFile(path.join(absDir, name));
         continue;
       }
+      if (dirent.isDirectory() && artifactBundle.isTempBundleName(name)) {
+        // The temp sibling of an artifact bundle write its process never swapped in (crash, kill) — old ones only.
+        await artifactBundle.removeOrphanTempBundle(path.join(absDir, name));
+        continue;
+      }
       if (!isAgentRoot && name.startsWith('.')) continue;
       // The space's scan-ignore list (default `.obsidian/ .trash/ .git/`, which the dot rule above already covers) names TOP-LEVEL entries only.
       if (relDir === '' && ignoredAtRoot(name, dirent.isDirectory())) continue;
       const abs = path.join(absDir, name);
       const relPath = relDir ? `${relDir}/${name}` : name;
+      if (dirent.isDirectory() && mode === 'pages' && isArtifactDirName(name)) {
+        // An artifact bundle is ONE page: indexed as such, never walked (nothing inside is a page or a file of the index).
+        await visitArtifactDir(abs, relPath);
+        continue;
+      }
       if (dirent.isDirectory()) {
         // "assets/" (any depth) holds uploaded attachments, not pages: walked for the files index only (wave 3) —
         // except under `.agent/`, where nothing is a file of the index and `assets/` holds no pages either.
@@ -1879,9 +2052,17 @@ async function scanSpaceImpl(space: string, onProgress?: (progress: ScanProgress
   }
 
   if (scope) {
-    for (const dir of scope.dirs ?? []) await walk(path.join(root, ...dir.split('/')), dir);
+    for (const dir of scope.dirs ?? []) {
+      // A copied bundle named as a folder of the scope is still one page.
+      if (isArtifactDirName(path.posix.basename(dir))) await visitArtifactDir(path.join(root, ...dir.split('/')), dir);
+      else await walk(path.join(root, ...dir.split('/')), dir);
+    }
     for (const rel of scope.files ?? []) {
       const abs = path.join(root, ...rel.split('/'));
+      if (isArtifactDirName(path.posix.basename(rel))) {
+        await visitArtifactDir(abs, rel);
+        continue;
+      }
       const dirNames = await fs.readdir(path.dirname(abs)).catch(() => [] as string[]);
       await visitPageFile(abs, rel, path.basename(rel), dirNames.includes('index.md'), 'pages');
     }
@@ -2422,6 +2603,7 @@ export function relPathStem(relPath: string, kind: PageKind): string {
   if (kind === 'pdf') return base.slice(0, -'.pdf'.length);
   if (kind === 'canvas') return base.slice(0, -'.canvas'.length);
   if (kind === 'base') return base.slice(0, -'.base'.length);
+  if (kind === 'artifact') return artifactStem(base);
   // Round OFFICE: same "no real sibling children directory in practice, but
   // still return a sane stem" rule as pdf above.
   if (kind === 'office') {
@@ -2647,12 +2829,13 @@ export async function createPage(body: CreatePageBody, initial?: CreatePageIniti
   if (body.kind === 'pdf' || body.kind === 'office') throw badRequest('pdf/office pages are created by uploading a file, not by this endpoint');
   // A canvas is an Obsidian file Folio reads, never writes: there is nothing to create here (a board is Folio's own canvas).
   if (body.kind === 'canvas') throw badRequest('canvas pages are read from .canvas files; create a board instead');
+  if (body.kind === 'artifact') throw badRequest('artifacts are created through POST /api/spaces/:space/artifacts (or MCP publish_artifact)');
   // Wave 2: an explicit file name for a DOC (ignored for every other kind); refused before anything is created.
   const fileStem = body.kind === 'doc' && body.fileStem !== undefined ? normalizeFileStem(body.fileStem) : undefined;
   if (!(await spaceExists(body.space))) throw notFound('space');
 
   return withSpaceLock(body.space, async () => {
-    const parentPath = normalizeDirParam(body.parentPath);
+    const parentPath = normalizePageParentDir(body.parentPath);
     await fs.mkdir(path.join(spaceDir(body.space), parentPath), { recursive: true });
 
     // OFFLINE CREATION: the client minted the id (its URL and every link to the page
@@ -2809,7 +2992,7 @@ export async function uploadFilePage(space: string, parentPathRaw: string, origi
   if (!(await spaceExists(space))) throw notFound('space');
 
   return withSpaceLock(space, async () => {
-    const parentPath = normalizeDirParam(parentPathRaw);
+    const parentPath = normalizePageParentDir(parentPathRaw);
     await fs.mkdir(path.join(spaceDir(space), parentPath), { recursive: true });
 
     const baseName = originalFilename.slice(0, originalFilename.length - ext.length);
@@ -3697,7 +3880,8 @@ export async function setFormIcon(entry: PageIndexEntry, icon: string | undefine
  * on every scan so a rescan doesn't quietly reset what was set here.
  */
 export async function setBinaryPageOrder(entry: PageIndexEntry, order: number): Promise<void> {
-  if (entry.kind !== 'pdf' && entry.kind !== 'office' && entry.kind !== 'canvas' && entry.kind !== 'base') throw badRequest('page is not a pdf/office file or a canvas or a base');
+  // An artifact's order lives in the row too (its icon and title are in its manifest: setArtifactManifestFields).
+  if (entry.kind !== 'pdf' && entry.kind !== 'office' && entry.kind !== 'canvas' && entry.kind !== 'base' && entry.kind !== 'artifact') throw badRequest('page is not a pdf/office file or a canvas or a base');
   if (order === entry.explicitOrder) return;
   await query('UPDATE pages_index SET sort_order = $2 WHERE id = $1', [entry.id, order]);
   entry.order = order;
@@ -4041,7 +4225,7 @@ export async function movePageTracked(id: string, toParentPathRaw: string): Prom
   if (entry.isIndex && entry.dirPath === '') throw badRequest('cannot move the space root');
 
   return withSpaceLock(entry.space, async () => {
-    const toParentPath = normalizeDirParam(toParentPathRaw);
+    const toParentPath = normalizePageParentDir(toParentPathRaw);
     const space = entry.space;
     const srcAbs = entry.isIndex ? path.dirname(entry.absPath) : entry.absPath;
     const basename = path.basename(srcAbs);
@@ -4231,8 +4415,8 @@ async function rewritePageFileId(space: string, abs: string, kind: PageKind, new
       withTablePageFields(serializeFormFile({ ...parsedForm, meta: { ...parsedForm.meta, id: newId } }), order, icon, raw),
       'utf8',
     );
-  } else if (kind === 'pdf' || kind === 'office' || kind === 'canvas' || kind === 'base') {
-    // Never rewritten (see "Binary page files"; a canvas is never written either):
+  } else if (kind === 'pdf' || kind === 'office' || kind === 'canvas' || kind === 'base' || kind === 'artifact') {
+    // Never rewritten (see "Binary page files"; a canvas is never written either; an artifact bundle carries no id):
     // the copied bytes stay as they are and the fresh id rides a claim the following scan picks up.
     claimPageId(abs, newId);
   } else {
@@ -4388,6 +4572,13 @@ async function copySubtreeAssigningFreshIds(
     const items = await fs.readdir(dirAbs, { withFileTypes: true });
     for (const item of items) {
       const abs = path.join(dirAbs, item.name);
+      if (item.isDirectory() && isArtifactDirName(item.name)) {
+        // An artifact bundle is ONE page: a fresh id by claim, nothing inside it is a page.
+        const newId = ulid();
+        copied.push({ sourceAbs: path.join(srcDirAbs, path.relative(destDirAbs, abs)), copyId: newId });
+        claimPageId(abs, newId);
+        continue;
+      }
       if (item.isDirectory()) {
         await walk(abs);
         continue;
@@ -4455,7 +4646,7 @@ async function copyPageInternal(
   const sourceEntries = scope ? await listEntries(source.space) : [];
 
   return withSpaceLock(toSpace, async () => {
-    const toParentPath = normalizeDirParam(toParentPathRaw);
+    const toParentPath = normalizePageParentDir(toParentPathRaw);
     const destParentDirAbs = path.join(spaceDir(toSpace), toParentPath);
     await fs.mkdir(destParentDirAbs, { recursive: true });
 
@@ -4503,6 +4694,8 @@ async function copyPageInternal(
                   ? '.canvas'
                 : source.kind === 'base'
                   ? '.base'
+                : source.kind === 'artifact'
+                  ? ARTIFACT_DIR_SUFFIX
                   : '.md';
     const relPath = await uniqueRelPath(toSpace, toParentPath, stem, ext);
     const destAbs = path.join(spaceDir(toSpace), relPath);
@@ -4543,6 +4736,10 @@ async function copyPageInternal(
       // Bytes copied as they are (see "Binary page files"; a canvas is never written either); the fresh id rides a claim the scan below picks up.
       claimPageId(destAbs, copiedId);
       await fs.copyFile(source.absPath, destAbs);
+    } else if (source.kind === 'artifact') {
+      // The whole bundle folder, as it is (no symlinks, no dot entries); the id rides a claim like a pdf's.
+      claimPageId(destAbs, copiedId);
+      await fs.cp(source.absPath, destAbs, { recursive: true, filter: bundleCopyFilter(source.absPath) });
     } else {
       const raw = await fs.readFile(source.absPath, 'utf8');
       await fs.writeFile(destAbs, withBoardHeader(raw, copiedId, undefined, source.title, source.icon), 'utf8');
@@ -4803,7 +5000,9 @@ export async function renamePageSlug(id: string, rawSlug: string): Promise<SlugR
                   ? '.canvas'
                   : entry.kind === 'base'
                     ? '.base'
-                    : '.md';
+                    : entry.kind === 'artifact'
+                      ? ARTIFACT_DIR_SUFFIX
+                      : '.md';
       srcAbs = entry.absPath;
       destAbs = path.join(path.dirname(entry.absPath), `${slug}${ext}`);
       oldRelPath = entry.relPath;
@@ -5011,7 +5210,7 @@ async function snapshotPageAccess(space: string, scope: { all: boolean; pageId?:
 interface TrashRecord {
   spaceSlug: string;
   pageId: string;
-  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'folder' | 'space';
+  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'artifact' | 'folder' | 'space';
   origPath: string;
   title: string;
   trashPath: string;
@@ -5045,7 +5244,7 @@ async function snapshotIndexOnlyIds(space: string, scope: { all: boolean; pageId
   if (!isLightFootprintSpace(space)) return [];
   const rows = await query<{ id: string; path: string }>(
     `SELECT id, path FROM pages_index
-      WHERE space_slug = $1 AND kind IN ('doc', 'pdf', 'office', 'canvas', 'base')
+      WHERE space_slug = $1 AND kind IN ('doc', 'pdf', 'office', 'canvas', 'base', 'artifact')
         AND ($2::boolean OR id = $3 OR ($4::text IS NOT NULL AND substr(path, 1, length($4)) = $4))
       ORDER BY path`,
     [space, scope.all, scope.pageId ?? null, scope.dirPrefix ?? null],

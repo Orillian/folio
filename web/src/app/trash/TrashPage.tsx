@@ -211,7 +211,7 @@ export function TrashPage() {
               className="rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-sm text-neutral-800 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
             >
               <option value="">{t('trash.filters.allKinds')}</option>
-              {(['doc', 'board', 'table', 'pdf', 'office', 'form', 'canvas', 'base', 'folder', 'space'] as const).map((kind) => (
+              {(['doc', 'board', 'table', 'pdf', 'office', 'form', 'canvas', 'base', 'artifact', 'folder', 'space'] as const).map((kind) => (
                 <option key={kind} value={kind}>
                   {t(`trash.kinds.${kind}`)}
                 </option>

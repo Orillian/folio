@@ -83,6 +83,8 @@ export function sentryBrowserOptions(config: SentryWebConfig) {
     },
     maxBreadcrumbs: 30,
     ignoreErrors: [/ResizeObserver loop/i, /AbortError/i],
+    // Errors thrown from browser-extension scripts, not Folio.
+    denyUrls: [/^chrome-extension:\/\//i, /^moz-extension:\/\//i, /^safari-(web-)?extension:\/\//i],
     // Whole transactions (not streamed spans), so that beforeSendTransaction applies.
     traceLifecycle: 'static' as const,
     // Buffer mode by default: the recording stays in memory until an error, a sampled session or a report sends it.

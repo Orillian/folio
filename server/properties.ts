@@ -95,6 +95,9 @@ import { inferPropertyType, readDeclaredTypes } from './propertyTypes.js';
 import { editSidecarText, parseSidecar, readSidecarText, sidecarRelPath, SIDECAR_SUFFIX, usesSidecar } from './propsSidecar.js';
 import { ownProperties, reservedKeysOf } from './reservedPropertyKeys.js';
 import { writeFolioFile } from './spaceAppearance.js';
+import { readManifestText, writeManifestFile } from './artifact/bundle.js';
+import { artifactOwnProperties, isReservedArtifactKey, parseArtifactManifest, writeArtifactManifest } from './artifact/manifest.js';
+import path from 'node:path';
 import * as storage from './storage.js';
 import type { PageIndexEntry } from './storage.js';
 
@@ -274,9 +277,11 @@ function effectiveTypes(declared: Record<string, PropertyType>, properties: Reco
  *                    table or form (RESERVED_KEYS): those are never shown, never edited and
  *                    never removed — a save edits only the page's own keys, byte-preserving;
  *  - 'sidecar'     — a board / PDF / Office page: `.folio/<path>.props.yaml` (propsSidecar.ts);
+ *  - 'manifest'    — an artifact (21.10.2026): the non-reserved top-level keys of its
+ *                    `artifact.yaml`, edited byte-preserving like a sidecar (artifact/manifest.ts);
  *  - 'none'        — a folder.
  */
-export type PropertiesStore = 'frontmatter' | 'embedded' | 'sidecar' | 'none';
+export type PropertiesStore = 'frontmatter' | 'embedded' | 'sidecar' | 'manifest' | 'none';
 
 export { FORM_RESERVED_KEYS, ownProperties, reservedKeysOf, TABLE_RESERVED_KEYS } from './reservedPropertyKeys.js';
 
@@ -284,6 +289,7 @@ export function propertiesStoreOf(kind: PageKind): PropertiesStore {
   if (kind === 'doc') return 'frontmatter';
   if (kind === 'table' || kind === 'form') return 'embedded';
   if (usesSidecar(kind)) return 'sidecar';
+  if (kind === 'artifact') return 'manifest';
   return 'none';
 }
 
@@ -312,12 +318,15 @@ interface PropertiesSource {
   raw?: string;
   /** The sidecar's text (board/pdf/office); null when there is none. */
   sidecar?: string | null;
+  /** An artifact's artifact.yaml text; null when the bundle has none. */
+  manifest?: string | null;
 }
 
 async function readSource(entry: PageIndexEntry): Promise<PropertiesSource> {
   const store = propertiesStoreOf(entry.kind);
   if (store === 'frontmatter' || store === 'embedded') return { raw: await fs.readFile(entry.absPath, 'utf8').catch(() => undefined) };
   if (store === 'sidecar') return { sidecar: await readSidecarText(storage.getSpaceDir(entry.space), entry.relPath) };
+  if (store === 'manifest') return { manifest: await readManifestText(entry.absPath) };
   return {};
 }
 
@@ -340,6 +349,12 @@ async function responseFor(entry: PageIndexEntry, source: PropertiesSource, role
       sidecar: sidecarRelPath(entry.relPath),
       folioKeys: [],
     };
+  }
+
+  if (store === 'manifest') {
+    const parsed = parseSidecar(source.manifest ?? null);
+    const properties = toClientValue(artifactOwnProperties(parsed.data)) as Record<string, unknown>;
+    return { properties, types: effectiveTypes(declared, properties), foreign: [], readOnly: [], canEdit: roleCanEdit && parsed.parseable, etag: ownEtag(properties), folioKeys: [] };
   }
 
   const readOnly = store === 'frontmatter' ? [...READ_ONLY_PROPERTIES] : [];
@@ -375,6 +390,7 @@ export async function indexablePropertiesOf(entry: PageIndexEntry): Promise<Reco
   const source = await readSource(entry);
   const store = propertiesStoreOf(entry.kind);
   if (store === 'sidecar') return parseSidecar(source.sidecar ?? null).data;
+  if (store === 'manifest') return artifactOwnProperties(parseSidecar(source.manifest ?? null).data);
   if (source.raw === undefined) return {};
   return ownProperties(entry.kind, readFrontmatterBlock(source.raw).data);
 }
@@ -492,7 +508,7 @@ export function assertNoReservedKey(kind: PageKind, sent: Record<string, unknown
   const reserved = reservedKeysOf(kind);
   if (!reserved) return;
   const key = Object.keys(sent).find((k) => reserved.has(k));
-  if (key !== undefined) throw badRequest(`${JSON.stringify(key)} is reserved by Folio on a ${kind === 'table' ? 'data table' : 'form'}`);
+  if (key !== undefined) throw badRequest(`${JSON.stringify(key)} is reserved by Folio on a ${kind === 'table' ? 'data table' : kind === 'form' ? 'form' : 'artifact (artifact.yaml)'}`);
 }
 
 /**
@@ -506,6 +522,7 @@ export async function updatePageProperties(pageId: string, body: UpdatePagePrope
   if (store === 'none') throw badRequest('this page has no properties');
   if (store === 'embedded') return updateEmbeddedProperties(entry, body, roleCanEdit);
   if (store === 'sidecar') return updateSidecarProperties(entry, body, roleCanEdit, actor ?? { name: 'Folio', email: 'folio@localhost' });
+  if (store === 'manifest') return updateManifestProperties(entry, body, roleCanEdit);
 
   let keys: string[] = [];
   const { entry: written_entry, written } = await storage.rewriteDocFrontmatter(pageId, async (raw, current) => {
@@ -584,6 +601,32 @@ async function updateSidecarProperties(entry: PageIndexEntry, body: UpdatePagePr
     await storage.reindexSidecarProperties(entry, data);
   }
   return { response: await readPageProperties(entry, roleCanEdit), written, keys: written ? keys : [] };
+}
+
+/** An artifact: the non-reserved keys of its artifact.yaml (made when the bundle has none), every other byte kept. */
+async function updateManifestProperties(entry: PageIndexEntry, body: UpdatePagePropertiesBody, roleCanEdit: boolean): Promise<PropertiesWriteResult> {
+  const reserved = Object.keys(body.properties).find((k) => isReservedArtifactKey(k));
+  if (reserved !== undefined) throw badRequest(`${JSON.stringify(reserved)} is reserved by Folio in artifact.yaml`);
+  let keys: string[] = [];
+  const { meta, result: written } = await storage.rewriteArtifactPage(entry.id, async (dirAbs, fresh) => {
+    const text = await readManifestText(dirAbs);
+    const parsed = parseSidecar(text);
+    if (!parsed.parseable) throw badRequest('artifact.yaml of this page cannot be parsed as a YAML mapping; fix it in the file first');
+    const own = artifactOwnProperties(parsed.data);
+    if (body.etag !== undefined && body.etag !== ownEtag(toClientValue(own) as Record<string, unknown>)) {
+      throw new PropertiesConflictError(await responseFor(fresh, { manifest: text }, roleCanEdit));
+    }
+    const declared = (await readDeclaredTypes(fresh.space)).types;
+    const edits = planPropertyEdits(own, body.properties, declared, { folioKeys: false });
+    keys = [...edits.keys()];
+    if (edits.size === 0) return false;
+    // No manifest yet: the one Folio would write for this bundle as it is, then the properties on top.
+    const base = text ?? writeArtifactManifest(null, parseArtifactManifest(null, path.basename(dirAbs)).manifest);
+    await writeManifestFile(dirAbs, editSidecarText(base, edits));
+    return true;
+  });
+  const current = await storage.requireEntry(meta.id);
+  return { response: await readPageProperties(current, roleCanEdit), written, keys: written ? keys : [] };
 }
 
 /**

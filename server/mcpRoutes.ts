@@ -69,6 +69,9 @@ function rateMessage(what: string, r: DemoLimitResult): string {
   return `Rate limit reached in the public demo (${what}). Retry in ${r.retryAfterSeconds} s.`;
 }
 
+/** Largest /mcp body outside the demo (was 1 MB): room for publish_artifact with its data inlined. Bigger bundles go through the web upload (50 MB). */
+const MCP_MAX_BODY_BYTES = 25 * 1024 * 1024;
+
 export function registerMcpRoutes(app: FastifyInstance): void {
   // Public demo: refuse an oversized body from its Content-Length before it is read (the route's own bodyLimit covers chunked uploads).
   const refuseOversizedInDemo = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -80,7 +83,10 @@ export function registerMcpRoutes(app: FastifyInstance): void {
     }
   };
 
-  app.post('/mcp', { bodyLimit: DEMO_MCP_MAX_BODY_BYTES, onRequest: refuseOversizedInDemo }, async (request, reply) => {
+  // publish_artifact carries a whole page (an artifact with its data inlined), so the cap is the artifact limit
+  // outside the demo; the demo keeps its 1 MB (chunked bodies included).
+  const bodyLimit = isDemoMode() ? DEMO_MCP_MAX_BODY_BYTES : MCP_MAX_BODY_BYTES;
+  app.post('/mcp', { bodyLimit, onRequest: refuseOversizedInDemo }, async (request, reply) => {
     const auth = await resolveMcpAuth(request);
     if (!auth) {
       const anon = checkDemoMcpAnonymousRate(request.ip);

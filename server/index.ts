@@ -54,6 +54,8 @@ import { runMigrations } from '../db/migrate.js';
 import { getRedis, closeRedis } from './db/redis.js';
 import { registerAssetRoute } from './assetRoute.js';
 import { registerFileRoutes } from './fileAccess.js';
+import { registerArtifactServeRoutes } from './artifact/serve.js';
+import { registerArtifactRoutes } from './artifact/routes.js';
 import { ensureAskpassScript } from './gitCredentials.js';
 import { startPeriodicFetchForAllSpaces, stopAllPeriodicFetch, flushAllPendingSyncs } from './gitSync.js';
 import { stopGitTreeCache } from './gitTree.js';
@@ -231,6 +233,11 @@ async function main(): Promise<void> {
   // page set for a guest, no dotfiles/.git ever — is server/fileAccess.ts.
   await app.register(registerFileRoutes);
 
+  // Artifacts (21.10.2026): /art/<token>/<path> serves the files of an artifact bundle to its sandboxed iframe.
+  // The frame has an opaque origin and no Folio cookies, so the signed token in the URL is the whole credential
+  // (server/artifact/token.ts) — outside the session scope below, like /files.
+  registerArtifactServeRoutes(app);
+
   // --- MCP (round 7): PAT Bearer ONLY, cookie sessions rejected ------------
   // Registered outside the protected scope below (which accepts cookie OR
   // PAT) — this mount does its own auth check instead of session.requireSession,
@@ -282,6 +289,8 @@ async function main(): Promise<void> {
     registerPropertiesRoutes(protectedScope);
     // 16.10.2026: Obsidian Bases — a `.base` page's rows, its YAML, the visual editor's writes, ```base blocks.
     registerBaseRoutes(protectedScope);
+    // 21.10.2026: artifacts — publish / replace / download a bundle, and the bridge's server-side state.
+    registerArtifactRoutes(protectedScope);
     // 16.10.2026: the shared page timer — state in memory, fan-out over the /events socket (server/pageTimer.ts).
     registerPageTimerRoutes(protectedScope);
     registerSpaceFilesRoutes(protectedScope);

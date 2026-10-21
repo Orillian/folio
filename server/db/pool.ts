@@ -22,6 +22,13 @@ export function getPool(): Pool {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) throw new Error('DATABASE_URL is not set (check .env)');
     pool = new Pool({ connectionString, options: connectionOptions() });
+    // An idle pooled client that loses its connection (Postgres restart, "terminating connection due to administrator
+    // command") emits 'error' on the pool; without a listener that is an uncaught exception and kills the process.
+    // The pool drops the broken client itself and opens a new one on the next query.
+    pool.on('error', (err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[db] idle client error, the pool will replace it: ${err.message}`);
+    });
   }
   return pool;
 }

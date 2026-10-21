@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ClipboardList, CloudOff, Copy, CopyPlus, Files, FileText, FileType2, Folder, LayoutDashboard, LayoutTemplate, Link as LinkIcon, MoreHorizontal, Move, Pencil, Plus, Presentation, RefreshCw, Sheet, Table2, Trash2, Upload, Waypoints, Database } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ClipboardList, CloudOff, Copy, CopyPlus, Files, FileText, FileType2, Folder, LayoutDashboard, LayoutTemplate, Link as LinkIcon, MoreHorizontal, Move, Pencil, Plus, Presentation, RefreshCw, Sheet, Table2, Trash2, Upload, Waypoints, Database, AppWindow } from 'lucide-react';
 import { officeFormat, type PageKind, type PageMeta, type TreeNode } from '@shared/contracts';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
@@ -28,6 +28,8 @@ import '../i18n/register';
 
 // Obsidian Bases: the "New base" dialog (lazy: its YAML writer stays out of the main chunk).
 import { NewBaseDialog, preloadNewBaseDialog } from '../../bases/lazyNewBase';
+// Artifacts: the import dialog (link / file / pasted HTML).
+import { ArtifactImportDialog } from '../../artifact/ArtifactImportDialog';
 
 /** The row currently being dragged, as every other row needs to see it. */
 export interface DraggedNode {
@@ -111,6 +113,7 @@ export function TreeRow({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [moving, setMoving] = useState(false);
   const [creatingBase, setCreatingBase] = useState(false);
+  const [creatingArtifact, setCreatingArtifact] = useState(false);
   const [copying, setCopying] = useState(false);
   const [pickingTemplate, setPickingTemplate] = useState(false);
   const [makingTemplate, setMakingTemplate] = useState(false);
@@ -181,6 +184,9 @@ export function TreeRow({
   ) : node.kind === 'base' ? (
     // Obsidian base: a view over pages (table / cards / list).
     <Database size={14} className="shrink-0 opacity-60" aria-hidden="true" />
+  ) : node.kind === 'artifact' ? (
+    // Artifact: an interactive page made by an agent, replaced whole and never edited here.
+    <AppWindow size={14} className="shrink-0 opacity-60" aria-hidden="true" />
   ) : (
     <span className="w-[14px] shrink-0" aria-hidden="true" />
   );
@@ -736,6 +742,16 @@ export function TreeRow({
                   >
                     {t('sidebar.newBase')}
                   </MenuItem>
+                  {/* Artifacts: an HTML page from Claude / Cursor / any link or file, created in this row's own directory. */}
+                  <MenuItem
+                    icon={<AppWindow size={14} />}
+                    onSelect={() => {
+                      close();
+                      setCreatingArtifact(true);
+                    }}
+                  >
+                    {t('sidebar.newArtifact')}
+                  </MenuItem>
                   {/* Round PDF/OFFICE: unlike doc/board/table above, a pdf/
                       office page has no server-generated starter file —
                       this opens the native file picker instead of calling
@@ -822,7 +838,7 @@ export function TreeRow({
                       one goes through "change slug" below, which renames the
                       file itself. Offering an action that can only ever toast
                       an error is worse than not offering it. */}
-                  {node.kind !== 'pdf' && node.kind !== 'office' && node.kind !== 'canvas' && node.kind !== 'base' && (
+                  {node.kind !== 'pdf' && node.kind !== 'office' && node.kind !== 'canvas' && node.kind !== 'base' && node.kind !== 'artifact' && (
                     <MenuItem
                       icon={<Pencil size={14} />}
                       onSelect={() => {
@@ -991,6 +1007,7 @@ export function TreeRow({
       )}
 
       {creatingBase && <NewBaseDialog space={space} initialParentPath={childDirOf(node)} onClose={() => setCreatingBase(false)} />}
+      {creatingArtifact && <ArtifactImportDialog space={space} initialParentPath={childDirOf(node)} onClose={() => setCreatingArtifact(false)} />}
 
       {moving && (
         <MoveDialog

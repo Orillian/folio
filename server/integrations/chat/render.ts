@@ -36,6 +36,8 @@ export function kindLine(card: ChatCard): string | undefined {
       return card.file ? `${card.file} file` : 'File';
     case 'base':
       return 'Base: a view over pages — open it in Folio.';
+    case 'artifact':
+      return 'Interactive artifact: open it in Folio to use it.';
     case 'space':
       return 'Space';
     default:

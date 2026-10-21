@@ -81,13 +81,14 @@ Clients are public (no client secret). Redirect URIs must be `https`, or `http` 
 | Bases | `query_base` |
 | Tags, properties, bases (scope `write`) | `rename_tag`, `set_page_properties`, `save_base` |
 | Pages (scope `write`) | `create_page`, `update_page` |
+| Artifacts (scope `write`) | `publish_artifact` (read an artifact with `read_page`) |
 | Whiteboards (scope `write`) | `create_board`, `update_board`, `board_ops`, `convert_canvas_to_board` |
 | Data tables, reading | `folio_table_list`, `folio_table_schema`, `folio_table_query` |
 | ChatGPT deep research | `search`, `fetch` |
 | Data tables (scope `write`) | `folio_table_insert`, `folio_table_update`, `folio_table_delete`, `folio_table_add_column`, `folio_table_update_column`, `folio_table_delete_column`, `folio_table_save_view`, `folio_table_delete_view`, `folio_table_create` |
 | Forms (scope `write`) | `create_form`, `update_form` (read a form with `read_page`) |
 
-40 tools: 20 read-only, 20 that write.
+41 tools: 20 read-only, 21 that write.
 
 **Page index.** `get_page_metadata(id)` returns one page's index entry: `headings` (level, text, anchor `slug`, line), `blocks` (`^id`s), `tags` (lowercased, from `#tags` in the text and front matter `tags` (`labels` is read as a synonym)), `properties` (a document's whole front matter; a data table's or form's own keys, without the reserved ones that define the table or form; a board's, PDF's or Office file's from its sidecar `.folio/<path>.props.yaml`), `links` (each with `targetPath`, `targetPageId`, `syntax` — `md`, `wikilink`, `embed`, `image`, `html`, `reference` or `canvas` (a file card of an Obsidian canvas: its path from the space root, matched exactly; `line` is the card's position in the canvas) — `kind` — `page`, `asset`, `external` or `unresolved` — the `#heading` / `#^block` `fragment` and whether it resolves, `displayText`, `line`, `context`), `backlinkCount` and `metaVersion`. `list_unresolved_links(space, limit?, offset?)` returns `{"links": [...], "total"}`, sorted by target path (`limit` 1–500, default 100); `list_orphans(space)` returns `{"pages": [...]}` — pages nothing links to, never the space home page, templates or `.agent`. `get_graph(space, page?, depth?, direction?, tags?, files?, unresolved?, orphans?, limit?)` returns the link graph as `{nodes, edges, totalPages, truncated, limit, center?}`: the whole space, or with `page` that page's neighbourhood (`depth` 1–3, `direction` `both`, `in` or `out`; default 1 and `both`). A node has `id`, `title`, `kind` (the page kind, or `tag`, `file`, `unresolved`), and, when present, `path`, `tags` and `degree` (distinct neighbours in this answer); an edge has `source`, `target` and `count` (links from the source to the target). There are no dates or statuses, to keep a model's context small. `tags`, `files` and `unresolved` add tag, attachment and ghost nodes (off by default), `orphans: false` drops pages without links, and `limit` (1–2000, default 300) keeps the most recently changed pages, setting `truncated`. A page you cannot open is never a node or an edge, and a link to it leaves no trace in the graph. `get_backlinks` returns one entry per link, with the source page's fields plus `syntax`, `fragment`, `line` and `context` (the source line). All of them count and list only pages you can open; a link to a page you cannot open is reported like a link to nothing.
 
@@ -98,6 +99,27 @@ Clients are public (no client secret). Redirect URIs must be `https`, or `http` 
 `set_page_properties(id, properties, etag?, merge?)` writes a page's properties (front matter) through the same API as the web app's properties panel, for any page kind: documents, data tables and forms (in their own front matter, next to the keys that define the table or form, which are refused with an error), boards, PDFs, Office files, canvases and bases (in a sidecar `.folio/<path>.props.yaml`). By default `properties` is the whole map: keys you leave out are removed, a key sent with its current value is left byte for byte, `null` writes an empty property (`key:`). Folio's own keys on a document (`id`, `order`, `status`, `icon`, `cover`) holding a value Folio would not write itself, and an existing `labels:` list, stay unless you name them, and `id` cannot change. With `merge: true` only the keys you give change and `null` removes a key; the tool reads the page, applies the patch and writes the whole map back guarded by the etag it read (and retries when someone edited in between). `etag` is the one a previous call returned: when the properties changed since, the call fails with an error that names the current etag and shows the current properties. The answer is `{"id", "written", "changedKeys", "etag", "properties", "types", "foreign", "readOnly"}`; `written: false` means the properties already were as asked (no write, no commit). It needs an editor role on the page and a `write` token.
 
 **`search` and `fetch`.** ChatGPT deep research and company knowledge only work with two read-only tools of exactly these names, so Folio has them next to `search_pages` and `read_page`; they apply the same access rules (spaces, page access, `.agent` for space admins only). `search(query)` returns `{"results": [{"id", "title", "url"}]}`; `fetch(id)` takes an `id` from `search` and returns `{"id", "title", "text", "url", "metadata"}`: `text` is the page as Markdown (a data table as a Markdown table of up to 500 rows, a board as a list of its labels and connections, an Obsidian canvas as its outline, a PDF or Office file as a short note without the file), `url` is the page's link in Folio, `metadata` holds `space`, `path`, `kind` and `updatedAt`. Both return the result as structured content and as a JSON string in the text content. A page that does not exist and a page you may not see give the same `page not found`.
+
+<a id="publish_artifact"></a>**Artifacts.** An artifact (`kind: "artifact"`) is an interactive page: a Claude artifact, a Cursor canvas or any self-contained HTML page, shown in a sandboxed frame. `publish_artifact(space, ...)` creates one under `parentPath` of the space, or, with `id` of an existing artifact, replaces its content; the id, path, properties, title and icon stay unless you send new ones. It returns `{"id", "space", "path", "title", "created", "url", "warnings"}`. It needs an editor role in the space and a `write` token. Over MCP the request body is limited to 25 MB (1 MB in the public demo); larger bundles go through the web import.
+
+Send the page as ONE self-contained document in `html`: no build step and no server, with CSS, JavaScript and data inlined, because the frame blocks requests to other hosts. Scripts, styles and fonts may come only from `cdnjs.cloudflare.com`, `cdn.jsdelivr.net`, `unpkg.com`, `cdn.tailwindcss.com`, `code.jquery.com`, `esm.sh` and Google Fonts. Folio does not build React or TSX: for a React artifact or a Cursor canvas, send a page that loads React from a CDN (UMD builds with `@babel/standalone`, or an ES module from `esm.sh`) and mounts the component, and keep the original JSX or TSX in `sourceCode`. State goes through `window.storage` or `localStorage`, both persisted per reader; `window.claude.complete` is not available. Instead of `html` you can send `text` with `type` `svg`, `markdown` or `mermaid`, extra `files` (`{path, content, encoding?}`, UTF-8 or base64) referenced by relative path, a `url` to a direct `https` link to an `.html`, `.zip`, `.svg` or `.md` file (claude.ai and Cursor share links are refused), or an `embedCode`. `origin` (`claude`, `cursor`, `url`, `upload`, `other`), `sourceUrl` (stored, never fetched), `capabilities` (`claude`, `network`, `connectors`; Folio shows a "works partially" note) and `properties` are optional.
+
+```json
+{
+  "name": "publish_artifact",
+  "arguments": {
+    "space": "acme-handbook",
+    "parentPath": "reports",
+    "title": "Sales by region",
+    "icon": "📊",
+    "origin": "claude",
+    "html": "<!doctype html><html>…one complete page…</html>",
+    "properties": { "owner": "maria" }
+  }
+}
+```
+
+`read_page` on an artifact returns its `artifact` (manifest, properties, file list, warnings) and `entryHtml`, cut at 60,000 characters; to change a page, call `publish_artifact` again with its `id` and the whole new HTML. REST for the web client: `POST /api/spaces/:space/artifacts` (JSON or multipart) and `PUT /api/pages/:id/artifact`.
 
 **Obsidian canvases.** `read_page` on a canvas (`kind: "canvas"`) returns the page's metadata and `outline`: Markdown listing the groups with the cards inside them (text cards with their full text, note and file cards with the page title, kind, id and path, web page cards with the URL, each with its position, size and colour), then the connections (`from -> to: "label"`, arrows, colours, sides). A card pointing at a page you may not open is listed as "a page that is not available to you", without title or path. No tool writes a canvas: `update_page` refuses it. `convert_canvas_to_board(id, title?, parentPath?)` makes a NEW editable board from it, like "Convert to Folio board" in the web app: groups become frames, cards labelled rectangles (notes and files as their title with a link), connections arrows. The canvas itself is not changed; the board goes next to it unless `parentPath` is given and is committed at once as the token's owner. It returns `{"board", "report"}`, where `report.losses` lists what could not be carried over. It needs read access to the canvas, an editor role in the space and a `write` token.
 
@@ -117,7 +139,7 @@ Clients are public (no client secret). Redirect URIs must be `https`, or `http` 
 | `"exact phrase"` | the words in this order, next to each other |
 | `-word`, `-"phrase"` | pages that do not contain it |
 | `tag:name` | pages with that tag; `tag:a` also finds `a/b`. Several `tag:` must all match |
-| `kind:doc` | one of `doc`, `table`, `board`, `form`, `pdf`, `office`, `canvas`, `base`; `kind:doc,table` means either |
+| `kind:doc` | one of `doc`, `table`, `board`, `form`, `pdf`, `office`, `canvas`, `base`, `artifact`; `kind:doc,table` means either |
 | `status:draft` | `draft`, `published` or `archived`; a page with no status is `published` |
 | `in:folder/` | pages inside the folder (a path prefix); several `in:` mean any of them |
 | `prop:key=value` | front matter: text (any case), number, `true`/`false`, an item of a list, or a date such as `2026-10-14` |

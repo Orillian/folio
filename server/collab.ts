@@ -3099,7 +3099,7 @@ export function attachToServer(httpServer: HttpServer): void {
       // this just refuses the connection outright instead of opening a
       // socket that would never do anything).
       // A canvas likewise: Folio shows it, never edits it.
-      if (entry.kind === 'pdf' || entry.kind === 'office' || entry.kind === 'canvas' || entry.kind === 'base') {
+      if (entry.kind === 'pdf' || entry.kind === 'office' || entry.kind === 'canvas' || entry.kind === 'base' || entry.kind === 'artifact') {
         rejectUpgrade(socket, 400, 'Bad Request');
         return;
       }

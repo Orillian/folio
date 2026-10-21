@@ -14,6 +14,7 @@ import { StaticBoardView } from '../routes/StaticBoardView';
 import { TablePageView } from '../routes/TablePageView';
 import { FormPageView } from '../routes/FormPageView';
 import { CanvasPane, spaceFileUrl } from '../../canvas';
+import { ArtifactView } from '../../artifact/ArtifactView';
 import '../i18n/register';
 
 /**
@@ -339,6 +340,15 @@ function SharedPageBody({ payload, token }: { payload: SharedPagePayload; token:
   if (page.kind === 'base') {
     // A base lists pages and their properties under the reader's own access — there is no reader behind a share link.
     return <div className="p-8 text-sm text-neutral-500 dark:text-neutral-400">{page.title}</div>;
+  }
+
+  if (page.kind === 'artifact' && page.artifact) {
+    // Read-only whatever the link's mode; the state a guest saves stays in this browser.
+    return (
+      <div className="h-[calc(100dvh-6rem)] min-h-[30rem] w-full">
+        <ArtifactView payload={page.artifact} pageId={page.id} title={page.title} version={page.updatedAt} allowServerState={false} />
+      </div>
+    );
   }
 
   if (page.kind === 'canvas' && page.canvas) {

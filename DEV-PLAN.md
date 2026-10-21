@@ -92,6 +92,7 @@ In the order it was built.
 | 55 | Custom page templates | Any page in a space's `_templates/` folder (document, board, table, form, base, or a page with subpages) is a template: "From template…" picker in the "+" menu, "Make template" on any page (a dialog with name, description and "Include subpages"), `{{date}}`, `{{author}}` and `{{title}}` filled in documents, a sidebar "Templates" section for editors, three starter templates (English or Ukrainian) in a new empty space; the folder stays out of the tree, graph, tags, bases and public sites |
 | 56 | Share links open in your own account | A signed-in reader who can open the page is sent from `/share/<token>` to the normal page; `ownAccess` in the share payload only for them, `?as=guest` keeps the guest view. |
 | 57 | Fast page copies | Page writes reindex only the paths they touched (scoped scan, full scan as fallback); folder-prefix lookups use `COLLATE "C"` range indexes (migration 050). Subtree copies on a 6000-page space: ~13 s → ~1.3 s. Page exports (MD, PDF, DOCX, YAML, public and share routes) send `Cache-Control: no-store`, so a CDN that caches by extension no longer serves a stale file. |
+| 58 | Artifacts | A page kind for interactive pages made by agents (Claude artifacts, Cursor canvases, any self-contained HTML): a `<name>.artifact/` folder in the repository, a sandboxed frame without cookies or API access, `window.storage` and `localStorage` that persist per reader (migration 051), import from a link, file or pasted HTML, MCP `publish_artifact` (41 tools). No JSX or TSX runtime yet |
 
 ## What comes next
 
@@ -112,6 +113,7 @@ picked up.
 - Check the kits on each platform (only plain Docker Compose and Coolify have been run end to end; Folio's own production runs on Coolify).
 - More providers for the assistant.
 - Share links and content search for file pages.
+- Artifacts: build JSX and TSX sources inside Folio, comments on an artifact, a version list in the interface.
 - A `robots.txt` and a sitemap for public sites, so that a published space can
   be found (and one that must not be found can say so).
 - Limits that hold across processes: a per-address limit for public search and

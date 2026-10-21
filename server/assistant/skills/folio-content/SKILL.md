@@ -43,6 +43,10 @@ be written in that language too.
    usual table tags (`<table>`, `<colgroup>`, `<col>` and so on) and `<br>`.
    Do not write `<ins>`/`<u>`/`<mark>` yourself — Folio has markdown for all
    of them (see "Text formatting" below).
+   Interactive content (a dashboard, a calculator, a filter, a chart that
+   reacts to input) therefore does not belong in a document: build it as an
+   artifact with `publish_artifact` (the `folio-artifacts` skill) and, if
+   needed, link to it from the document.
 
 ## 2. Syntax cheat sheet
 

@@ -258,3 +258,36 @@ Link previews in Slack and Microsoft Teams ([setup](CHAT-PREVIEWS.md)).
     links and public sites show a note instead of a base, because a base exposes
     page properties; through MCP, `query_base` is refused on public sites and
     returns at most 500 rows per call (100 by default).
+
+## Artifacts
+
+An artifact is an interactive page made by an agent
+([how it works](FEATURES.md), [publishing over MCP](MCP.md#publish_artifact)).
+
+28. **Folio shows finished pages; it does not build them.** There is no JSX or
+    TSX runtime in Folio: an agent sends one self-contained HTML page (a React
+    artifact or a Cursor canvas has to be built into such a page that loads React
+    from a CDN), and the original source is kept next to it as a file. A page that
+    needs a build step, or components that only exist inside Claude or Cursor
+    (`cursor/canvas`, shadcn), does not run until it is rewritten.
+29. **What an artifact can reach is narrow on purpose.** The frame has no
+    cookies and no Folio API; requests to hosts other than the CDN allowlist
+    (cdnjs, jsDelivr, unpkg, Tailwind, jQuery, esm.sh, Google Fonts) are blocked, so
+    data must be inlined or shipped as files of the artifact. `window.storage` and
+    `localStorage` work; `window.claude.complete`, network calls to your own
+    services and connectors do not, and a page that expects them says "works
+    partially". State is stored per reader (up to 5 MB per page); the shared part is
+    read only for guests of a share link and for public sites, and a guest's own
+    state stays in their browser.
+30. **Share links of claude.ai and Cursor are not downloaded.** Folio only
+    fetches direct `https` links to an `.html`, `.zip`, `.svg` or `.md` file. For
+    a Claude artifact paste its embed code (it is shown in a frame of the
+    original host, not copied) or, better, ask the agent to publish it with
+    `publish_artifact`.
+31. **Artifacts are replaced, not edited.** There is no editor for the page
+    inside Folio (the bundle's files are viewed with "Show source"), no comments,
+    and no versions in the interface; Git keeps the history, and the page-level
+    properties are the only part edited in place. Search finds an artifact by its
+    title, properties and the visible text of its entry page (the first 100 KB),
+    not by what a script draws later. A bundle is limited to 500 files and 50 MB,
+    a download from a link to 20 MB, and an MCP request to 25 MB.

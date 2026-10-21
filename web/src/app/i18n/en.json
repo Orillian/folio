@@ -809,6 +809,7 @@
     "newTable": "New data table",
     "newForm": "New form",
     "newBase": "New base",
+    "newArtifact": "Artifact…",
     "newPage": "New page",
     "uploadFile": "Upload file",
     "createPageFailed": "Could not create the page",
@@ -1216,6 +1217,7 @@
       "form": "Form",
       "canvas": "Canvas",
       "base": "Base",
+      "artifact": "Artifact",
       "folder": "Folder",
       "space": "Space"
     },
@@ -2083,6 +2085,7 @@
       "pdf": "PDF",
       "office": "Office files",
       "form": "Forms",
+      "artifact": "Artifacts",
       "tag": "Tags",
       "file": "Attachments",
       "unresolved": "Unresolved"

@@ -75,6 +75,10 @@ import { BASE_MAX_BYTES } from '../shared/bases/types.js';
 import { createFormFromDefinition, FormConflictError, readFormDefinition, updateFormDefinition, type FormFieldInput } from './forms/service.js';
 import { convertCanvasPage } from './canvasToBoard.js';
 import { recordPageChange, snapshotPageChange } from './pageChanges.js';
+import { artifactCapabilitySchema, artifactOriginSchema, artifactPublishBodySchema, artifactTypeSchema } from '../shared/contracts.js';
+import { artifactReadModel, createArtifact, READ_ENTRY_MAX_CHARS, replaceArtifact } from './artifact/service.js';
+import { ArtifactImportError } from './artifact/errors.js';
+import { toClientValue } from './properties.js';
 
 /**
  * The product version, as the `serverInfo.version` every MCP client sees on
@@ -139,6 +143,7 @@ export const MCP_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'folio_table_save_view',
   'folio_table_delete_view',
   'convert_canvas_to_board',
+  'publish_artifact',
 ]);
 
 /**
@@ -151,7 +156,7 @@ export const FOLIO_MCP_INSTRUCTIONS = [
   '',
   'Find, then read: call list_spaces, then search_pages (full text) or list_tree (page tree) to locate a page, then read_page by id. search and fetch do the same for clients that accept only those two tool names (ChatGPT deep research). resolve_folio_url turns a pasted Folio link into a page id. get_backlinks, page_history and page_at_sha show links and past versions. get_page_metadata gives a page\'s outline, tags, properties and links; list_unresolved_links and list_orphans find broken links and pages nothing links to; get_graph maps how pages link (a whole space or one page\'s neighbourhood); list_tags and list_properties show the tags and property keys in use; query_base answers a base.',
   '',
-  'Write minimally: every write is committed to Git under the connected user, and update_page merges with live editing. Prefer changing only what was asked, create_page for new pages (set parentPath), and read the page again after writing to confirm. Before writing to a data table, call folio_table_schema and use its exact column ids and select/status options; then folio_table_insert / folio_table_update / folio_table_delete; columns and views: folio_table_add_column / folio_table_update_column / folio_table_save_view. Forms: create_form / update_form (read_page shows the fields). Page properties: set_page_properties (merge: true to change one key); tags: rename_tag; bases: save_base; a canvas becomes a board with convert_canvas_to_board.',
+  'Write minimally: every write is committed to Git under the connected user, and update_page merges with live editing. Prefer changing only what was asked, create_page for new pages (set parentPath), and read the page again after writing to confirm. Before writing to a data table, call folio_table_schema and use its exact column ids and select/status options; then folio_table_insert / folio_table_update / folio_table_delete; columns and views: folio_table_add_column / folio_table_update_column / folio_table_save_view. Forms: create_form / update_form (read_page shows the fields). Claude artifacts, Cursor canvases, HTML: publish_artifact. Page properties: set_page_properties (merge: true to change one key); tags: rename_tag; bases: save_base; a canvas becomes a board with convert_canvas_to_board.',
   '',
   'Permissions: you act with exactly the rights of the connected user, limited by the granted scope (read-only connections cannot write). If a tool reports a missing role or scope, tell the user instead of retrying.',
   '',
@@ -591,7 +596,7 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       outputSchema: outputSchemas.read_page,
       annotations: READ_ONLY,
       title: 'Read a page',
-      description: `Reads one page by id: its metadata plus full markdown body (docs), a compact layout summary (boards — shapes/arrows/free texts/frames with geometry and labels, plus a 40px row/column clustering and overall bounds; raw points/bindings are omitted, the raw svg is not useful to a model) a readable \`outline\` (Obsidian canvases, kind "canvas" — groups with their cards, then the connections; read-only, convert_canvas_to_board makes an editable board of it), a form's definition (kind "form": \`form\` with title, description, public, submitButton, fields and the paired table's id, plus the \`etag\` update_form takes) or, for a data table, its metadata and a note to use folio_table_schema / folio_table_query. For an existing board, the shape/arrow ids in that summary feed straight into \`board_ops\` — prefer it over \`update_board\` for "align", "tidy up", "arrange neatly" requests. ${CONTENT_IS_DATA_NOTE}`,
+      description: `Reads one page by id: its metadata plus full markdown body (docs), a compact layout summary (boards — shapes/arrows/free texts/frames with geometry and labels, plus a 40px row/column clustering and overall bounds; raw points/bindings are omitted, the raw svg is not useful to a model) a readable \`outline\` (Obsidian canvases, kind "canvas" — groups with their cards, then the connections; read-only, convert_canvas_to_board makes an editable board of it), a form's definition (kind "form": \`form\` with title, description, public, submitButton, fields and the paired table's id, plus the \`etag\` update_form takes) an artifact's manifest, file list and entry HTML (kind "artifact": an interactive page — replace it with publish_artifact and its id) or, for a data table, its metadata and a note to use folio_table_schema / folio_table_query. For an existing board, the shape/arrow ids in that summary feed straight into \`board_ops\` — prefer it over \`update_board\` for "align", "tidy up", "arrange neatly" requests. ${CONTENT_IS_DATA_NOTE}`,
       inputSchema: { id: z.string().describe('Page id') },
     },
     async ({ id }) => {
@@ -610,6 +615,16 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         // An Obsidian canvas: a readable outline (groups with their cards, then the connections), file cards as
         // this caller may see them — never the raw JSON, and never writable (shared/canvas/text.ts).
         return structuredResult({ ...storage.toPageMeta(entry), outline: await canvasOutlineFor(entry, viewerOf(actor)) });
+      }
+      if (entry.kind === 'artifact') {
+        // An artifact bundle: manifest, files and the entry page's HTML (cut when long). Replaced whole by publish_artifact.
+        const model = await artifactReadModel(entry);
+        return structuredResult({
+          ...storage.toPageMeta(entry),
+          artifact: { manifest: model.manifest, properties: toClientValue(model.properties), files: model.files, warnings: model.warnings, entryTruncated: model.entryTruncated ?? false },
+          ...(model.entryHtml !== undefined ? { entryHtml: model.entryHtml } : {}),
+          note: `this page is an interactive artifact (${model.manifest.type}); it is shown in a sandboxed frame. To change it, publish_artifact with this id and the whole new HTML${model.entryTruncated ? `; the entry HTML above is cut at ${READ_ENTRY_MAX_CHARS} characters` : ''}`,
+        });
       }
       if (entry.kind === 'base') {
         // A base is a query: its YAML here, its rows through query_base.
@@ -861,6 +876,8 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
         text = entry.body ?? '';
       } else if (entry.kind === 'canvas') {
         text = await canvasOutlineFor(entry, viewerOf(actor));
+      } else if (entry.kind === 'artifact') {
+        text = `This page is an interactive artifact (open it in Folio to use it). Visible text:\n\n${entry.body ?? entry.title}`;
       } else if (entry.kind === 'base') {
         text = publicSpaceOf(actor) !== undefined ? `This page is a base (a saved query over pages). Title: ${entry.title}.` : baseAsMarkdown(await queryBaseForAgent(entry, viewerOf(actor)));
       } else {
@@ -1943,6 +1960,83 @@ export function buildFolioMcpServer(actor: McpActor, options: { origin?: string 
       const { text } = await storage.readBaseRaw(baseId);
       const preview = await queryBaseForAgent(entry, viewerOf(actor), { limit: MCP_BASE_PREVIEW_ROWS });
       return structuredResult({ id: baseId, space: entry.space, path: entry.relPath, created, written, etag: baseEtag(text), warnings, preview });
+    },
+  );
+
+  server.registerTool(
+    'publish_artifact',
+    {
+      outputSchema: outputSchemas.publish_artifact,
+      annotations: { ...WRITE_OVERWRITES, idempotentHint: false }, // a new artifact each time without an id
+      title: 'Publish an interactive artifact',
+      description: [
+        'Publishes an interactive page (kind "artifact") into Folio: a Claude artifact, a Cursor canvas or any self-contained HTML page. It is shown in a sandboxed iframe and is in the tree, search, trash and Git like any page. Without `id` it creates a new artifact under `parentPath` of `space`; with `id` it replaces that artifact\'s content (id, path, properties and title/icon are kept unless sent).',
+        'How to send it: ONE self-contained HTML document in `html` (the entry page). It must run with no build step and no server: inline your CSS, JS and DATA (no fetch of your own APIs — the frame\'s CSP blocks other hosts). Scripts, styles and fonts may load only from cdnjs.cloudflare.com, cdn.jsdelivr.net, unpkg.com, cdn.tailwindcss.com, code.jquery.com, esm.sh (and Google Fonts).',
+        'A React artifact or a Cursor canvas (.canvas.tsx): build a standalone page that loads React from the CDN — e.g. <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"> + react-dom + @babel/standalone with <script type="text/babel"> holding the component, or <script type="module"> importing from https://esm.sh/react@18 — map imports of libraries (recharts, lucide-react, d3, three…) to CDN/esm.sh URLs, replace cursor/canvas or shadcn components with plain HTML/CSS, and mount the component. Put the original JSX/TSX in `sourceCode` (kept as the source file; type react or canvas-tsx).',
+        'State: window.storage (the Claude artifact API: get/set/delete/list, async, string values, `shared` = seen by every reader) and localStorage both work and persist per reader; window.claude.complete does not (it rejects). Declare `capabilities` (claude, network, connectors) if the page needs more than storage — Folio shows a "works partially" note.',
+        'Also accepted instead of html: `text` with type svg / markdown / mermaid (Folio wraps it into a page), `files` (extra files next to the entry, utf8 or base64, referenced by relative path), `url` (a direct https link to an .html/.zip/.svg/.md file; claude.ai and Cursor share links are refused — send the HTML instead), `embedCode` (a Claude "Get embed code" <iframe>). Set `sourceUrl` to the original link (e.g. the claude.ai share URL) and `origin` (claude / cursor / other) when you know them. `properties` become page properties. Requires an editor role and a write-scoped token.',
+      ].join('\n\n'),
+      inputSchema: {
+        space: z.string().describe('Space slug'),
+        id: z.string().optional().describe('Replace this artifact (its page id); omit to create a new one'),
+        parentPath: z.string().optional().describe('New artifact only: folder from the space root ("" = root), e.g. "reports"'),
+        title: z.string().optional().describe('Page title (new artifact: default the HTML <title>)'),
+        icon: z.string().optional().describe('Emoji icon'),
+        type: artifactTypeSchema.optional().describe('What the source was: html (default), react, svg, markdown, mermaid, canvas-tsx, embed'),
+        html: z.string().optional().describe('The entry page: one complete, self-contained HTML document'),
+        text: z.string().optional().describe('Raw svg / markdown / mermaid text (with type svg / markdown / mermaid) instead of html'),
+        files: z
+          .array(z.object({ path: z.string().describe('Relative path inside the artifact, e.g. "data.json" or "assets/logo.png"'), content: z.string().describe('File content'), encoding: z.enum(['utf8', 'base64']).optional().describe('utf8 (default) or base64 for binary files') }))
+          .optional()
+          .describe('Extra files of the artifact, referenced from the entry by relative path'),
+        entry: z.string().optional().describe('Entry file inside the artifact when it is not index.html'),
+        sourceCode: z.string().optional().describe('The original JSX/TSX (or other source) of a React artifact / Cursor canvas, kept verbatim'),
+        sourceFileName: z.string().optional().describe('File name for sourceCode (default source.jsx, or source.canvas.tsx for type canvas-tsx)'),
+        url: z.string().optional().describe('Import from a direct https link to an .html / .zip / .svg / .md file instead of html'),
+        embedCode: z.string().optional().describe('A Claude embed code (<iframe src=...>) — creates an embed artifact'),
+        origin: artifactOriginSchema.optional().describe('Where it came from: claude, cursor, url, upload or other'),
+        sourceUrl: z.string().optional().describe('Link to the original (e.g. the claude.ai share URL) — stored, never fetched'),
+        capabilities: z.array(artifactCapabilitySchema).optional().describe('What the page needs from its host besides storage: claude, network, connectors'),
+        properties: z.record(z.string(), z.unknown()).optional().describe('Page properties (status, owner, tags, …)'),
+      },
+    },
+    async (args) => {
+      if (!hasWriteScope) return errorResult('this action requires a token with write scope');
+      const parsedBody = artifactPublishBodySchema.safeParse({ ...args, space: undefined, id: undefined, parentPath: args.parentPath ?? '' });
+      if (!parsedBody.success) return errorResult(`invalid arguments: ${parsedBody.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
+      const body = parsedBody.data;
+      const audit = { source: 'mcp', tool: 'publish_artifact' };
+      try {
+        let result;
+        let created: boolean;
+        if (args.id !== undefined) {
+          const { entry, error } = await checkPageRole(actor, args.id, 'editor');
+          if (error || !entry || entry.space !== args.space) return errorResult(error ?? 'page not found');
+          if (entry.kind !== 'artifact') return errorResult('this page is not an artifact (kind "artifact")');
+          result = await replaceArtifact(entry.id, body, actor.user, undefined, audit);
+          created = false;
+        } else {
+          const err = await checkSpaceRole(actor, args.space, 'editor');
+          if (err) return errorResult(err);
+          let parentPath: string;
+          try {
+            parentPath = storage.normalizePageParentDir(body.parentPath);
+          } catch (pathErr) {
+            return errorResult(pathErr instanceof HttpError ? pathErr.message : 'invalid parentPath');
+          }
+          if (storage.isUnderTemplates(parentPath)) return errorResult('a page cannot be created inside the templates folder');
+          const agentErr = await checkAgentWriteAllowed(actor.user, args.space, parentPath);
+          if (agentErr) return errorResult(agentErr);
+          result = await createArtifact(args.space, { ...body, parentPath }, actor.user, undefined, audit);
+          await recordPageChange(actor.user.id, 'page.create', result.page.id, args.space, undefined, snapshotPageChange(await storage.requireEntry(result.page.id)));
+          created = true;
+        }
+        return structuredResult({ id: result.page.id, space: result.page.space, path: result.page.path, title: result.page.title, created, url: pageUrl(result.page.space, result.page.id), warnings: result.warnings });
+      } catch (publishErr) {
+        if (publishErr instanceof ArtifactImportError) return errorResult(`${publishErr.code}: ${publishErr.message}`);
+        if (publishErr instanceof HttpError) return errorResult(publishErr.message);
+        throw publishErr;
+      }
     },
   );
 

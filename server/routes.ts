@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { setArtifactTitleIcon } from './artifact/service.js';
 import * as fsSync from 'node:fs';
 import { posix as pathPosix } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -591,8 +592,8 @@ export function registerRoutes(app: FastifyInstance): void {
 
   app.get('/api/spaces/:space/tree', async (request) => {
     const { space } = request.params as { space: string };
-    await session.requireSpaceRole(request, space, 'viewer');
-    const allowed = await session.readablePageIds(request.authUser!, space);
+    const role = await session.requireSpaceRole(request, space, 'viewer');
+    const allowed = await session.readablePageIds(request.authUser!, space, role);
     const tree: TreeNode[] = await storage.getTree(space, allowed);
     return { tree };
   });
@@ -642,8 +643,8 @@ export function registerRoutes(app: FastifyInstance): void {
   /** The `_templates/` folder as a tree (any kind of page, subpages nested) — the template picker's tree. */
   app.get('/api/spaces/:space/templates/tree', async (request) => {
     const { space } = request.params as { space: string };
-    await session.requireSpaceRole(request, space, 'viewer');
-    const allowed = await session.readablePageIds(request.authUser!, space);
+    const role = await session.requireSpaceRole(request, space, 'viewer');
+    const allowed = await session.readablePageIds(request.authUser!, space, role);
     const tree: TreeNode[] = await storage.getTemplatesTree(space, allowed);
     return { tree };
   });
@@ -1169,6 +1170,10 @@ export function registerRoutes(app: FastifyInstance): void {
       if (entry.kind === 'board') {
         if (body.order !== undefined) await storage.setBoardOrder(entry, body.order);
         if (body.icon !== undefined) await storage.setBoardIcon(entry, storage.resolveIconCoverOverride(body.icon, entry.icon));
+      } else if (entry.kind === 'artifact') {
+        // An artifact: order in the index row (like a pdf's), the icon in its artifact.yaml.
+        if (body.order !== undefined) await storage.setBinaryPageOrder(entry, body.order);
+        if (body.icon !== undefined) await setArtifactTitleIcon(id, { icon: storage.resolveIconCoverOverride(body.icon, entry.icon) ?? null }, user);
       } else if (entry.kind === 'pdf' || entry.kind === 'office' || entry.kind === 'canvas' || entry.kind === 'base') {
         // A canvas file is never written either: its order/icon live in the index row, like a pdf's.
         if (body.order !== undefined) await storage.setBinaryPageOrder(entry, body.order);
@@ -1181,6 +1186,7 @@ export function registerRoutes(app: FastifyInstance): void {
       return storage.toPageMeta(await storage.requireEntry(id));
     }
     if (entry.kind === 'base') throw badRequest('a base is edited through PUT /api/pages/:id/base');
+    if (entry.kind === 'artifact') throw badRequest('an artifact is replaced through PUT /api/pages/:id/artifact');
     if (body.svg === undefined) {
       throw badRequest('svg is required for a board page');
     }
@@ -1341,6 +1347,9 @@ export function registerRoutes(app: FastifyInstance): void {
       // endpoint (which renames the file itself) is the only way to change
       // what a pdf/office page is called.
       throw badRequest('a pdf/office page has no separate title — use the slug rename to change its filename');
+    } else if (entry.kind === 'artifact') {
+      // An artifact's title lives in its artifact.yaml; the folder keeps its name (the slug rename moves it).
+      result = await setArtifactTitleIcon(id, { title: body.title }, request.authUser!);
     } else if (storage.isFreeNameKind(entry.kind)) {
       // A canvas / base is named by its file, as in Obsidian (owner, 16.10.2026): the new title IS the file name
       // (any valid one — spaces, Unicode), so renaming it is a file rename with the links, sidecar and commit of one.
@@ -1496,6 +1505,8 @@ export function registerRoutes(app: FastifyInstance): void {
     const user = request.authUser!;
     // A canvas is never written by Folio — not even to restore it (git or Obsidian can).
     if (entry.kind === 'canvas') throw badRequest('a canvas is read-only in Folio: restore it in Git or Obsidian');
+    // An artifact is a folder: its versions are re-published (PUT /api/pages/:id/artifact), not restored file by file.
+    if (entry.kind === 'artifact') throw badRequest('an artifact is restored by publishing that version again (PUT /api/pages/:id/artifact)');
     if (entry.kind === 'pdf' || entry.kind === 'office') {
       // Binary: the file at that commit is written back through the same path
       // as a replace (own commit, links rewritten if the extension differs).

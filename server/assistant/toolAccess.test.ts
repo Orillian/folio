@@ -346,10 +346,21 @@ describe('assistant tools only return what the user may read (real PG, in-proces
         'board_ops', 'convert_canvas_to_board', 'create_board', 'create_form', 'create_page', 'folio_table_add_column', 'folio_table_create', 'folio_table_delete',
         'folio_table_delete_column', 'folio_table_delete_view', 'folio_table_insert', 'folio_table_list', 'folio_table_query', 'folio_table_save_view', 'folio_table_schema',
         'folio_table_update', 'folio_table_update_column', 'get_backlinks', 'get_graph', 'get_page_metadata', 'list_orphans', 'list_properties', 'list_spaces', 'list_tags',
-        'list_tree', 'list_unresolved_links', 'page_at_sha', 'page_history', 'query_base', 'read_page', 'read_skill', 'rename_tag', 'report_unanswered_question',
+        'list_tree', 'list_unresolved_links', 'page_at_sha', 'page_history', 'publish_artifact', 'query_base', 'read_page', 'read_skill', 'rename_tag', 'report_unanswered_question',
         'resolve_folio_url', 'save_base', 'search_pages', 'set_page_properties', 'update_board', 'update_form', 'update_page',
       ].sort(),
     );
+    // publish_artifact is offered, but without the two inputs that make Folio fetch or embed something foreign: no `url`, no `embedCode`.
+    const publish = (await tools(bob, 'agent')).tools.publish_artifact as unknown as { inputSchema: { properties: Record<string, unknown>; required?: string[] }; description: string };
+    expect(Object.keys(publish.inputSchema.properties)).toEqual(expect.arrayContaining(['space', 'id', 'html', 'text', 'files', 'sourceCode', 'origin', 'sourceUrl']));
+    expect(publish.inputSchema.properties).not.toHaveProperty('url');
+    expect(publish.inputSchema.properties).not.toHaveProperty('embedCode');
+    expect(publish.description).toContain('not available');
+    // No tool of the assistant has a URL-taking input except resolve_folio_url (it only parses a Folio link, nothing is fetched).
+    for (const [name, tool] of Object.entries((await tools(bob, 'agent')).tools)) {
+      const props = Object.keys((tool as unknown as { inputSchema?: { properties?: Record<string, unknown> } }).inputSchema?.properties ?? {});
+      if (name !== 'resolve_folio_url') expect(props.filter((p) => /^(url|embedCode|href|uri)$/i.test(p)), name).toEqual([]);
+    }
     // `search` / `fetch` are the ChatGPT-named MCP wrappers; the assistant has search_pages / read_page instead, in either mode.
     const askNames = Object.keys((await tools(bob, 'ask')).tools);
     expect(askNames).not.toContain('search');
@@ -357,6 +368,21 @@ describe('assistant tools only return what the user may read (real PG, in-proces
     // Ask mode reads tags and properties but offers no tool that edits them or a base.
     for (const name of ['list_tags', 'list_properties']) expect(askNames).toContain(name);
     for (const name of ['rename_tag', 'set_page_properties', 'save_base']) expect(askNames).not.toContain(name);
+  });
+
+  it('the assistant publishes an artifact from html it wrote, and a `url` or `embedCode` it sends anyway is dropped, never fetched', async () => {
+    const t = await tools(alice, 'agent');
+    const html = `<!doctype html><html><head><title>Assistant dash ${stamp}</title></head><body><h1>Hello ${stamp}</h1></body></html>`;
+    const out = await call(t, 'publish_artifact', { space: slugA, html, url: 'http://127.0.0.1:9/should-never-be-fetched.html', embedCode: '<iframe src="https://example.invalid/x"></iframe>' });
+    expect(out.isError, out.text).toBe(false);
+    const created = JSON.parse(out.text) as { id: string; created: boolean };
+    expect(created.created).toBe(true);
+    const read = await call(t, 'read_page', { id: created.id });
+    expect((JSON.parse(read.text) as { kind: string }).kind).toBe('artifact');
+    expect(read.text).toContain(`Hello ${stamp}`);
+    // Ask mode never gets it, and a viewer cannot publish.
+    expect(Object.keys((await tools(alice, 'ask')).tools)).not.toContain('publish_artifact');
+    expect((await call(await tools(carol, 'agent'), 'publish_artifact', { space: slugA, html })).isError).toBe(true);
   });
 
   it('Ask offers exactly the read tools and Agent adds exactly the write tools: one list (MCP_WRITE_TOOL_NAMES), forms, tables, bases and board_ops included', async () => {
@@ -407,6 +433,7 @@ describe('assistant tools only return what the user may read (real PG, in-proces
     // The builders' skills ship too: forms (create_form/update_form) and bases (save_base syntax with an example).
     expect((await call(t, READ_SKILL_TOOL, { name: 'folio-forms' })).text).toContain('create_form');
     expect((await call(t, READ_SKILL_TOOL, { name: 'folio-bases' })).text).toContain('save_base');
+    expect((await call(t, READ_SKILL_TOOL, { name: 'folio-artifacts' })).text).toContain('publish_artifact');
     for (const name of ['../../../.env', '/etc/passwd', 'folio-mcp/../folio-tables', '..', '', 'FOLIO-MCP']) {
       const out = await call(t, READ_SKILL_TOOL, { name });
       expect(out.isError, name).toBe(true);

@@ -19,6 +19,7 @@ file:
 | Office | `*.docx`, `*.xlsx`, `*.pptx` | no, view only |
 | Obsidian canvas | `*.canvas` (JSON Canvas 1.0) | no, view only; can be converted into a whiteboard |
 | Obsidian base | `*.base` (Bases YAML) | yes: views and filters are configured, a row's properties are edited in the cells |
+| Artifact | `<name>.artifact/` (a folder with `index.html`) | no, replaced as a whole; interactive, in a sandboxed frame |
 
 PostgreSQL stores the index, access rights, the activity history and the state
 of collaborative editing — but not the content itself. Any page can be read
@@ -201,6 +202,50 @@ plain text, text longer than its card is cut, note cards become a title with a
 link, images over 1.5 MB (4 MB together) become linked cards, audio, video and
 web page cards become links, group background images and nesting are dropped,
 curved connections become right-angled arrows. The canvas itself always stays.
+
+**Artifacts.** An artifact is an interactive page made by an agent: a Claude
+artifact, a Cursor canvas or any self-contained HTML page (kind `artifact`). It
+is a folder `<name>.artifact/` in the space's repository, shown as a page in the
+tree: `index.html` (what is rendered), `artifact.yaml` (type, origin, the
+capabilities the page expects and its properties, which the Properties panel
+edits), the original source such as JSX or TSX kept as sent, and `assets/`. A
+`.artifact` folder with an `index.html` and no manifest is an artifact too. The title and
+icon come from the manifest.
+
+- **Safe by construction.** The page runs in an iframe with the `sandbox`
+  attribute and without `allow-same-origin`, so it has no cookies, no Folio API
+  and no access to the page around it. Its files come from `/art/<token>/…`: the
+  token is signed, tied to the page and the reader and valid for 12 hours, and
+  the response carries a `sandbox` Content-Security-Policy. Scripts, styles and
+  fonts load only from `cdnjs.cloudflare.com`, `cdn.jsdelivr.net`, `unpkg.com`,
+  `cdn.tailwindcss.com`, `code.jquery.com`, `esm.sh` and Google Fonts; `fetch`
+  to other hosts is blocked, so data must be inlined or shipped as files of the
+  bundle.
+- **State persists.** A small host bridge gives the page `window.storage` (the
+  Claude artifact API: `get`, `set`, `delete`, `list`, string values, personal or
+  `shared`) and a working `localStorage`. For a signed-in reader it is stored in
+  the database, for a guest of a share link or a public site in the browser.
+  Limits: a key up to 200 characters, a value up to 256 KB, 5 MB per reader and
+  page, 5 MB shared.
+- **Import.** "Artifact…" in the "+" menu: a link to an `.html`, `.zip`, `.svg`
+  or `.md` file (downloaded with SSRF protection, up to 20 MB), a file from your
+  computer, or pasted HTML; a Claude "Get embed code" `<iframe>` becomes an embed
+  artifact. A ZIP is limited to 500 files and 50 MB unpacked. Links to claude.ai,
+  claude.site and Cursor shares are never downloaded; Folio says to publish through
+  MCP instead.
+- **Publish over MCP.** `publish_artifact` (editor role, `write` token) creates
+  an artifact under `parentPath` or, with `id`, replaces one, keeping its id,
+  path, properties, title and icon. It takes one self-contained `html`, or
+  `text` for `svg` / `markdown` / `mermaid` (Folio wraps it), extra `files`
+  (UTF-8 or base64), `sourceCode`, a direct `url`, an `embedCode`, the `origin`
+  and `sourceUrl` of the original, `capabilities` and `properties`.
+  `read_page` returns the manifest, the file list and the entry HTML. See
+  [MCP.md](MCP.md#publish_artifact).
+- **On the page.** "Show source", "Download .zip", replace, and a "works
+  partially" note when the page expects Claude calls, network access or
+  connectors that Folio does not provide. Artifacts are in the tree, quick
+  switcher, search (`kind:artifact`), properties and tags, the trash, Git history,
+  copy and move, share links and public sites.
 
 **Obsidian Bases (`.base`).** A base from an Obsidian vault is a page of its own
 in the tree (kind `base`). It is not storage but a **query**: the file holds
@@ -770,10 +815,10 @@ work continues; come back and read on from where it stopped.
 ## 12. Integration for external tools (MCP)
 
 The `/mcp` endpoint with a personal access token (`folio_pat_…`), scopes
-`read` and `write`. 40 tools: listing spaces and trees, reading a page,
+`read` and `write`. 41 tools: listing spaces and trees, reading a page,
 search (plus `search` and `fetch` for ChatGPT deep research), creating and updating pages, resolving a Folio link, backlinks
 with context, a page's metadata (outline, tags, properties, links), a space's
-unresolved links and orphan pages, the link graph of a space or a page's neighbourhood, the rows of an Obsidian base (and creating or replacing one), a space's tags and property keys, renaming a tag across a space, setting a page's properties, history and reading a page at a given
+unresolved links and orphan pages, the link graph of a space or a page's neighbourhood, the rows of an Obsidian base (and creating or replacing one), publishing an interactive artifact, a space's tags and property keys, renaming a tag across a space, setting a page's properties, history and reading a page at a given
 commit, working with whiteboards (and converting an Obsidian canvas into one), a full set of operations on data tables (rows, columns, views), and building forms with the table their answers go to.
 See [MCP.md](MCP.md).
 

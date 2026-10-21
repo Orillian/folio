@@ -1,0 +1,93 @@
+{
+  "loading": "Завантаження…",
+  "frameTitle": "{{title}} (артефакт)",
+  "empty": "В артефакта немає сторінки для показу.",
+  "emptyHint": "Замініть його новим імпортом або опублікуйте ще раз із Claude чи Cursor.",
+  "source": {
+    "claude": "З Claude",
+    "cursor": "З Cursor",
+    "url": "З посилання",
+    "upload": "Завантажений файл",
+    "other": "Джерело",
+    "openOriginal": "Відкрити оригінал"
+  },
+  "toolbar": {
+    "fullscreen": "На весь екран",
+    "exitFullscreen": "Вийти з повного екрана",
+    "openInTab": "Відкрити в новій вкладці",
+    "download": "Завантажити .zip",
+    "showSource": "Показати вихідний код",
+    "replace": "Замінити…"
+  },
+  "partial": "Працює частково: {{what}} у Folio недоступні.",
+  "capability": {
+    "claude": "виклики Claude",
+    "network": "мережеві запити",
+    "connectors": "конектори",
+    "storage": "сховище"
+  },
+  "warningsTitle": "Примітки до цього артефакта ({{count}})",
+  "sourceDialog": {
+    "title": "Вихідний код: {{name}}",
+    "loading": "Завантаження вихідного коду…",
+    "failed": "Не вдалося завантажити вихідний код.",
+    "copy": "Копіювати",
+    "copied": "Скопійовано"
+  },
+  "import": {
+    "title": "Артефакт",
+    "replaceTitle": "Замінити артефакт",
+    "name": "Назва",
+    "namePlaceholder": "Із сторінки, якщо порожньо",
+    "location": "Розташування",
+    "rootLabel": "Корінь простору",
+    "tabs": {
+      "link": "Посилання",
+      "file": "Файл",
+      "paste": "Вставити HTML"
+    },
+    "link": {
+      "label": "Посилання або embed-код",
+      "placeholder": "https://… або <iframe src=\"…\"></iframe>",
+      "hint": "Пряме посилання на файл .html, .zip, .svg чи .md завантажується копією. Для артефакта Claude вставте його embed-код (Поділитися → Get embed code)."
+    },
+    "file": {
+      "label": "Файл",
+      "hint": ".html, .htm, .zip, .svg або .md. У .zip має бути index.html (або artifact.yaml) у корені.",
+      "choose": "Обрати файл…",
+      "none": "Файл не обрано"
+    },
+    "paste": {
+      "label": "HTML",
+      "placeholder": "<!doctype html>…"
+    },
+    "mcpHint": "У Claude чи Cursor з підключеним Folio MCP скажіть «опублікуй цей артефакт у Folio».",
+    "create": "Імпортувати",
+    "creating": "Імпорт…",
+    "replace": "Замінити",
+    "replacing": "Заміна…",
+    "cancel": "Скасувати",
+    "created": "Артефакт імпортовано",
+    "replaced": "Артефакт замінено",
+    "nothingToImport": "Спершу додайте посилання, файл або HTML.",
+    "useMcp": {
+      "title": "Folio не завантажує сторінки claude.ai чи Cursor",
+      "body": "Умови Anthropic не дозволяють копіювати спільні артефакти. Є два шляхи:",
+      "optionEmbed": "У Claude відкрийте артефакт, оберіть Поділитися → Get embed code і вставте код на вкладці «Посилання».",
+      "optionMcp": "У Claude чи Cursor з підключеним Folio MCP попросіть:",
+      "prompt": "Опублікуй цей артефакт у Folio",
+      "copy": "Копіювати запит",
+      "copied": "Скопійовано"
+    },
+    "errors": {
+      "badUrl": "Це посилання не вдалося завантажити: потрібна публічна адреса http(s), що відповідає вчасно.",
+      "tooLarge": "Завелике для імпорту.",
+      "tooManyFiles": "В архіві забагато файлів.",
+      "badZip": "Архів не вдалося прочитати, або в його корені немає index.html чи artifact.yaml.",
+      "badPath": "Один із файлів пакета має небезпечний шлях.",
+      "noEntry": "Нема сторінки для показу: додайте HTML-сторінку.",
+      "unsupportedType": "Такий тип файлу не підтримується.",
+      "generic": "Не вдалося імпортувати артефакт."
+    }
+  }
+}

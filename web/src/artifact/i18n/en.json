@@ -1,0 +1,93 @@
+{
+  "loading": "Loading…",
+  "frameTitle": "{{title}} (artifact)",
+  "empty": "This artifact has no page to show.",
+  "emptyHint": "Replace it with a new import, or publish it again from Claude or Cursor.",
+  "source": {
+    "claude": "From Claude",
+    "cursor": "From Cursor",
+    "url": "From a link",
+    "upload": "Uploaded file",
+    "other": "Source",
+    "openOriginal": "Open the original"
+  },
+  "toolbar": {
+    "fullscreen": "Fullscreen",
+    "exitFullscreen": "Exit fullscreen",
+    "openInTab": "Open in new tab",
+    "download": "Download .zip",
+    "showSource": "Show source",
+    "replace": "Replace…"
+  },
+  "partial": "Works partially: {{what}} are not available in Folio.",
+  "capability": {
+    "claude": "calls to Claude",
+    "network": "network requests",
+    "connectors": "connectors",
+    "storage": "storage"
+  },
+  "warningsTitle": "Notes about this artifact ({{count}})",
+  "sourceDialog": {
+    "title": "Source: {{name}}",
+    "loading": "Loading the source…",
+    "failed": "Could not load the source.",
+    "copy": "Copy",
+    "copied": "Copied"
+  },
+  "import": {
+    "title": "Artifact",
+    "replaceTitle": "Replace the artifact",
+    "name": "Title",
+    "namePlaceholder": "Taken from the page if empty",
+    "location": "Location",
+    "rootLabel": "Space root",
+    "tabs": {
+      "link": "Link",
+      "file": "File",
+      "paste": "Paste HTML"
+    },
+    "link": {
+      "label": "Link or embed code",
+      "placeholder": "https://… or <iframe src=\"…\"></iframe>",
+      "hint": "A direct link to an .html, .zip, .svg or .md file is downloaded as a copy. For a Claude artifact, paste its embed code (Share → Get embed code)."
+    },
+    "file": {
+      "label": "File",
+      "hint": ".html, .htm, .zip, .svg or .md. A .zip needs index.html (or artifact.yaml) at its root.",
+      "choose": "Choose a file…",
+      "none": "No file chosen"
+    },
+    "paste": {
+      "label": "HTML",
+      "placeholder": "<!doctype html>…"
+    },
+    "mcpHint": "In Claude or Cursor with the Folio MCP connected, say “publish this artifact to Folio”.",
+    "create": "Import",
+    "creating": "Importing…",
+    "replace": "Replace",
+    "replacing": "Replacing…",
+    "cancel": "Cancel",
+    "created": "Artifact imported",
+    "replaced": "Artifact replaced",
+    "nothingToImport": "Add a link, a file or some HTML first.",
+    "useMcp": {
+      "title": "Folio does not download claude.ai or Cursor pages",
+      "body": "Anthropic’s terms do not allow copying shared artifacts. Two ways to bring it in:",
+      "optionEmbed": "In Claude open the artifact, choose Share → Get embed code, and paste the code into the Link tab.",
+      "optionMcp": "In Claude or Cursor with the Folio MCP connected, ask:",
+      "prompt": "Publish this artifact to Folio",
+      "copy": "Copy the request",
+      "copied": "Copied"
+    },
+    "errors": {
+      "badUrl": "That link could not be downloaded: it must be a public http(s) address that answers in time.",
+      "tooLarge": "That is too large to import.",
+      "tooManyFiles": "The archive has too many files.",
+      "badZip": "The archive could not be read, or has no index.html or artifact.yaml at its root.",
+      "badPath": "A file in the bundle has an unsafe path.",
+      "noEntry": "There is no page to show: add an HTML page.",
+      "unsupportedType": "This kind of file is not supported.",
+      "generic": "Could not import the artifact."
+    }
+  }
+}

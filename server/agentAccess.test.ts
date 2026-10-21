@@ -54,6 +54,9 @@ describe('.agent — admin-only pages (owner spec, 21.09.2026)', () => {
     const editorAllowed = await session.readablePageIds(editor, space.slug);
     expect(adminAllowed.has(meta.id)).toBe(true);
     expect(editorAllowed.has(meta.id)).toBe(false);
+    // A role the route already resolved (requireSpaceRole) gives the same sets without another membership lookup.
+    expect(await session.readablePageIds(admin, space.slug, await session.effectiveRole(admin, space.slug))).toEqual(adminAllowed);
+    expect(await session.readablePageIds(editor, space.slug, await session.effectiveRole(editor, space.slug))).toEqual(editorAllowed);
 
     const adminTree = await storage.getTree(space.slug, adminAllowed);
     const editorTree = await storage.getTree(space.slug, editorAllowed);

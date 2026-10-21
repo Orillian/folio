@@ -39,7 +39,7 @@ import { canReadTrashedTarget, MemberCache, resolveRestoredAccess } from './acce
 import { getTrashRoot } from './paths.js';
 import * as propsSidecar from '../propsSidecar.js';
 
-const TRASH_KINDS: TrashKind[] = ['doc', 'board', 'table', 'pdf', 'office', 'form', 'canvas', 'base', 'folder', 'space'];
+const TRASH_KINDS: TrashKind[] = ['doc', 'board', 'table', 'pdf', 'office', 'form', 'canvas', 'base', 'artifact', 'folder', 'space'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface TrashRow {
@@ -79,7 +79,7 @@ async function isDirectory(p: string): Promise<boolean> {
 }
 
 /** The leaf page kinds a shape-(2) sibling children directory can ride along with (see restorePageItem) — never 'folder' (that's the whole-directory shape, handled as a single unit already) or 'space'. */
-const LEAF_TRASH_KINDS = new Set<TrashKind>(['doc', 'board', 'table', 'pdf', 'office', 'form', 'canvas', 'base']);
+const LEAF_TRASH_KINDS = new Set<TrashKind>(['doc', 'board', 'table', 'pdf', 'office', 'form', 'canvas', 'base', 'artifact']);
 
 // ---------------------------------------------------------------------------
 // Visibility scope
@@ -268,7 +268,7 @@ export async function listTrash(actor: User, filters: TrashListFilters = {}): Pr
 // ---------------------------------------------------------------------------
 
 /** Page-file extensions, longest-suffix first — `.table.md` must be stripped whole before plain `.md` gets a chance (same trap storage.titleFallback documents). */
-const PAGE_EXTS = ['.table.md', '.excalidraw.svg', '.pdf', '.docx', '.xlsx', '.pptx', '.md'];
+const PAGE_EXTS = ['.table.md', '.excalidraw.svg', '.pdf', '.docx', '.xlsx', '.pptx', '.md', '.artifact'];
 
 function splitRelExt(rel: string): { base: string; ext: string } {
   const lower = rel.toLowerCase();
@@ -378,7 +378,8 @@ async function restorePageItem(actor: User, row: TrashRow): Promise<TrashRestore
     // files") — pin the trashed page's id to where it lands so the rescan
     // gives it back.
     const lowerDest = destAbs.toLowerCase();
-    if (row.page_id && (lowerDest.endsWith('.pdf') || officeFormat(lowerDest))) storage.claimPageId(destAbs, row.page_id);
+    // An artifact bundle (a folder) carries no id either.
+    if (row.page_id && (lowerDest.endsWith('.pdf') || officeFormat(lowerDest) || row.kind === 'artifact')) storage.claimPageId(destAbs, row.page_id);
     // Light footprint: the docs (and file pages) of the item carry no id either.
     claimTrashedIds(row, spaceRoot, restoredPathMapper(row, destRel));
     await fs.rename(srcAbs, destAbs);

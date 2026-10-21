@@ -77,6 +77,8 @@ export function extensionForKind(kind: PageKind, path?: string): string {
   if (kind === 'pdf') return '.pdf';
   if (kind === 'canvas') return '.canvas';
   if (kind === 'base') return '.base';
+  // An artifact is a DIRECTORY `<slug>.artifact` (a bundle), not a file: its path carries no file extension of its own.
+  if (kind === 'artifact') return '.artifact';
   if (kind === 'office') {
     const fmt = path ? officeFormat(path) : undefined;
     return `.${fmt ?? 'docx'}`;
@@ -90,6 +92,7 @@ export function newPageTitleKey(kind: PageKind): string {
   if (kind === 'table') return 'sidebar.newTable';
   if (kind === 'form') return 'sidebar.newForm';
   if (kind === 'base') return 'sidebar.newBase';
+  if (kind === 'artifact') return 'sidebar.newArtifact';
   return 'sidebar.newPage';
 }
 

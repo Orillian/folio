@@ -25,7 +25,7 @@ and a directory of Git repositories.
 | Storage | Holds | Can it be rebuilt? |
 |---|---|---|
 | Git repositories (`data/repos/<space>/`) | All page content | It is the source |
-| PostgreSQL | Accounts, access rights, sessions, tokens, the search index, page order for file pages, collaborative-editing snapshots (and with them whiteboard reactions), backups of live text the server replaced, trash records, notifications, the publishing settings of public sites, shared AI keys (encrypted), assistant conversations and analytics | The index — yes, by scanning the files. The rest — no |
+| PostgreSQL | Accounts, access rights, sessions, tokens, the search index, page order for file pages, collaborative-editing snapshots (and with them whiteboard reactions), backups of live text the server replaced, trash records, notifications, the publishing settings of public sites, shared AI keys (encrypted), assistant conversations and analytics, the per-reader state of artifacts (`artifact_state`) | The index — yes, by scanning the files. The rest — no |
 | Redis | The sign-in rate limit, locks, presence | Transient by design |
 | Asset store (local disk or S3) | Uploaded images and attachments, addressed by content hash | No |
 
@@ -44,6 +44,7 @@ endpoints. A restart resets them, and a second process would count on its own.
 | Form | `*.form.md` | Paired one to one with a data table |
 | PDF | `*.pdf` | View only. Never written to by Folio |
 | Office | `*.docx`, `*.xlsx`, `*.pptx` | View only, rendered in the browser |
+| Artifact | `<name>.artifact/` (a folder) | Replaced as a whole, never edited in Folio. One page, however many files are inside |
 
 A page with children takes one of two shapes: `X/index.md`, or `X.md` with a
 folder `X/` next to it. Every operation that moves, renames, deletes or
@@ -86,6 +87,51 @@ extension differs, the last part of the path change.
 - Restore of a file page goes through the same replace path (message
   `files: restore <path> to <sha7>`), so it is one more commit and also puts
   the old extension back.
+
+### Artifacts
+
+An artifact (`kind: "artifact"`) is an interactive page made by an agent: a
+Claude artifact, a Cursor canvas, any self-contained HTML. Code: `server/artifact/`
+(routes, serving, import, manifest, state, signed tokens) and `web/src/artifact/`
+(view, import dialog, host bridge); migration 051 adds the kind and the
+`artifact_state` table.
+
+- **One folder is one page.** `<slug>.artifact/` holds `index.html`, an optional
+  `artifact.yaml` (type, entry, source, capabilities; every other top-level key is
+  a page property, read and written by the Properties panel straight in the
+  manifest), the original source and `assets/`. The scan indexes the folder as a
+  single page and never walks into it: nothing inside is a page or a space file,
+  and a `.md` inside is not a page. The id is pinned to the path in the index.
+  Rename, move, copy and trash are operations on the whole folder. A folder with an
+  `index.html` and no manifest is still an artifact (no files are added to someone
+  else's repository).
+- **The frame is the security boundary.** The page is an iframe with `sandbox`
+  and without `allow-same-origin`, so its origin is opaque: no cookies, no Folio
+  API. `GET /art/<token>/<path>` is registered outside the session scope; the
+  HMAC token (page, reader, 12 hours) is the whole credential and is minted into
+  the page payload only for people who may read the page (session, share link,
+  public site). Every response carries a `sandbox` Content-Security-Policy and
+  the CDN allowlist; `connect-src` is `'self'` plus those CDNs, so an artifact
+  cannot call other hosts. `ARTIFACTS_ORIGIN` (optional, not wired into the
+  Compose files) moves the frames to a separate origin. Never add
+  `allow-same-origin`, and never serve bundle files from a route that reads the
+  session.
+- **The host bridge** is inlined into the entry page: `window.storage` in the
+  Claude artifact shape, a synchronous `localStorage` polyfill backed by memory
+  (the browser forbids the real one in an opaque origin), and a `window.claude`
+  stub that rejects. All traffic is `postMessage` to the parent, which checks
+  `event.source`. The parent keeps the state: in the database for a signed-in
+  reader (personal and shared), in the browser's `localStorage` for a guest
+  (shared is read only).
+- **Import** (`server/artifact/import.ts`): link, file or pasted HTML in the web
+  app; `publish_artifact` over MCP. A link is downloaded only if it is a direct
+  `https` file: http(s) only, private, loopback and link-local addresses refused
+  after resolving, three redirects with the same check, 15 s, 20 MB. Share links
+  of claude.ai, claude.site and Cursor are never fetched. ZIPs refuse `..`,
+  absolute paths and symlinks and are capped at 500 files and 50 MB unpacked.
+  Replacing keeps the id, properties, title and icon.
+- Folio does not compile JSX or TSX. That is deliberate for now: agents build the
+  page, Folio shows it.
 
 ### Page templates
 
@@ -417,7 +463,7 @@ PostgreSQL, not in Git.
 
 ### Agents
 
-- **MCP** at `/mcp`, 40 tools, each with explicit `title` and
+- **MCP** at `/mcp`, 41 tools, each with explicit `title` and
   `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`
   annotations, plus a short `instructions` text on `initialize`. `search` and `fetch` are read-only twins of `search_pages` and `read_page` with the same access rules; they exist because ChatGPT deep research and company knowledge only accept tools with exactly those names. Ready-made client setups live in `integrations/` (placeholders only), and `.claude-plugin/marketplace.json` makes the Claude Code plugin installable from this repository. It accepts a
   personal access token (`folio_pat_…`) or an OAuth access token
@@ -596,6 +642,11 @@ PostgreSQL, not in Git.
 - `_templates/` never leaks: not into the page tree, graph, tags, bases, public
   sites, and not into the public page set. A new place that lists pages has to
   skip it, and the sidebar "Templates" section stays the one exception.
+
+- An artifact's frame must stay an opaque origin and `/art/…` must stay
+  independent of the session: a bundle is code written by a stranger or an agent.
+  A change that lets it read a cookie, call `/api/…` or load an arbitrary host
+  breaks the model.
 
 ## Lessons that cost something
 
@@ -780,6 +831,10 @@ Each of these was a real defect. They are here so that nobody pays twice.
   edits; it cannot tell a dropped connection from a role that does not allow
   editing, so its hint mentions both.
 - Assets are not carried along when a space's repository is moved.
+- Artifacts: no JSX or TSX runtime, no comments, no version list in the interface
+  (Git has them); the Claude API inside a page is a stub and network calls are
+  blocked; search sees the visible text of the entry page, not what scripts draw;
+  claude.ai and Cursor share links are not fetched (publish over MCP instead).
 - OAuth: signing in with Google during the consent step returns to `/`, so the
   person repeats "Connect"; its rate limits live in process memory, not Redis;
   a client's metadata document is cached for an hour; no connector has been

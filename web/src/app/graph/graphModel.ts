@@ -116,7 +116,7 @@ export function sanitizeSettings(raw: unknown): GraphSettings {
   };
 }
 
-const PAGE_KINDS = new Set<GraphNodeKind>(['doc', 'board', 'folder', 'table', 'pdf', 'office', 'form', 'canvas', 'base']);
+const PAGE_KINDS = new Set<GraphNodeKind>(['doc', 'board', 'folder', 'table', 'pdf', 'office', 'form', 'canvas', 'base', 'artifact']);
 export const isPageNode = (n: Pick<GraphNode, 'kind'>): boolean => PAGE_KINDS.has(n.kind);
 
 /** A node matcher for a search-grammar query, or null when the query asks for nothing. */
@@ -162,6 +162,7 @@ export const KIND_COLORS: Record<GraphNodeKind, string> = {
   office: '#06b6d4',
   canvas: '#84cc16',
   base: '#8b5cf6',
+  artifact: '#f43f5e',
   folder: NEUTRAL,
   tag: '#65a30d',
   file: '#a855f7',

@@ -3,7 +3,7 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Bookmark, BookmarkPlus, CircleHelp, ClipboardList, Clock, FileSpreadsheet, FileText, FileType2, Folder, LayoutDashboard, RefreshCw, Search, SunMoon, Table2, Waypoints, X, Database } from 'lucide-react';
+import { Bookmark, BookmarkPlus, CircleHelp, ClipboardList, Clock, FileSpreadsheet, FileText, FileType2, Folder, LayoutDashboard, RefreshCw, Search, SunMoon, Table2, Waypoints, X, Database, AppWindow } from 'lucide-react';
 import type { PageKind, SavedSearch, SearchHit } from '@shared/contracts';
 import { isEmptySearchQuery, parseSearchQuery } from '@shared/searchQuery';
 import { api } from '../api';
@@ -71,6 +71,8 @@ function KindIcon({ kind }: { kind: PageKind | undefined }) {
       return <Waypoints {...props} />;
     case 'base':
       return <Database {...props} />;
+    case 'artifact':
+      return <AppWindow {...props} />;
     case 'folder':
       return <Folder {...props} />;
     default:

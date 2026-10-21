@@ -38,7 +38,32 @@ const MAX_TOOL_RESPONSE_CHARS = 120_000;
  * with exactly those names; they are thin wrappers over `search_pages` / `read_page` (same checks), so the model
  * would get duplicates, and a bare `fetch` reads like a web fetch to a model that has no URL tool.
  */
-const MCP_ONLY_TOOL_NAMES = new Set(['search', 'fetch']);
+export const MCP_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set(['search', 'fetch']);
+
+/**
+ * `publish_artifact` (21.10.2026) is offered to the assistant, but without the inputs that make Folio fetch something
+ * from the network or take a foreign embed: `url` (Folio downloads it) and `embedCode` (an <iframe src> of someone
+ * else's page). The assistant is offered no tool that takes a URL; it publishes the `html` / `text` / `files` it wrote
+ * itself. The fields are removed from the schema the model sees AND dropped from the arguments before the call, so a
+ * model that sends them anyway still cannot make the server download anything.
+ */
+const ASSISTANT_STRIPPED_INPUTS: Readonly<Record<string, readonly string[]>> = { publish_artifact: ['url', 'embedCode'] };
+const ASSISTANT_STRIPPED_NOTE = '\n\nIn this assistant the `url` and `embedCode` inputs are not available: write the page yourself and send it as `html` (or `text` / `files`).';
+
+function stripInputs(toolName: string, args: unknown): unknown {
+  const stripped = ASSISTANT_STRIPPED_INPUTS[toolName];
+  if (!stripped || typeof args !== 'object' || args === null || Array.isArray(args)) return args;
+  return Object.fromEntries(Object.entries(args).filter(([key]) => !stripped.includes(key)));
+}
+
+function assistantInputSchema(tool: { name: string; inputSchema: unknown }): Record<string, SDKJsonValue> {
+  const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] } & Record<string, unknown>;
+  const stripped = ASSISTANT_STRIPPED_INPUTS[tool.name];
+  if (!stripped || !schema.properties) return schema as unknown as Record<string, SDKJsonValue>;
+  const properties = Object.fromEntries(Object.entries(schema.properties).filter(([key]) => !stripped.includes(key)));
+  const required = schema.required?.filter((key) => !stripped.includes(key));
+  return { ...schema, properties, ...(required ? { required } : {}) } as unknown as Record<string, SDKJsonValue>;
+}
 
 /** Not offered to a public-site run at all (the MCP server refuses them for a public actor too): history shows authors and old revisions, and the property list shows properties, which a public site never does. */
 const NOT_ON_PUBLIC_SITE_TOOL_NAMES = new Set(['page_history', 'page_at_sha', 'list_properties']);
@@ -178,11 +203,11 @@ export async function buildAssistantTools(user: User, runMode: AssistantRunMode,
     if (runMode === 'ask' && MCP_WRITE_TOOL_NAMES.has(tool.name)) continue;
     if (publicSpace !== undefined && (MCP_WRITE_TOOL_NAMES.has(tool.name) || NOT_ON_PUBLIC_SITE_TOOL_NAMES.has(tool.name))) continue;
     tools[tool.name] = {
-      description: tool.description,
-      inputSchema: tool.inputSchema as unknown as Record<string, SDKJsonValue>,
+      description: ASSISTANT_STRIPPED_INPUTS[tool.name] ? `${tool.description ?? ''}${ASSISTANT_STRIPPED_NOTE}` : tool.description,
+      inputSchema: assistantInputSchema(tool),
       async execute(args) {
         try {
-          const result = await client.callTool({ name: tool.name, arguments: args });
+          const result = await client.callTool({ name: tool.name, arguments: stripInputs(tool.name, args) as Record<string, unknown> });
           const content = Array.isArray(result.content) ? (result.content as Array<{ type: string; text?: string }>) : [];
           const text = content.find((c) => c.type === 'text')?.text ?? '';
           const { truncated, body } = truncate(text);

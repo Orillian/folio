@@ -17,7 +17,9 @@ export const SERVER_PORT = 4870;
 // shown read-only and never written by Folio — see shared/canvas/** and
 // CanvasPayload below; "Convert to Folio board" makes a separate board from it.
 // Obsidian Bases (16.10.2026): 'base' is a `*.base` file — a view over the pages of the space (shared/bases/**).
-export const pageKindSchema = z.enum(['doc', 'board', 'folder', 'table', 'pdf', 'office', 'form', 'canvas', 'base']);
+// Artifacts (21.10.2026): 'artifact' is a `<slug>.artifact/` DIRECTORY (a bundle: artifact.yaml + an HTML entry +
+// assets) — a Claude artifact, a Cursor canvas or any self-contained HTML page; see docs/spec-artifacts.md.
+export const pageKindSchema = z.enum(['doc', 'board', 'folder', 'table', 'pdf', 'office', 'form', 'canvas', 'base', 'artifact']);
 export type PageKind = z.infer<typeof pageKindSchema>;
 
 /** The three formats a kind:'office' page can be — never a fourth. */
@@ -125,6 +127,12 @@ export const pageDocSchema = pageMetaSchema.extend({
    * Absent for every other kind.
    */
   formChoices: z.custom<Record<string, FormFieldChoices>>().optional(),
+  /**
+   * An artifact page (kind 'artifact'): its manifest and a signed `src` for the
+   * sandboxed iframe, minted for THIS reader (session, share link or public
+   * site). Absent for every other kind.
+   */
+  artifact: z.custom<ArtifactPayload>().optional(),
 });
 export type PageDoc = z.infer<typeof pageDocSchema>;
 
@@ -2055,7 +2063,7 @@ export interface SubtreeNode {
 // ---------- trash — DEV-PLAN "Round 27 — trash", normative ----------
 
 /** 'space' — a whole space was deleted (the root index.md); 'folder' — a directory with its subtree. */
-export type TrashKind = 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'folder' | 'space';
+export type TrashKind = 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'artifact' | 'folder' | 'space';
 
 export interface TrashItemInfo {
   id: string;
@@ -2866,3 +2874,182 @@ export interface SubmitFormResponse {
   ok: true;
   rowId: string;
 }
+
+// ---------- Artifacts (Claude artifacts, Cursor canvas, any HTML page), 21.10.2026 ----------
+// Spec: docs/spec-artifacts.md. A page of kind 'artifact' is a `<slug>.artifact/` directory:
+// `artifact.yaml` (optional manifest, ArtifactManifest) + an HTML entry (default index.html) +
+// any files it references by relative path. Folio never edits the bundle in place — it is
+// replaced whole (re-import, PUT below, MCP publish_artifact with an id).
+//
+//   POST /api/spaces/:space/artifacts      → ArtifactPublishResult (editor+; JSON ArtifactPublishBody,
+//                                             or multipart: `file` (.html/.htm/.zip/.svg/.md) + the
+//                                             scalar fields of ArtifactPublishBody as form fields)
+//   PUT  /api/pages/:id/artifact           → ArtifactPublishResult (editor+; same bodies, parentPath ignored)
+//   GET  /api/pages/:id/artifact/download  → application/zip of the bundle (viewer+)
+//   GET  /api/pages/:id/artifact/state     → ArtifactState (viewer+, signed-in only)
+//   PUT  /api/pages/:id/artifact/state     → ArtifactState (viewer+, signed-in only; body ArtifactStatePut)
+//   GET  /art/:token/*                     → a file of the bundle, sandbox CSP (token = ArtifactPayload.src)
+//   GET  /art/:token/__folio/bridge.js     → the host bridge script (injected into the entry's <head>)
+// MCP: publish_artifact (write; ArtifactPublishBody + `space`), read_page returns the manifest + entry text.
+// Errors: 422 { code: ArtifactErrorCode, message } for anything the import refuses.
+
+export const ARTIFACT_DIR_SUFFIX = '.artifact';
+export const ARTIFACT_MANIFEST_FILE = 'artifact.yaml';
+export const ARTIFACT_DEFAULT_ENTRY = 'index.html';
+/** Scripts/styles/fonts an artifact may load (CSP of /art) — the same CDNs Claude artifacts use, plus esm.sh. */
+export const ARTIFACT_CDN_ALLOWLIST = [
+  'https://cdnjs.cloudflare.com',
+  'https://cdn.jsdelivr.net',
+  'https://unpkg.com',
+  'https://cdn.tailwindcss.com',
+  'https://code.jquery.com',
+  'https://esm.sh',
+] as const;
+/** iframe sandbox tokens — never 'allow-same-origin' (the frame must stay an opaque origin). */
+export const ARTIFACT_IFRAME_SANDBOX =
+  'allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals allow-downloads';
+export const ARTIFACT_LIMITS = {
+  maxBundleBytes: 50 * 1024 * 1024,
+  maxFiles: 500,
+  maxUrlDownloadBytes: 20 * 1024 * 1024,
+  maxStateKeyChars: 200,
+  maxStateValueBytes: 256 * 1024,
+  maxStateTotalBytes: 5 * 1024 * 1024,
+  tokenTtlSeconds: 12 * 60 * 60,
+} as const;
+
+export const artifactTypeSchema = z.enum(['html', 'react', 'svg', 'markdown', 'mermaid', 'canvas-tsx', 'embed']);
+export type ArtifactType = z.infer<typeof artifactTypeSchema>;
+export const artifactOriginSchema = z.enum(['claude', 'cursor', 'url', 'upload', 'other']);
+export type ArtifactOrigin = z.infer<typeof artifactOriginSchema>;
+/** What an artifact expects from its host. Folio provides only 'storage'; the rest → "works partially" banner. */
+export const artifactCapabilitySchema = z.enum(['storage', 'claude', 'network', 'connectors']);
+export type ArtifactCapability = z.infer<typeof artifactCapabilitySchema>;
+
+/** Top-level keys of artifact.yaml that are NOT page properties. */
+export const ARTIFACT_RESERVED_KEYS = [
+  'folio', 'version', 'title', 'icon', 'type', 'entry', 'source', 'embed', 'capabilities',
+] as const;
+
+/** artifact.yaml after parsing (unknown non-reserved keys = page properties, kept verbatim). */
+export interface ArtifactManifest {
+  folio: 'artifact';
+  version: 1;
+  title?: string;
+  icon?: string;
+  type: ArtifactType;
+  /** Path inside the bundle; absent for type 'embed'. Default ARTIFACT_DEFAULT_ENTRY. */
+  entry?: string;
+  source?: {
+    origin?: ArtifactOrigin;
+    url?: string;
+    /** ISO timestamp. */
+    importedAt?: string;
+    /** The original source kept verbatim inside the bundle (e.g. source.jsx, dashboard.canvas.tsx). */
+    file?: string;
+  };
+  embed?: { url: string; height?: number };
+  capabilities?: ArtifactCapability[];
+}
+
+/** PageDoc.artifact — what the web needs to show the page, minted per reader. */
+export interface ArtifactPayload {
+  type: ArtifactType;
+  /** Entry path inside the bundle ('' for embed). */
+  entry: string;
+  /** Signed URL of the entry for the sandboxed iframe (absolute when ARTIFACTS_ORIGIN is set). Absent for embed or when the entry is missing. */
+  src?: string;
+  /** Third-party iframe URL for type 'embed'. */
+  embedUrl?: string;
+  embedHeight?: number;
+  source?: ArtifactManifest['source'];
+  capabilities: ArtifactCapability[];
+  /** Signed URL of source.file for "Show source" (same token), when present. */
+  sourceSrc?: string;
+  /** Files of the bundle (manifest excluded), sorted by path. */
+  files: Array<{ path: string; size: number }>;
+  /** Problems found while reading the bundle (no entry, bad manifest…), English, shown in a note. */
+  warnings: string[];
+  /** Whether this reader can persist state server-side (signed in with view access). Otherwise personal state lives in the parent's localStorage and shared state is read-only. */
+  stateServer: boolean;
+}
+
+export const artifactFileInputSchema = z.object({
+  /** Relative path inside the bundle; no `..`, no leading `/`, not artifact.yaml, not under __folio/. */
+  path: z.string().min(1).max(512),
+  content: z.string(),
+  encoding: z.enum(['utf8', 'base64']).default('utf8'),
+});
+export type ArtifactFileInput = z.infer<typeof artifactFileInputSchema>;
+
+export const artifactPublishBodySchema = z.object({
+  /** Folder from the space root for a NEW artifact ('' = root). Ignored on replace. */
+  parentPath: z.string().default(''),
+  /** Required for a new artifact unless it can be derived (html <title>, file name, URL). */
+  title: z.string().trim().min(1).max(200).optional(),
+  icon: z.string().max(16).optional(),
+  type: artifactTypeSchema.optional(),
+  /** The entry page as one HTML string (shortcut for files:[{path:'index.html', content: html}]). */
+  html: z.string().optional(),
+  /** Raw svg / markdown / mermaid text for those types — the server wraps it into index.html. */
+  text: z.string().optional(),
+  files: z.array(artifactFileInputSchema).max(500).optional(),
+  entry: z.string().max(512).optional(),
+  /** Original JSX/TSX (or any source) kept verbatim as `sourceFileName` (default source.jsx / source.canvas.tsx by type). */
+  sourceCode: z.string().optional(),
+  sourceFileName: z.string().max(200).optional(),
+  /** Import by link: a direct https URL (downloaded, SSRF-guarded) or a Claude embed URL / embed code (→ type 'embed'). */
+  url: z.string().max(4096).optional(),
+  /** Pasted `<iframe …>` embed code (Claude "Get embed code"). */
+  embedCode: z.string().max(8192).optional(),
+  origin: artifactOriginSchema.optional(),
+  /** Link to the original (e.g. the claude.ai share URL) — stored in source.url, never fetched. */
+  sourceUrl: z.string().max(4096).optional(),
+  capabilities: z.array(artifactCapabilitySchema).optional(),
+  /** Page properties written into artifact.yaml (non-reserved keys only). */
+  properties: z.record(z.string(), z.unknown()).optional(),
+});
+export type ArtifactPublishBody = z.infer<typeof artifactPublishBodySchema>;
+
+export interface ArtifactPublishResult {
+  page: PageMeta;
+  /** Non-fatal notes (e.g. "capabilities claude not available in Folio"). */
+  warnings: string[];
+}
+
+export type ArtifactErrorCode =
+  | 'useMcp'          // a claude.ai / Cursor share link: Folio does not scrape it — publish via MCP or paste embed code
+  | 'badUrl'          // not http(s), private address, too many redirects, timeout, HTTP error
+  | 'tooLarge'
+  | 'tooManyFiles'
+  | 'badZip'          // unreadable, unsafe path, no index.html / artifact.yaml
+  | 'badPath'
+  | 'noEntry'         // nothing to render
+  | 'unsupportedType';
+
+export interface ArtifactState {
+  personal: Record<string, string>;
+  shared: Record<string, string>;
+}
+export const artifactStatePutSchema = z.object({
+  shared: z.boolean().default(false),
+  key: z.string().min(1).max(200),
+  /** null deletes the key. */
+  value: z.string().nullable(),
+});
+export type ArtifactStatePut = z.infer<typeof artifactStatePutSchema>;
+
+/**
+ * postMessage protocol between the bridge inside the iframe and the Folio page.
+ * Every request carries a numeric `id`; the parent answers with the same id.
+ * The parent accepts messages only from its own iframe's contentWindow.
+ */
+export type ArtifactBridgeRequest =
+  | { folio: 'artifact'; id: number; op: 'init' }
+  | { folio: 'artifact'; id: number; op: 'get'; key: string; shared: boolean }
+  | { folio: 'artifact'; id: number; op: 'set'; key: string; value: string; shared: boolean }
+  | { folio: 'artifact'; id: number; op: 'delete'; key: string; shared: boolean }
+  | { folio: 'artifact'; id: number; op: 'list'; prefix: string; shared: boolean };
+export type ArtifactBridgeResponse =
+  | { folio: 'artifact'; id: number; ok: true; state?: ArtifactState; value?: string | null; keys?: string[] }
+  | { folio: 'artifact'; id: number; ok: false; error: string };

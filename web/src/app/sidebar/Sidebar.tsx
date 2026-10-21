@@ -27,6 +27,7 @@ import {
   Upload,
   Users,
   Database,
+  AppWindow,
 } from 'lucide-react';
 import type { PageKind, PageMeta } from '@shared/contracts';
 import { emptySearchQuery, formatSearchQuery } from '@shared/searchQuery';
@@ -124,6 +125,8 @@ export interface SidebarProps {
 
 // Obsidian Bases: the "New base" dialog (name, location, starting point) — lazy, its YAML writer stays out of the main chunk.
 import { NewBaseDialog, preloadNewBaseDialog } from '../../bases/lazyNewBase';
+// Artifacts: the import dialog (link / file / pasted HTML).
+import { ArtifactImportDialog } from '../../artifact/ArtifactImportDialog';
 
 /** Resizable (round 8 follow-up), collapsible (by the parent Shell) left sidebar: space switcher + page tree. */
 export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, onOpenSwitcher }: SidebarProps) {
@@ -142,6 +145,8 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
   const [publishing, setPublishing] = useState(false);
   // "New base" dialog: the directory it opens on (the current context, like every other «+» item), or null when closed.
   const [newBaseDir, setNewBaseDir] = useState<string | null>(null);
+  // "New artifact" dialog: same idea — the current-context directory, or null when closed.
+  const [newArtifactDir, setNewArtifactDir] = useState<string | null>(null);
   // Space setting: where pasted/uploaded images go (Folio storage vs. assets/ in the repository).
   const [editingImageStorage, setEditingImageStorage] = useState(false);
   const [editingScanSettings, setEditingScanSettings] = useState(false);
@@ -538,6 +543,18 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
                   >
                     {t('sidebar.newBase')}
                   </MenuItem>
+                  {/* Artifacts — a Claude artifact, Cursor canvas or any HTML page, imported from a link, a file or pasted HTML. */}
+                  <MenuItem
+                    icon={<AppWindow size={14} />}
+                    onSelect={() => {
+                      close();
+                      const cached = cachedPlusTargetDir();
+                      if (cached !== null) setNewArtifactDir(cached);
+                      else void currentPlusTargetDir().then(setNewArtifactDir, () => setNewArtifactDir(''));
+                    }}
+                  >
+                    {t('sidebar.newArtifact')}
+                  </MenuItem>
                   {/* Any kind of template from the space's _templates/ folder, picked in a dialog; same current-context target as the other items. */}
                   <MenuItem
                     icon={<LayoutTemplate size={14} />}
@@ -629,6 +646,7 @@ export function Sidebar({ space, desktopCollapsed, mobileOpen, onMobileClose, on
 
         {publishing && <PublishSpaceDialog space={space} onClose={() => setPublishing(false)} />}
         {newBaseDir !== null && <NewBaseDialog space={space} initialParentPath={newBaseDir} onClose={() => setNewBaseDir(null)} />}
+        {newArtifactDir !== null && <ArtifactImportDialog space={space} initialParentPath={newArtifactDir} onClose={() => setNewArtifactDir(null)} />}
         {templatePickerDir !== null && (
           <TemplatePickerDialog
             space={space}

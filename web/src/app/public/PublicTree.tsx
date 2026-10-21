@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, ClipboardList, Folder, LayoutDashboard, Presentation, Sheet, Table2, FileText, FileType2, Waypoints, Database } from 'lucide-react';
+import { ChevronRight, ClipboardList, Folder, LayoutDashboard, Presentation, Sheet, Table2, FileText, FileType2, Waypoints, Database, AppWindow } from 'lucide-react';
 import { officeFormat, type TreeNode } from '@shared/contracts';
 import { treeNodeDisplayTitle } from '../sidebar/treeUtils';
 import { publicPageUrl, type PublicSiteRef } from './publicSite';
@@ -32,6 +32,7 @@ function NodeIcon({ node }: { node: TreeNode }): ReactNode {
   if (node.kind === 'form') return <ClipboardList size={14} className="shrink-0 opacity-60" aria-hidden="true" />;
   if (node.kind === 'canvas') return <Waypoints size={14} className="shrink-0 opacity-60" aria-hidden="true" />;
   if (node.kind === 'base') return <Database size={14} className="shrink-0 opacity-60" aria-hidden="true" />;
+  if (node.kind === 'artifact') return <AppWindow size={14} className="shrink-0 opacity-60" aria-hidden="true" />;
   if (node.kind === 'office') {
     const format = officeFormat(node.path);
     if (format === 'xlsx') return <Sheet size={14} className="shrink-0 opacity-60" aria-hidden="true" />;

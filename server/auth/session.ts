@@ -162,10 +162,16 @@ export async function effectivePageRole(user: User, entry: PageIndexEntry): Prom
   return pageAccess.effectivePageRole(user, entry, await effectiveRole(user, entry.space));
 }
 
-export async function readablePageIds(user: User, space: string): Promise<Set<string>> {
-  if (!(await effectiveRole(user, space))) return new Set();
+/**
+ * `knownRole` is the caller's effectiveRole in `space` when the route already resolved it (requireSpaceRole returns
+ * it) — saves repeating the membership lookup. Space-admin-ness is derived from that one role: 'admin' only ever comes
+ * from an explicit membership (the implicit grant is 'viewer'), so this equals canAdministerSpace without its own query.
+ */
+export async function readablePageIds(user: User, space: string, knownRole?: SpaceRole): Promise<Set<string>> {
+  const role = knownRole ?? (await effectiveRole(user, space));
+  if (!role) return new Set();
   if (isSystemUser(user)) return publicReadablePageIds(space);
-  return pageAccess.readablePageIds(user.id, space, await canAdministerSpace(user, space));
+  return pageAccess.readablePageIds(user.id, space, user.isAdmin || role === 'admin');
 }
 
 /**

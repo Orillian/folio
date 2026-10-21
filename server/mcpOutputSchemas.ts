@@ -16,7 +16,7 @@ export const pageMetaOutput = z.looseObject({
   id: z.string().describe('Page id'),
   space: z.string().describe('Space slug the page belongs to'),
   path: z.string().describe('Path relative to the space root'),
-  kind: z.string().describe('Page kind: doc, board, table, form, base, canvas, pdf or office'),
+  kind: z.string().describe('Page kind: doc, board, table, form, base, canvas, artifact, pdf or office'),
   title: z.string().describe('Page title'),
   order: z.number().describe('Position among its siblings'),
   status: z.string().describe('Page status'),
@@ -127,6 +127,17 @@ export const outputSchemas = {
     outline: z.string().optional().describe('Obsidian canvas pages (kind "canvas"): a readable Markdown outline — groups with their cards (text, notes, files, links; geometry and colour), then the connections. Read-only'),
     form: formOutput.optional().describe('Form pages (kind "form"): settings, fields and the paired table'),
     etag: z.string().optional().describe('Form pages: pass it to update_form'),
+    artifact: z
+      .looseObject({
+        manifest: z.looseObject({}).describe('artifact.yaml as read: type, title, icon, entry, source, embed, capabilities'),
+        properties: z.record(z.string(), z.unknown()).describe('Page properties (the manifest\'s own keys)'),
+        files: z.array(z.looseObject({ path: z.string(), size: z.number() })).describe('Files of the artifact'),
+        warnings: z.array(z.string()),
+        entryTruncated: z.boolean().describe('True when entryHtml was cut'),
+      })
+      .optional()
+      .describe('Artifact pages (kind "artifact"): an interactive HTML page; replace it with publish_artifact'),
+    entryHtml: z.string().optional().describe('Artifact pages: the HTML of the entry page'),
   },
   page: pageMetaOutput.shape,
   board_ops: {
@@ -357,5 +368,14 @@ export const outputSchemas = {
   convert_canvas_to_board: {
     board: pageMetaOutput.describe('The new board page'),
     report: z.looseObject({ losses: z.array(z.looseObject({ code: z.string(), count: z.number() })).describe('What the board could not carry over, by kind') }).describe('What the conversion lost'),
+  },
+  publish_artifact: {
+    id: z.string().describe('Page id of the artifact'),
+    space: z.string(),
+    path: z.string().describe('Path of the artifact folder (<slug>.artifact) relative to the space root'),
+    title: z.string().describe('Page title'),
+    created: z.boolean().describe('True when a new artifact was created, false when an existing one was replaced'),
+    url: z.string().describe('Link to the page in Folio'),
+    warnings: z.array(z.string()).describe('Non-fatal notes (e.g. a capability Folio does not provide)'),
   },
 } as const;

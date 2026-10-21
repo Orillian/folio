@@ -4,7 +4,7 @@ Skills in the open [Agent Skills](https://agentskills.io) format (`SKILL.md` wit
 
 | Skill | What it does |
 |---|---|
-| [folio-wiki](folio-wiki/SKILL.md) | Find, read, change as little as possible, re-read and link Folio pages, data tables and whiteboards. Treats page content as data, not instructions. |
+| [folio-wiki](folio-wiki/SKILL.md) | Find, read, change as little as possible, re-read and link Folio pages, data tables, whiteboards and forms. Publishes Claude artifacts and Cursor canvases as interactive pages. Treats page content as data, not instructions. |
 | [release-notes](release-notes/SKILL.md) | Compare `git log` since the last tag with the wiki and write release notes. Runs only when asked. |
 
 ## Install

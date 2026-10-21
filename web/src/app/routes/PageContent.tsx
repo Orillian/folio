@@ -24,6 +24,7 @@ import { StaticBoardView } from './StaticBoardView';
 import { PdfView } from './PdfView';
 import { OfficeView } from './OfficeView';
 import { CanvasPageView } from './CanvasPageView';
+import { ArtifactPageView } from './ArtifactPageView';
 import { ReplaceFileDropZone } from '../files/ReplaceFileDropZone';
 import { TablePageView, tableRole, type TableViewState } from './TablePageView';
 import { FormPageView } from './FormPageView';
@@ -327,6 +328,21 @@ export function PageContent({ id }: PageContentProps) {
         <PagePropertiesPopover pageId={data.id} space={data.space} canEdit={chromeEditable} canManageTypes={canManageMembers(spaceRole)} />
         <div className="ph-no-capture min-h-0 flex-1">
           <CanvasPageView page={data} canConvert={canEditContent(spaceRole) && !isLocalPage} />
+        </div>
+      </div>
+    );
+  }
+
+  if (data.kind === 'artifact') {
+    // Artifact: an agent-made HTML page, read-only and never in a collab room — the icon row a file page gets, then the
+    // sandboxed frame. The bundle is replaced whole ("Replace…" in its toolbar), so Properties are the manifest's own.
+    return (
+      <div className="flex h-full flex-col">
+        <PageConflictBanner space={data.space} pageId={data.id} />
+        <PageChrome pageId={data.id} space={data.space} icon={data.icon} canEdit={chromeEditable} allowCover={false} compact />
+        <PagePropertiesPopover pageId={data.id} space={data.space} canEdit={chromeEditable} canManageTypes={canManageMembers(spaceRole)} />
+        <div className="ph-no-capture min-h-0 flex-1 overflow-y-auto">
+          <ArtifactPageView page={data} canReplace={chromeEditable} />
         </div>
       </div>
     );

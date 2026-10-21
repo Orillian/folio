@@ -38,6 +38,7 @@ import type { Dirent } from 'node:fs';
 import * as matterNS from 'gray-matter';
 import { extractBoardId, extractH1 } from '../storage.js';
 import { officeFormat } from '../../shared/contracts.js';
+import { artifactStem, isArtifactDirName } from '../artifact/manifest.js';
 import { query } from '../db/pool.js';
 import { getTrashRoot } from './paths.js';
 
@@ -89,7 +90,7 @@ async function countPageFiles(absDir: string): Promise<number> {
 interface DetectedTarget {
   /** '' when the space dir itself is the target (kind space). */
   relInside: string;
-  shape: 'space' | 'folder' | 'file';
+  shape: 'space' | 'folder' | 'file' | 'artifact';
 }
 
 async function detectTarget(spaceDirAbs: string): Promise<DetectedTarget | null> {
@@ -100,6 +101,8 @@ async function detectTarget(spaceDirAbs: string): Promise<DetectedTarget | null>
   }
   const only = top[0];
   if (only.isFile()) return { relInside: only.name, shape: 'file' };
+  // An artifact bundle is one page however many files it holds.
+  if (isArtifactDirName(only.name)) return { relInside: only.name, shape: 'artifact' };
 
   // Single-directory chain: descend until the deleted node reveals itself.
   let rel = only.name;
@@ -112,6 +115,7 @@ async function detectTarget(spaceDirAbs: string): Promise<DetectedTarget | null>
     }
     const child = entries[0];
     if (child.isFile()) return { relInside: `${rel}/${child.name}`, shape: 'file' };
+    if (isArtifactDirName(child.name)) return { relInside: `${rel}/${child.name}`, shape: 'artifact' };
     rel = `${rel}/${child.name}`;
     cur = path.join(cur, child.name);
   }
@@ -119,7 +123,7 @@ async function detectTarget(spaceDirAbs: string): Promise<DetectedTarget | null>
 
 interface BackfillFields {
   pageId: string | null;
-  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'folder' | 'space';
+  kind: 'doc' | 'board' | 'table' | 'pdf' | 'office' | 'form' | 'canvas' | 'base' | 'artifact' | 'folder' | 'space';
   title: string;
   childrenCount: number;
 }
@@ -241,6 +245,9 @@ export async function backfillTrashFromDisk(rootDir = getTrashRoot()): Promise<{
           let fields: BackfillFields | null;
           if (target.shape === 'file') {
             fields = await fieldsForFile(targetAbs, target.relInside);
+          } else if (target.shape === 'artifact') {
+            // An artifact bundle carries no id in its files (the id lived in the index only).
+            fields = { pageId: null, kind: 'artifact', title: artifactStem(target.relInside), childrenCount: 0 };
           } else if (target.shape === 'folder') {
             fields = await fieldsForDir(targetAbs, humanizeSlug(path.basename(target.relInside)), 'folder');
           } else {

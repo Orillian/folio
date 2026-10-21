@@ -12,6 +12,7 @@ import * as collab from './collab.js';
 import * as tables from './tables/service.js';
 import { buildFormChoices } from './forms/service.js';
 import { buildCanvasPayload, type CanvasReader } from './canvasView.js';
+import { buildArtifactPayload } from './artifact/service.js';
 
 /** No reader named: a canvas's file cards open nothing (the safe default; every route names its reader). */
 const NOBODY: CanvasReader = { kind: 'share', pageIds: new Set() };
@@ -41,5 +42,9 @@ export async function buildPageDoc(entry: PageIndexEntry, reader: CanvasReader =
   if (entry.kind === 'canvas') return { ...meta, canvas: await buildCanvasPayload(entry, reader) };
   // A base's YAML rides GET /api/pages/:id/base/source, its rows GET /api/pages/:id/base.
   if (entry.kind === 'base') return { ...meta };
+  // An artifact: its manifest and files, with signed /art URLs minted for THIS reader (state on the server only for a signed-in one).
+  if (entry.kind === 'artifact') {
+    return { ...meta, artifact: await buildArtifactPayload(entry, reader.kind === 'user' ? { kind: 'user', userId: reader.userId } : { kind: 'anonymous' }) };
+  }
   return { ...meta, svg: await storage.readBoardSvg(entry.id) };
 }

@@ -41,6 +41,29 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ### Added
 
+- **Artifacts: publish Claude artifacts and Cursor canvases.** A new page kind,
+  "Artifact": an interactive page made by an agent (a Claude artifact, a Cursor
+  canvas or any self-contained HTML page) that lives in the tree, search, trash and
+  Git like any other page. On disk it is a folder `<name>.artifact/` with
+  `index.html`, an `artifact.yaml` manifest (type, origin, the capabilities the page
+  expects, properties), the original source and `assets/`. It runs in a sandboxed
+  iframe without cookies or access to the Folio API (`/art/<signed token>/…`, a
+  `sandbox` Content-Security-Policy, scripts and fonts only from cdnjs, jsDelivr,
+  unpkg, Tailwind, jQuery, esm.sh and Google Fonts); filters, tabs and charts work,
+  and state is kept through `window.storage` (the Claude artifact API) and
+  `localStorage`: in the database for signed-in readers (migration 051), in the
+  browser for guests. Import with "Artifact…" in the "+" menu: a link to an
+  `.html`, `.zip`, `.svg` or `.md` file, a file, pasted HTML, or the embed code of a
+  Claude artifact; claude.ai and Cursor share links are not downloaded (the dialog
+  suggests publishing over MCP). On the page: "Show source", "Download .zip",
+  "Replace…", and a "works partially" note when the page expects calls to Claude,
+  network access or connectors. New MCP tool **`publish_artifact`** (41 tools now)
+  creates an artifact or replaces one by `id`; `read_page` returns an artifact's
+  manifest, files and entry HTML; `kind:artifact` works in search. The MCP request
+  body limit outside the demo is now 25 MB, so a page with its data inlined fits.
+  Folio does not build JSX or TSX: agents send finished HTML. See
+  [FEATURES.md](docs/FEATURES.md), [MCP.md](docs/MCP.md) and
+  [LIMITATIONS.md](docs/LIMITATIONS.md).
 - **Custom page templates.** Any page in the space's `_templates/` folder is a
   template: a document, board, data table, form, base, or a whole page with
   subpages (before, only plain documents directly in the folder worked, one menu

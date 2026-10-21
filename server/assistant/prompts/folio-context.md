@@ -39,6 +39,10 @@ Every page has:
     the `folio-bases` skill);
   - `canvas` — an Obsidian canvas (`.canvas`), read-only: `read_page` gives
     its outline, `convert_canvas_to_board` makes an editable board of it;
+  - `artifact` — an interactive HTML page (a dashboard, a calculator, a
+    Claude artifact or Cursor canvas) in a sandboxed frame: `read_page` gives
+    its manifest and entry HTML, `publish_artifact` creates or replaces it
+    whole (see the `folio-artifacts` skill);
   - `pdf` / `office` — an uploaded file, not text the tools return;
 - `title` — for a document **not a separate field that can be written
   freely**: it is the first H1 of the body. Renaming a document is an edit of

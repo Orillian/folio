@@ -18,6 +18,10 @@ import { visitorHeaders } from '../analytics';
 import { getConnectivity, reportRequest } from './offline/connectivity';
 import { sortTreeSiblings } from './sidebar/reorderPages';
 import type {
+  ArtifactPublishBody,
+  ArtifactPublishResult,
+  ArtifactState,
+  ArtifactStatePut,
   CanvasConversionReport,
   CanvasConvertBody,
   CanvasConvertResult,
@@ -238,6 +242,18 @@ function spaceQuery(space?: string | null): string {
 
 function pageTimerUrl(target: { pageId?: string; space: string }): string {
   return target.pageId ? `/api/pages/${encodeURIComponent(target.pageId)}/timer` : `/api/spaces/${encodeURIComponent(target.space)}/timer`;
+}
+
+/** The body of an artifact import: JSON, or multipart when a file rides along (the scalar fields become form fields). */
+function artifactBody(fields: Partial<ArtifactPublishBody>, file?: File): BodyInit {
+  if (!file) return JSON.stringify(fields);
+  const body = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    body.append(key, typeof value === 'string' ? value : JSON.stringify(value));
+  }
+  body.append('file', file, file.name);
+  return body;
 }
 
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
@@ -503,6 +519,29 @@ export const api = {
     notifyPageChanges();
     return page;
   },
+
+  /**
+   * Artifacts: POST /api/spaces/:space/artifacts creates a page of kind 'artifact' from JSON (a link, embed code or pasted
+   * HTML) or, with a `file`, from multipart (.html/.htm/.zip/.svg/.md; the other fields ride along as form fields).
+   * PUT /api/pages/:id/artifact replaces the bundle of an existing one (same bodies, `parentPath` ignored). An import the
+   * server refuses answers 422 with `{ code: ArtifactErrorCode, message }` — see ApiError.body.
+   */
+  publishArtifact: async (space: string, body: ArtifactPublishBody, file?: File) => {
+    const result = await request<ArtifactPublishResult>(`/api/spaces/${encodeURIComponent(space)}/artifacts`, { method: 'POST', body: artifactBody(body, file) });
+    notifyPageChanges();
+    return result;
+  },
+  replaceArtifact: async (id: string, body: Partial<ArtifactPublishBody>, file?: File) => {
+    const result = await request<ArtifactPublishResult>(`/api/pages/${encodeURIComponent(id)}/artifact`, { method: 'PUT', body: artifactBody(body, file) });
+    notifyPageChanges();
+    return result;
+  },
+  /** GET /api/pages/:id/artifact/download — the bundle as a .zip. */
+  artifactDownloadUrl: (id: string) => `/api/pages/${encodeURIComponent(id)}/artifact/download`,
+  /** The reader's saved state of an artifact (signed-in readers only). */
+  getArtifactState: (id: string) => request<ArtifactState>(`/api/pages/${encodeURIComponent(id)}/artifact/state`),
+  putArtifactState: (id: string, body: ArtifactStatePut) =>
+    request<ArtifactState>(`/api/pages/${encodeURIComponent(id)}/artifact/state`, { method: 'PUT', body: JSON.stringify(body) }),
 
   /**
    * POST /api/pages/:id/file — replaces the file of an existing pdf/office page

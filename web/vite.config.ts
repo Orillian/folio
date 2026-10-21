@@ -56,6 +56,8 @@ export default defineConfig({
       // is exactly why it survived: it only ever broke `npm run dev`. A RegExp
       // key anchors it to the real asset route, `/a/<sha>/<file>`.
       '^/a/': 'http://localhost:4870',
+      // Artifacts: the sandboxed iframe's files (server/artifact/serve.ts).
+      '^/art/': 'http://localhost:4870',
       '/collab': { target: 'ws://localhost:4870', ws: true },
     },
   },

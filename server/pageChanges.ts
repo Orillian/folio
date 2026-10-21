@@ -52,6 +52,8 @@ function slugOf(entry: PageIndexEntry): string {
                 ? '.canvas'
               : entry.kind === 'base'
                 ? '.base'
+              : entry.kind === 'artifact'
+                ? '.artifact'
                 : '.md';
   return basename.endsWith(extension) ? basename.slice(0, -extension.length) : basename;
 }

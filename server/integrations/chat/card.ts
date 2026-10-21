@@ -109,6 +109,7 @@ const KIND_ICON: Record<ChatCardKind, string> = {
   office: '📎',
   canvas: '🗺️',
   base: '🗂️',
+  artifact: '✨',
   space: '📚',
 };
 

@@ -62,7 +62,7 @@ interface SearchRow {
 
 /** The grammar in one paragraph, for the MCP tool descriptions (docs/AGENT-API.md has the table). */
 export const SEARCH_GRAMMAR_NOTE =
-  'The query takes words (all must match), "an exact phrase", -excluded words and these filters, ANDed together: tag:name (tag:a also matches a/b), kind:doc|table|board|form|pdf|office|canvas|base, status:draft|published|archived (any other value, e.g. status:todo, matches the front matter status), in:folder/ (path prefix), prop:key=value or prop:key (front matter). A query of filters alone lists the matching pages, most recently changed first.';
+  'The query takes words (all must match), "an exact phrase", -excluded words and these filters, ANDed together: tag:name (tag:a also matches a/b), kind:doc|table|board|form|pdf|office|canvas|base|artifact, status:draft|published|archived (any other value, e.g. status:todo, matches the front matter status), in:folder/ (path prefix), prop:key=value or prop:key (front matter). A query of filters alone lists the matching pages, most recently changed first.';
 
 export const SEARCH_DEFAULT_LIMIT = 50;
 export const SEARCH_MAX_LIMIT = 100;

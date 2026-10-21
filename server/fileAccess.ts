@@ -63,6 +63,7 @@ import * as collab from './collab.js';
 import { query } from './db/pool.js';
 import { forbidden, notFound } from './errors.js';
 import { resolveShareScope, type ShareScope } from './export/shareScope.js';
+import { artifactBundleOf } from './artifact/manifest.js';
 import * as pageAccess from './pageAccess.js';
 import { getPublicSpace, publicReadablePageIds } from './publicSites.js';
 import { serveHeadersForPath } from './safeServe.js';
@@ -243,7 +244,14 @@ async function pagesAt(space: string, relPath: string): Promise<Array<{ id: stri
     [space, relPath],
   );
   const exact = rows.filter((row) => row.path === relPath);
-  return exact.length > 0 ? exact : rows;
+  if (rows.length > 0) return exact.length > 0 ? exact : rows;
+  // A file INSIDE an artifact bundle belongs to that page: it is read under the page's own access.
+  const bundle = artifactBundleOf(relPath);
+  if (!bundle) return rows;
+  return query<{ id: string; path: string; kind: PageKind }>(
+    "SELECT id, path, kind FROM pages_index WHERE space_slug = $1 AND lower(path) = lower($2) AND kind = 'artifact'",
+    [space, bundle],
+  );
 }
 
 // ---------------------------------------------------------------------------

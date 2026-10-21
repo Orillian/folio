@@ -385,6 +385,13 @@ export async function pageSourceMarkdown(entry: PageIndexEntry, opts: PageSource
     return { markdown: body.trimEnd(), truncation: null };
   }
 
+  if (entry.kind === 'artifact') {
+    // An artifact exports as its visible text (title + what its entry page shows): the page itself is interactive.
+    const body = (entry.body ?? '').trim();
+    const text = body.startsWith(entry.title) ? body.slice(entry.title.length).trim() : body;
+    return { markdown: `# ${entry.title}\n\n_Interactive artifact — open it in Folio._${text ? `\n\n${text}` : ''}`, truncation: null };
+  }
+
   if (entry.kind === 'base') {
     // A base exports as its YAML in a ```base block — what Obsidian renders as an embedded base.
     const { text } = await storage.readBaseRaw(entry.id);

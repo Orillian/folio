@@ -23,7 +23,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { FileText, Globe, Lock, Maximize, Minus, Paperclip, Plus, TriangleAlert, LayoutDashboard, Table2, ClipboardList, FileType2, FileSpreadsheet, Map as MapIcon, Folder, Database } from 'lucide-react';
+import { FileText, Globe, Lock, Maximize, Minus, Paperclip, Plus, TriangleAlert, LayoutDashboard, Table2, ClipboardList, FileType2, FileSpreadsheet, Map as MapIcon, Folder, Database, AppWindow } from 'lucide-react';
 import type { CanvasFileTarget, CanvasNode, CanvasPayload, PageKind } from '@shared/contracts';
 import { clampZoom, zoomAround, type CanvasColorScheme } from '@shared/canvas/index';
 import { Markdown, type MarkdownPublicSite } from '../markdown';
@@ -373,6 +373,7 @@ const KIND_ICON: Record<PageKind, typeof FileText> = {
   office: FileSpreadsheet,
   canvas: MapIcon,
   base: Database,
+  artifact: AppWindow,
   folder: Folder,
 };
 

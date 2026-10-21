@@ -41,7 +41,8 @@ Not ready to install? [Try the live demo](https://demo.foliowiki.online/?utm_sou
   Markdown links made for agents.
 - **Documents, tables, whiteboards, diagrams and files in one tree.** A
   roadmap table next to the spec, next to the architecture board, next to the
-  signed PDF. Obsidian canvases and bases open as pages, too.
+  signed PDF. Obsidian canvases and bases open as pages, too, and so do the
+  interactive artifacts your agents make.
 - **See how your pages connect.** A graph of the space and a local graph beside
   every page, built from the links your team already writes, and showing only
   what the reader may open.
@@ -383,6 +384,42 @@ Details and limits: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ---
 
+## Artifacts: publish Claude artifacts and Cursor canvases
+
+An AI agent builds a dashboard, a calculator or a small tool; usually it
+lives in a chat and is gone with it. In Folio it becomes a page: in the tree,
+in search, in Git, under the same access rights as everything else.
+
+![An interactive artifact: a sales dashboard with region filters, cards and a chart, as a page of the wiki](docs/images/artifacts.png)
+
+- **Interactive, not a screenshot.** Filters, tabs, charts and forms work on
+  the page. The page runs in a sandboxed frame with no access to your Folio
+  session or API, and loads scripts and fonts only from a short list of CDNs
+  (cdnjs, jsDelivr, unpkg, esm.sh, Tailwind, jQuery, Google Fonts).
+- **State survives.** `window.storage` (the API Claude artifacts use) and
+  `localStorage` work and are kept per reader: in the database for people who
+  are signed in, in the browser for guests.
+- **Publish from the agent.** The MCP tool `publish_artifact` creates an
+  artifact page or replaces an existing one, with extra files and the original
+  source (JSX or TSX) kept next to it. In Claude or Cursor with Folio connected,
+  say "publish this artifact to Folio".
+- **Or import it by hand.** "Artifact…" in the "+" menu takes a link to an
+  `.html`, `.zip`, `.svg` or `.md` file, a file from your computer, or pasted
+  HTML. "Show source" and "Download" are on the page; replacing an artifact keeps
+  its link and place in the tree.
+- **Files in Git.** An artifact is a folder `<name>.artifact/` in the space's
+  repository: `index.html`, an `artifact.yaml` manifest, the source and assets.
+  Move, copy, trash, share links, public sites and history work like for any
+  page.
+
+Folio shows the finished page; it does not build React or TSX itself, so an
+agent sends HTML that already runs, and calls to Claude, to your own APIs or to
+connectors are not available inside an artifact. Share links from claude.ai or
+Cursor are not downloaded: ask the agent to publish through MCP. See
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+
+---
+
 ## Properties and a shared timer
 
 **Properties on every kind of page.** The thin "Properties" row above a page now
@@ -538,10 +575,10 @@ Without a key everything else in Folio works as usual.
 
 ## Built for agents
 
-**MCP server.** 40 tools over `/mcp`: list and search spaces, read and write
+**MCP server.** 41 tools over `/mcp`: list and search spaces, read and write
 pages, build forms, edit data table columns and views, convert a canvas to a board, read a page's outline, tags, properties and links, list a space's tags and
 property keys, rename a tag, set page properties, find unresolved links
-and orphan pages, read the link graph, query, create and edit Obsidian bases, create and edit whiteboards, query and update data tables,
+and orphan pages, read the link graph, query, create and edit Obsidian bases, create and edit whiteboards, publish interactive artifacts, query and update data tables,
 read history.
 Connect with a personal access token, or through OAuth 2.1 from clients that
 run in a vendor's cloud (claude.ai, Claude Desktop, ChatGPT). `search` and

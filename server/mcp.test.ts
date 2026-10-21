@@ -63,11 +63,11 @@ describe('server/mcp.ts — server identity', () => {
 describe('server/mcp.ts — tool annotations and instructions', () => {
   const actor: McpActor = { user: { id: 'nobody' } as User, scopes: ['read'], tokenId: 'test-annotations-token' };
 
-  it('annotates all 40 tools: a title, explicit booleans, and readOnlyHint or destructiveHint', async () => {
+  it('annotates all 41 tools: a title, explicit booleans, and readOnlyHint or destructiveHint', async () => {
     const { client, close } = await connectedClient(actor);
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(40);
+      expect(tools).toHaveLength(41);
       for (const tool of tools) {
         const a = tool.annotations;
         expect(a?.title ?? tool.title, `${tool.name} title`).toBeTruthy();
@@ -118,7 +118,7 @@ describe('server/mcp.ts — tool annotations and instructions', () => {
       expect(writers.map((t) => t.name).sort()).toEqual(
         [
           'board_ops', 'convert_canvas_to_board', 'create_board', 'create_form', 'create_page', 'folio_table_add_column', 'folio_table_create', 'folio_table_delete',
-          'folio_table_delete_column', 'folio_table_delete_view', 'folio_table_insert', 'folio_table_save_view', 'folio_table_update', 'folio_table_update_column', 'rename_tag',
+          'folio_table_delete_column', 'folio_table_delete_view', 'folio_table_insert', 'folio_table_save_view', 'folio_table_update', 'folio_table_update_column', 'publish_artifact', 'rename_tag',
           'save_base', 'set_page_properties', 'update_board', 'update_form', 'update_page',
         ],
       );

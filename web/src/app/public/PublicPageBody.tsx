@@ -10,6 +10,7 @@ import { FormPageView } from '../routes/FormPageView';
 import { PdfView } from '../routes/PdfView';
 import { OfficeView } from '../routes/OfficeView';
 import { CanvasPane } from '../../canvas';
+import { ArtifactView } from '../../artifact/ArtifactView';
 import { publicFileUrl, publicHomeUrl, publicPageUrl } from './publicSite';
 import '../i18n/register';
 
@@ -102,6 +103,15 @@ export function PublicPageBody({ site, page }: PublicPageBodyProps) {
           fileUrl={(p) => publicFileUrl(page.space, p)}
           pdfUrl={(_id, p) => publicFileUrl(page.space, p)}
         />
+      </div>
+    );
+  }
+
+  if (page.kind === 'artifact' && page.artifact) {
+    // The sandboxed page itself; the state a visitor saves stays in this browser, and there is no Download/Replace without a session.
+    return (
+      <div className="h-[calc(100dvh-4rem)] min-h-[30rem]">
+        <ArtifactView payload={page.artifact} pageId={page.id} title={page.title} version={page.updatedAt} allowServerState={false} />
       </div>
     );
   }

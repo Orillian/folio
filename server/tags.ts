@@ -40,6 +40,8 @@
  * for a non-admin, are never touched and never counted (they do not exist for
  * that caller, and a count would tell them how many there are).
  */
+import { readManifestText, writeManifestFile } from './artifact/bundle.js';
+import { ARTIFACT_MANIFEST_FILE } from './artifact/manifest.js';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as matterNS from 'gray-matter';
@@ -557,6 +559,17 @@ async function renameOwnPropertyTag(entry: storage.PageIndexEntry, from: string,
     if (!written) return undefined;
     await reindexSavedPage(ref, '', own);
     return entry.absPath;
+  }
+  if (entry.kind === 'artifact') {
+    // The manifest's `tags:` (artifact.yaml is a plain mapping, edited like a sidecar). This runs under the space
+    // lock already, so the page is re-indexed by a scoped scan rather than storage.rewriteArtifactPage (which locks).
+    const text = await readManifestText(entry.absPath);
+    if (text === null || !parseSidecar(text).parseable) return undefined;
+    const renamed = renameTagInFrontmatter(wrapSidecar(text), from, to);
+    if (renamed === undefined) return undefined;
+    await writeManifestFile(entry.absPath, unwrapSidecar(renamed));
+    await storage.scanPaths(entry.space, { files: [entry.relPath] });
+    return path.join(entry.absPath, ARTIFACT_MANIFEST_FILE);
   }
   if (!usesSidecar(entry.kind)) return undefined;
   const root = storage.getSpaceDir(entry.space);

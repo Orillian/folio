@@ -14,6 +14,7 @@ import type { PageIndexEntry } from '../storage.js';
 import { getPublicSpace, isPublicPage, publicReadablePageIds } from '../publicSites.js';
 import { rateLimited, retryAfterSeconds } from '../rateLimit.js';
 import { officeFormat } from '../../shared/contracts.js';
+import { artifactStem } from '../artifact/manifest.js';
 import { queryString } from '../validate.js';
 import { collectForExport, singlePage } from './collect.js';
 import { inlineTemplateImages, readSpaceExportSettings, validateExportSettingsBody, writeSpaceExportSettings } from './spaceSettings.js';
@@ -37,6 +38,7 @@ export function slugOf(entry: PageIndexEntry): string {
   if (entry.kind === 'pdf') return base.slice(0, -'.pdf'.length);
   if (entry.kind === 'canvas') return base.slice(0, -'.canvas'.length);
   if (entry.kind === 'base') return base.slice(0, -'.base'.length);
+  if (entry.kind === 'artifact') return artifactStem(base);
   if (entry.kind === 'office') {
     const fmt = officeFormat(entry.relPath);
     return fmt ? base.slice(0, -(fmt.length + 1)) : base;

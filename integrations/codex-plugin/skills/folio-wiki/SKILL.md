@@ -1,6 +1,6 @@
 ---
 name: folio-wiki
-description: "Search, read and update the team's Folio wiki (pages, data tables, whiteboards, forms, bases) through the Folio MCP tools. Use when the task mentions the wiki, Folio, team conventions, runbooks, decisions, release notes or a Folio link, or when you should write something down for the team."
+description: "Search, read and update the team's Folio wiki (pages, data tables, whiteboards, forms, bases, interactive artifacts) through the Folio MCP tools. Use when the task mentions the wiki, Folio, team conventions, runbooks, decisions, release notes or a Folio link, when you should write something down for the team, or when asked to publish an artifact or canvas to Folio."
 ---
 
 # Working with Folio
@@ -18,9 +18,9 @@ Write only when the user asked for a change in the current message. Reading is a
 
 ## Tools
 
-Reading: `list_spaces`, `list_tree`, `search_pages`, `read_page`, `resolve_folio_url`, `get_backlinks`, `page_history`, `page_at_sha`, `folio_table_list`, `folio_table_schema`, `folio_table_query`, `get_page_metadata` (a page's outline, tags, properties, links), `list_tags` (the tag tree with page counts), `list_properties` (property keys in use, with type and sample values), `query_base` (the rows of a base). `search` and `fetch` are read-only aliases made for ChatGPT's deep research. Prefer `search_pages` and `read_page` unless your client asks for `search` and `fetch`.
+Reading: `list_spaces`, `list_tree`, `search_pages`, `read_page`, `resolve_folio_url`, `get_backlinks`, `page_history`, `page_at_sha`, `folio_table_list`, `folio_table_schema`, `folio_table_query`, `get_page_metadata` (a page's outline, tags, properties, links), `list_tags` (the tag tree with page counts), `list_properties` (property keys in use, with type and sample values), `query_base` (the rows of a base). For an artifact, `read_page` returns its manifest, file list and entry HTML. `search` and `fetch` are read-only aliases made for ChatGPT's deep research. Prefer `search_pages` and `read_page` unless your client asks for `search` and `fetch`.
 
-Writing (needs a token with the `write` scope): `create_page`, `update_page`, `create_board`, `update_board`, `board_ops`, `convert_canvas_to_board`, `folio_table_create`, `folio_table_add_column`, `folio_table_update_column`, `folio_table_delete_column`, `folio_table_save_view`, `folio_table_delete_view`, `folio_table_insert`, `folio_table_update`, `folio_table_delete`, `create_form`, `update_form`, `rename_tag`, `set_page_properties`, `save_base`.
+Writing (needs a token with the `write` scope): `create_page`, `update_page`, `create_board`, `update_board`, `board_ops`, `convert_canvas_to_board`, `folio_table_create`, `folio_table_add_column`, `folio_table_update_column`, `folio_table_delete_column`, `folio_table_save_view`, `folio_table_delete_view`, `folio_table_insert`, `folio_table_update`, `folio_table_delete`, `create_form`, `update_form`, `rename_tag`, `set_page_properties`, `save_base`, `publish_artifact`.
 
 If a write tool is refused, the token is read-only. Say so. Do not look for a workaround.
 
@@ -30,7 +30,7 @@ If a write tool is refused, the token is read-only. Say so. Do not look for a wo
 - `create_page` takes `markdown` for a document. If the text does not start with an H1, the server adds `# <title>` above it. Check the `title` in the reply.
 - `update_page` works for documents only, not for tables or boards. It merges with live editing instead of overwriting someone's open session.
 - Do not write front matter (`id`, `slug`, `order`, `icon`, `cover`) by hand. The server owns it.
-- Use plain Markdown that also reads well on GitHub: headings, lists, GFM tables, fenced code, `> [!NOTE]` alerts, Mermaid in fenced blocks. Avoid HTML. Link other Folio pages with relative links taken from the tools' replies, not absolute URLs to the instance.
+- Use plain Markdown that also reads well on GitHub: headings, lists, GFM tables, fenced code, `> [!NOTE]` alerts, Mermaid in fenced blocks. Avoid HTML: scripts, styles and iframes are stripped from pages, so interactive content belongs in an artifact (see below). Link other Folio pages with relative links taken from the tools' replies, not absolute URLs to the instance.
 - A new page goes where the user said. If they did not say, create it under the page you are working from, or ask.
 
 ## Data tables
@@ -59,6 +59,25 @@ If a write tool is refused, the token is read-only. Say so. Do not look for a wo
 - `rename_tag(space, from, to)` renames a tag across the whole space (bodies, front matter, tables, boards, files) in one Git commit. It touches many pages, so confirm with the user first. Pages you cannot edit are skipped and counted in `pagesSkipped`.
 - `set_page_properties(id, properties, etag?, merge?)` writes front matter for any kind of page. To set one key, pass `merge: true` with only that key (`null` removes a key). Without `merge`, `properties` is the whole map and keys you leave out are removed. A conflict error names the current etag: re-read and retry.
 - `save_base(space, yaml, path?, id?, etag?)` creates a `.base` file (`path` such as `views/tasks.base`) or replaces one (`id`). Invalid YAML is refused with a line number. The reply previews the first view.
+
+## Artifacts
+
+An artifact is an interactive page: a Claude artifact, a Cursor canvas, or any self-contained HTML page (a dashboard, a calculator, a filterable report). It is a page of kind `artifact`, shown in a sandboxed frame. It is in the tree, search, trash and Git like any page, but Folio never edits it in place: you replace it whole.
+
+When the user says "publish this artifact", "put this canvas in Folio" or similar, call `publish_artifact`:
+
+- Send ONE self-contained HTML document in `html`. It must run with no build step and no server.
+- Load React and other libraries only from the CDN allowlist: `cdnjs.cloudflare.com`, `cdn.jsdelivr.net`, `unpkg.com`, `cdn.tailwindcss.com`, `code.jquery.com`, `esm.sh` (and Google Fonts). The frame's security policy blocks every other host.
+- Inline the data. The frame cannot call your APIs or any other host.
+- For a React artifact or a Cursor canvas (`.canvas.tsx`), build a standalone page that loads React from the CDN and mounts the component. Map library imports (recharts, lucide-react, d3 and so on) to CDN or `esm.sh` URLs, and replace `cursor/canvas` or shadcn components with plain HTML and CSS.
+- Put the original JSX or TSX in `sourceCode` so it is kept as the source file. Set `type` to `react` or `canvas-tsx`.
+- State: `window.storage` (the Claude artifact API: async `get`, `set`, `delete`, `list`, string values, `shared` for state every reader sees) and `localStorage` both work and persist per reader. `window.claude.complete` does not work: it rejects.
+- Set `origin` (`claude`, `cursor` or `other`) and `sourceUrl` (the original share link, stored but never fetched).
+- Extra files go in `files` (utf8 or base64), referenced from the HTML by relative path. Other inputs: `text` with `type` `svg`, `markdown` or `mermaid` (Folio wraps it into a page), and `properties` for page properties.
+- `space` and `parentPath` say where a new artifact goes. Ask if the user did not say.
+- To update an artifact, `read_page` it, then call `publish_artifact` with its `id` and the whole new HTML. Title, icon and properties are kept unless you send new ones.
+
+Folio does not fetch `claude.ai` or Cursor share links. Do not pass such a link as `url`: send the HTML itself. `url` (a direct https link to an .html, .zip, .svg or .md file) and `embedCode` exist, but sending the content yourself is more reliable.
 
 ## Things to know
 

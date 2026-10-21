@@ -1,8 +1,8 @@
 ---
 name: Folio MCP
-description: Read and change Folio spaces, pages, boards, data tables, forms, bases, properties and tags through the in-process MCP tools, with the current user's rights.
+description: Read and change Folio spaces, pages, boards, data tables, forms, bases, artifacts, properties and tags through the in-process MCP tools, with the current user's rights.
 version: "1.0.0"
-tags: [folio, mcp, tables, boards, forms, bases]
+tags: [folio, mcp, tables, boards, forms, bases, artifacts]
 ---
 
 # The internal Folio MCP
@@ -30,7 +30,7 @@ audit of the current user of the session, without a separate token.
 | `resolve_folio_url` | A Folio link (`/s/<space>`, `/s/<space>/p/<id>`, `/s/<space>/d/<dir>`) → a particular page (`id`, `path`, `parentPathForChildren`). `/s/<space>` without `/p/` = the home page of the space (`index.md`), NOT "the whole space". Call it first if the message contains a link |
 | `list_spaces` | The spaces available to the user: slug, name, number of pages, role |
 | `list_tree` | The full page tree of one space: id, title, kind, path, order |
-| `read_page` | One page by `id`: metadata + the full markdown body (doc), the scene (board), the definition and `etag` (form), the YAML (base), a readable outline (Obsidian canvas); for a table — a note to use `folio_table_schema` |
+| `read_page` | One page by `id`: metadata + the full markdown body (doc), the scene (board), the definition and `etag` (form), the YAML (base), a readable outline (Obsidian canvas), `artifact` (manifest, file list) + `entryHtml` (the entry page's HTML, cut at 60 000 characters, `entryTruncated`) for an artifact; for a table — a note to use `folio_table_schema` |
 | `search_pages` | Full-text search, optionally within one space |
 | `get_backlinks` | The links into the given page: the source page plus the line with the link (`context`) |
 | `get_page_metadata` | One page's outline (headings with anchors), `^block` ids, tags, properties (front matter) and outgoing links with their kind (page / asset / external / unresolved) |
@@ -75,6 +75,7 @@ audit of the current user of the session, without a separate token.
 | `folio_table_delete` | Delete rows by `rowId` |
 | `rename_tag` | Rename a tag across a space (`from`, `to`): `#tag` in bodies, `tags:`/`labels:` in front matter, tags of tables/boards/files; children follow; pages the user cannot edit are skipped and counted. One commit. Ask first: it touches many pages |
 | `set_page_properties` | Set a page's properties (front matter) for any page kind. `properties` is the whole map by default (omitted keys are removed); with `merge: true` only the given keys change and `null` removes one — prefer `merge: true` to set one key. Optional `etag` from a previous call; a conflict error carries the current etag |
+| `publish_artifact` | Publish an interactive page (kind `artifact`): a new one under `parentPath` of `space`, or replace one by `id` with the WHOLE new content. ONE self-contained HTML in `html` (data inlined, scripts only from the CDN allowlist), or `text` (`svg`/`markdown`/`mermaid`), `files`, `sourceCode`. No `url`/`embedCode` in this chat. Rules and example: the `folio-artifacts` skill |
 | `save_base` | Create a `.base` (`path`, e.g. `views/tasks.base`) or replace one (`id`, optional `etag`) from whole `yaml`; invalid YAML comes back with a line number; returns `id`, `path`, `etag` and a preview of the first view. Syntax and an example: the `folio-bases` skill |
 
 ## What you can build (AGENT mode)
@@ -86,12 +87,25 @@ audit of the current user of the session, without a separate token.
 | Data table | `folio_table_create` (or `create_page` `kind: 'table'`) | rows: `folio_table_insert`/`update`/`delete`; columns: `folio_table_add_column`/`update_column`/`delete_column`; views: `folio_table_save_view`/`delete_view` |
 | Form | `create_form` | `update_form`; its answers are rows of the paired table |
 | Base | `save_base` (`path`) | `save_base` (`id`); values: `set_page_properties` on the row's page |
+| Artifact (interactive HTML page) | `publish_artifact` | `publish_artifact` with its `id` (replaced whole), `set_page_properties` |
 | Any page | — | `set_page_properties` (properties), `rename_tag` (a tag across the space) |
 
 An Obsidian canvas is read-only (`read_page` gives its outline); offer
 `convert_canvas_to_board` when the user wants to edit it. PDF and Office files
 are uploaded by the user in the web app. Renaming, moving and deleting pages
 are done by the user in the web app (no tool for them).
+
+## Artifacts
+
+An artifact (`kind: "artifact"`) is an interactive page — a dashboard, a
+calculator, a filterable report — shown in a sandboxed frame. Markdown pages
+cannot hold scripts, so when the user wants something interactive, build an
+artifact with `publish_artifact` (the `folio-artifacts` skill has the rules:
+one self-contained HTML, data inlined, libraries only from the CDN allowlist).
+`read_page` on an artifact returns its manifest, file list and entry HTML, not
+markdown; `update_page` does not work for it — replace it with
+`publish_artifact` and its `id`. An artifact an external agent published (a
+Claude artifact, a Cursor canvas) can be read the same way.
 
 ## Important pitfalls (from `docs/AGENT-API.md`, checked against the code)
 
@@ -106,7 +120,8 @@ are done by the user in the web app (no tool for them).
   To change the text of an existing page, call `update_page`.
 - **`update_page` works for documents only.** For a table — only
   `folio_table_*`; a board — `update_board`/`board_ops`; a form —
-  `update_form`; a base — `save_base`.
+  `update_form`; a base — `save_base`; an artifact — `publish_artifact`
+  with its `id`.
 - **A form's fields are columns of its paired table.** `update_form` takes
   the WHOLE ordered list of fields: keep the `columnId` of every field that
   stays (from `read_page`), leave it out only for a new question. A field
