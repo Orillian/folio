@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
+import { Columns2 } from 'lucide-react';
 import type { PageHistoryEntry } from '@shared/contracts';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
@@ -9,6 +11,8 @@ import { Modal } from '../ui/Modal';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { formatRelativeDate, shortSha } from '../history';
 import { Markdown } from '../../markdown';
+import { useCompare } from '../compare/compareContext';
+import { comparePath } from '../compare/compareList';
 import '../i18n/register';
 
 export interface HistoryPanelProps {
@@ -53,6 +57,7 @@ export function HistoryPanel({ pageId, space, pagePath, canRestore, onClose }: H
               comparisonEntry={comparisonEntry}
               canRestore={canRestore}
               onRestored={onClose}
+              onClose={onClose}
             />
           ) : (
             <p className="p-4 text-sm text-neutral-400">{t('history.panel.selectVersionRight')}</p>
@@ -110,15 +115,21 @@ interface HistoryVersionPreviewProps {
   comparisonEntry?: PageHistoryEntry;
   canRestore: boolean;
   onRestored: () => void;
+  /** Closes the panel (the compare view opens over it). */
+  onClose: () => void;
 }
 
-function HistoryVersionPreview({ pageId, space, pagePath, entry, comparisonEntry, canRestore, onRestored }: HistoryVersionPreviewProps) {
+function HistoryVersionPreview({ pageId, space, pagePath, entry, comparisonEntry, canRestore, onRestored, onClose }: HistoryVersionPreviewProps) {
   const { t, i18n } = useTranslation('app');
   const errorText = useApiErrorText();
   const queryClient = useQueryClient();
   const showToast = useToast();
   const [confirming, setConfirming] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
+  const navigate = useNavigate();
+  const compare = useCompare();
+  // The title the compare tray shows: the page's own when it is loaded, else its file name.
+  const pageTitle = queryClient.getQueryData<{ title?: string }>(['page', pageId])?.title ?? pagePath.slice(pagePath.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '');
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['history', pageId, entry.sha],
@@ -149,7 +160,27 @@ function HistoryVersionPreview({ pageId, space, pagePath, entry, comparisonEntry
         <span className="text-sm text-neutral-500 dark:text-neutral-400">
           {t('history.panel.versionFrom', { date: new Date(entry.date).toLocaleString(i18n.language) })}
         </span>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Compare mode: this version next to the page as it is now (a live editor), or set aside to be compared with others from the tray. */}
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              navigate(comparePath([{ pageId }, { pageId, sha: entry.sha }]));
+            }}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-neutral-300 px-2.5 py-1 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+          >
+            <Columns2 size={12} aria-hidden="true" />
+            {t('compare.history.withCurrent')}
+          </button>
+          <button
+            type="button"
+            disabled={compare.has({ pageId, sha: entry.sha })}
+            onClick={() => compare.add({ pageId, sha: entry.sha, space, title: pageTitle })}
+            className="shrink-0 rounded-md border border-neutral-300 px-2.5 py-1 text-xs font-medium hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+          >
+            {t(compare.has({ pageId, sha: entry.sha }) ? 'compare.history.inList' : 'compare.history.add')}
+          </button>
           {data?.markdown !== undefined && comparisonEntry && (
             <button
               type="button"
@@ -270,7 +301,7 @@ function HistoryDiff({ before, after }: { before: string; after: string }) {
  * since this string is a historical git blob, not something re-sanitized
  * on the way here.
  */
-function HistorySvgPreview({ svg }: { svg: string }) {
+export function HistorySvgPreview({ svg }: { svg: string }) {
   const { t } = useTranslation('app');
   const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   return <img src={src} alt={t('history.panel.boardVersionAlt')} className="mx-auto max-w-full" />;
@@ -288,7 +319,7 @@ export function formatFileSize(bytes: number): string {
  * and, for a pdf, the file itself. (An office file has no in-browser preview outside the page's own viewer, so it
  * is offered as a download.)
  */
-function HistoryFilePreview({ pageId, sha, file }: { pageId: string; sha: string; file: { path: string; ext: string; size: number } }) {
+export function HistoryFilePreview({ pageId, sha, file }: { pageId: string; sha: string; file: { path: string; ext: string; size: number } }) {
   const { t } = useTranslation('app');
   const name = file.path.slice(file.path.lastIndexOf('/') + 1);
   return (

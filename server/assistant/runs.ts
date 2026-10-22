@@ -47,6 +47,9 @@ import type { AssistantConversationRow } from './store.js';
 import { AssistantRunCancelledError, runCursorAssistant } from './cursorRuntime.js';
 import { createDeltaBatcher, type DeltaBatcher } from './deltaBatcher.js';
 import { authorizeAssistantNavigation } from './access.js';
+import { createGenerationProgress, realToolName, type GenerationProgress, type GenerationProgressTracker } from './genProgress.js';
+import { createRunTiming, type RunTiming, type RunTimingSnapshot } from './runTiming.js';
+import { reconcileFinalText, withParagraphGap } from './runText.js';
 
 /** After a distributive Omit — plain `Omit<Union, K>` collapses a discriminated union to its common-key intersection, silently dropping the per-variant fields (`message`, `text`, `code`, …). This distributes over each member first. */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
@@ -77,6 +80,14 @@ interface RunState {
   resolveDone: () => void;
   /** Coalesces onTextDelta's per-token calls into ~DELTA_BATCH_MS frames before they become `delta` events — see deltaBatcher.ts's doc comment for the "one letter at a time" report this fixes. */
   deltaBatcher: DeltaBatcher;
+  /** Conversation model id, for the timing summary. */
+  model: string;
+  /** Turns the SDK's thinking / partial-tool-call / token updates into a throttled "~N tokens" step. */
+  progress: GenerationProgressTracker;
+  /** Per-step timing of the run (logged at the end, persisted to ai_runs.timing). */
+  timing: RunTiming;
+  /** A tool call (or another non-text event) happened since the last text: the next text chunk starts a new paragraph. */
+  textGap: boolean;
 }
 
 /** Live runs — kept 15 min after a terminal state (for late subscribers/replay), then only `ai_runs` in the DB has the history. */
@@ -96,6 +107,8 @@ const PERSIST_THROTTLE_MS = 5_000;
 // still reads as a smooth stream to the eye but cuts event/render count by
 // roughly 4-8x for a typical token cadence — see deltaBatcher.test.ts.
 const DELTA_BATCH_MS = Number(process.env.ASSISTANT_DELTA_BATCH_MS) || 75;
+/** At most one "model is thinking / writing a tool call, ~N tokens" status event per this many ms (per phase and tool). */
+const PROGRESS_THROTTLE_MS = Number(process.env.ASSISTANT_PROGRESS_THROTTLE_MS) || 500;
 
 function emit(run: RunState, event: BufferableEvent): void {
   run.seq += 1;
@@ -170,11 +183,11 @@ async function dbPersistProgress(runId: string, progress: { text: string; stepSt
 
 async function dbFinishRun(
   runId: string,
-  final: { status: 'done' | 'error' | 'cancelled'; text: string; messageId: string | null; error: string | null },
+  final: { status: 'done' | 'error' | 'cancelled'; text: string; messageId: string | null; error: string | null; timing: RunTimingSnapshot | null },
 ): Promise<void> {
   await query(
-    `UPDATE ai_runs SET status = $2, text = $3, message_id = $4, error = $5, finished_at = now(), updated_at = now() WHERE id = $1`,
-    [runId, final.status, final.text, final.messageId, final.error],
+    `UPDATE ai_runs SET status = $2, text = $3, message_id = $4, error = $5, timing = $6::jsonb, finished_at = now(), updated_at = now() WHERE id = $1`,
+    [runId, final.status, final.text, final.messageId, final.error, final.timing ? JSON.stringify(final.timing) : null],
   );
 }
 
@@ -302,6 +315,10 @@ export async function startRun(input: StartRunInput): Promise<{ runId: string; c
     intervalMs: DELTA_BATCH_MS,
     onFlush: (text) => emit(run, { type: 'delta', text }),
   });
+  const progress = createGenerationProgress({
+    intervalMs: PROGRESS_THROTTLE_MS,
+    onProgress: (p) => setProgress(run, p),
+  });
   run = {
     id: runId,
     conversationId,
@@ -322,6 +339,10 @@ export async function startRun(input: StartRunInput): Promise<{ runId: string; c
     donePromise,
     resolveDone,
     deltaBatcher,
+    model: input.conversation.model,
+    progress,
+    timing: createRunTiming(),
+    textGap: false,
   };
   runsById.set(runId, run);
   run.pingTimer = setInterval(() => pingAll(run), PING_INTERVAL_MS);
@@ -335,14 +356,67 @@ export async function startRun(input: StartRunInput): Promise<{ runId: string; c
 }
 
 function setStep(run: RunState, step: AssistantRunStep): void {
-  if (run.step && run.step.status === step.status && run.step.label === step.label) return;
+  if (
+    run.step &&
+    run.step.status === step.status &&
+    run.step.label === step.label &&
+    run.step.tokens === step.tokens &&
+    run.step.generating === step.generating
+  ) {
+    return;
+  }
   // Flush any buffered delta text FIRST — otherwise a status change (tool
   // call, thinking) could reach subscribers before the text that preceded it
   // once that text's own batch timer finally fires, scrambling the visible
   // order (text after "calling tool X" when it was actually written before).
   run.deltaBatcher.flush();
   run.step = step;
-  emit(run, { type: 'status', status: step.status, label: step.label });
+  emit(run, {
+    type: 'status',
+    status: step.status,
+    label: step.label,
+    ...(step.tokens !== undefined ? { tokens: step.tokens } : {}),
+    ...(step.generating ? { generating: true } : {}),
+  });
+}
+
+/** The model is producing output that is not reply text yet: show "thinking / writing a tool call, ~N tokens" (counters only, never the content). */
+function setProgress(run: RunState, progress: GenerationProgress): void {
+  if (run.status !== 'running') return;
+  if (progress.phase === 'thinking') {
+    setStep(run, { status: 'thinking', tokens: progress.tokens });
+  } else {
+    setStep(run, { status: 'tool', ...(progress.tool ? { label: progress.tool } : {}), tokens: progress.tokens, generating: true });
+  }
+  maybePersist(run);
+}
+
+/** One structured, content-free line per timing event: `assistant run timing {"event":…,"runId":…}`. */
+function logTiming(run: RunState, event: string, fields: Record<string, unknown>): void {
+  console.log('assistant run timing', JSON.stringify({ event, runId: run.id, ...fields }));
+}
+
+/** Final timing summary: logged as one line and returned for ai_runs.timing. */
+function finishTiming(run: RunState, outcome: 'done' | 'error' | 'cancelled'): RunTimingSnapshot {
+  const snapshot = run.timing.snapshot();
+  logTiming(run, 'summary', {
+    mode: run.runMode,
+    model: run.model,
+    outcome,
+    totalMs: snapshot.totalMs,
+    toolsReadyMs: snapshot.toolsReadyMs,
+    agentReadyMs: snapshot.agentReadyMs,
+    sentMs: snapshot.sentMs,
+    firstDeltaMs: snapshot.firstDeltaMs,
+    firstTextMs: snapshot.firstTextMs,
+    turns: snapshot.turns,
+    toolCalls: snapshot.toolCalls,
+    toolMs: snapshot.toolMs,
+    inputTokens: snapshot.inputTokens,
+    outputTokens: snapshot.outputTokens,
+    tools: snapshot.tools.map((t) => `${t.tool}:${t.ms}${t.ok ? '' : ':err'}`),
+  });
+  return snapshot;
 }
 
 function maybePersist(run: RunState): void {
@@ -373,11 +447,31 @@ async function executeRun(run: RunState, input: StartRunInput): Promise<void> {
         onRun: (cursorRun) => {
           run.cancel = () => cursorRun.cancel();
         },
-        onTextDelta: (text) => {
+        onUpdate: (update) => {
+          const first = run.timing.onUpdate(update);
+          if (first.firstDelta !== null) logTiming(run, 'first_delta', { type: update.type, ms: first.firstDelta });
+          if (first.firstText !== null) logTiming(run, 'first_text', { ms: first.firstText });
+          if (update.type === 'tool-call-started' || update.type === 'tool-call-completed' || update.type === 'partial-tool-call' || update.type === 'step-started') {
+            run.textGap = true;
+          }
+          run.progress.handle(update);
+          // The tool is done; the model's next round is silent until it writes again — not "working with X".
+          if (update.type === 'tool-call-completed' && run.status === 'running') setStep(run, { status: 'thinking' });
+        },
+        onMilestone: (milestone) => {
+          logTiming(run, milestone.replace('-', '_'), { ms: run.timing.milestone(milestone) });
+        },
+        onToolFinished: (timing) => {
+          run.timing.toolFinished(timing);
+          logTiming(run, 'tool', { tool: timing.tool, ms: timing.ms, ok: timing.ok });
+        },
+        onTextDelta: (delta) => {
           // run.text (the snapshot a reconnecting/F5'd client sees via
           // GET /api/assistant/chat's activeRun, and what maybePersist
           // writes to ai_runs) stays updated on EVERY call, synchronously —
           // only the live `delta` EVENT to subscribers is batched below.
+          const text = withParagraphGap(run.text, delta, run.textGap);
+          if (delta) run.textGap = false;
           run.text += text;
           setStep(run, { status: 'writing' }); // no-op after the first delta (see setStep's dedup guard) — flushes only the true first token, not the whole stream
           run.deltaBatcher.push(text);
@@ -388,10 +482,19 @@ async function executeRun(run: RunState, input: StartRunInput): Promise<void> {
           maybePersist(run);
         },
         onEvent: (event) => {
-          if (event.type === 'thinking') setStep(run, { status: 'thinking' });
-          else if (event.type === 'tool_call') setStep(run, { status: 'tool', label: event.name });
-          else if (event.type === 'task' && event.text) setStep(run, { status: 'thinking', label: event.text });
-          else return;
+          // While the "~N tokens" counter is on screen, the SDK's own thinking / still-running tool_call
+          // messages (the same deltas, converted) must not overwrite it with the bare status every time.
+          if (event.type === 'thinking') {
+            if (run.step?.tokens !== undefined) return;
+            setStep(run, { status: 'thinking' });
+          } else if (event.type === 'tool_call') {
+            if (run.step?.generating && event.status === 'running') return;
+            setStep(run, { status: 'tool', label: realToolName(event.name, event.args) });
+          } else if (event.type === 'task' && event.text) {
+            setStep(run, { status: 'thinking', label: event.text });
+          } else {
+            return;
+          }
           maybePersist(run);
         },
       });
@@ -413,12 +516,15 @@ async function finishDone(run: RunState, replyText: string): Promise<void> {
   // event now, ahead of `complete` — a live subscriber's streamText should
   // already equal the final text by the time `complete` arrives, not jump.
   run.deltaBatcher.flush();
+  // The saved message reads like the live bubble did (paragraph gaps between turns) when the SDK's result is the same words.
+  replyText = reconcileFinalText(run.text, replyText);
   const saved = await assistantStore.insertMessage(run.conversationId, 'assistant', replyText);
   run.status = 'done';
   run.text = replyText;
   run.messageId = saved.id;
   run.finishedAt = new Date().toISOString();
-  await dbFinishRun(run.id, { status: 'done', text: replyText, messageId: saved.id, error: null });
+  const timing = finishTiming(run, 'done');
+  await dbFinishRun(run.id, { status: 'done', text: replyText, messageId: saved.id, error: null, timing });
   console.log(`assistant run ${run.id}: done (conversation ${run.conversationId})`);
   emit(run, { type: 'complete', conversationId: run.conversationId, message: serializeMessage(saved) });
   settle(run);
@@ -432,7 +538,8 @@ async function finishCancelled(run: RunState): Promise<void> {
   }
   run.status = 'cancelled';
   run.finishedAt = new Date().toISOString();
-  await dbFinishRun(run.id, { status: 'cancelled', text: run.text, messageId: run.messageId, error: null });
+  const timing = finishTiming(run, 'cancelled');
+  await dbFinishRun(run.id, { status: 'cancelled', text: run.text, messageId: run.messageId, error: null, timing });
   console.log(`assistant run ${run.id}: cancelled (conversation ${run.conversationId})`);
   emit(run, { type: 'stopped', conversationId: run.conversationId });
   settle(run);
@@ -444,7 +551,8 @@ async function finishError(run: RunState, err: unknown): Promise<void> {
   run.status = 'error';
   run.error = message;
   run.finishedAt = new Date().toISOString();
-  await dbFinishRun(run.id, { status: 'error', text: run.text, messageId: null, error: message }).catch((dbErr) => {
+  const timing = finishTiming(run, 'error');
+  await dbFinishRun(run.id, { status: 'error', text: run.text, messageId: null, error: message, timing }).catch((dbErr) => {
     console.warn(`assistant run ${run.id}: failed to persist terminal error:`, dbErr instanceof Error ? dbErr.message : dbErr);
   });
   console.warn(`assistant run ${run.id}: provider failed (conversation ${run.conversationId}): ${message}`);

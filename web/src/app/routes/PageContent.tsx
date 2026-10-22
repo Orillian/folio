@@ -31,10 +31,17 @@ import { FormPageView } from './FormPageView';
 import { BasePageView } from '../../bases/BasePageView';
 import { NotFound } from './NotFound';
 import { NoAccess } from './NoAccess';
+import { EmbeddedNotice } from './EmbeddedNotice';
 import '../i18n/register';
 
 export interface PageContentProps {
   id: string;
+  /**
+   * A column of the compare view (app/compare/): the same page body, but not THE page of the window — it publishes
+   * nothing to the shell (header, tab title, recents, analytics), drops the outline panel (a narrow column has no room
+   * for it) and answers a missing / forbidden page with a compact notice instead of a full-screen one.
+   */
+  embedded?: boolean;
 }
 
 /**
@@ -84,7 +91,7 @@ export async function fetchPage(id: string): Promise<PageDoc> {
  * route (id from the URL) so the fetch/dispatch logic exists in exactly one
  * place.
  */
-export function PageContent({ id }: PageContentProps) {
+export function PageContent({ id, embedded = false }: PageContentProps) {
   const { t } = useTranslation('app');
   // The space comes from the URL, not from `data`: when a page did not open
   // (403/404), the page itself is exactly what is missing — and the 403
@@ -187,9 +194,9 @@ export function PageContent({ id }: PageContentProps) {
   // The board's own View | Edit switch lives inside the canvas; the board's properties follow it (reading is reading).
   const [boardEditing, setBoardEditing] = useState(false);
 
-  useDocumentTitle(data?.title);
+  useDocumentTitle(data?.title, !embedded);
   useSetHeaderInfo(
-    data
+    data && !embedded
       ? {
           pageId: data.id,
           pagePath: data.path,
@@ -210,11 +217,11 @@ export function PageContent({ id }: PageContentProps) {
         ? null
         : data.kind;
   useEffect(() => {
-    if (openedId && openedKind) trackPageOpen(openedKind, routeSpace ?? data?.space ?? '');
+    if (!embedded && openedId && openedKind) trackPageOpen(openedKind, routeSpace ?? data?.space ?? '');
     // Keyed on the page: a background refetch of the same page is not another visit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openedId, openedKind]);
-  useRecordRecentVisit(data ? { space: data.space, id: data.id, title: data.title, icon: data.icon } : undefined);
+  useRecordRecentVisit(data && !embedded ? { space: data.space, id: data.id, title: data.title, icon: data.icon } : undefined);
 
   if (isLoading) {
     // Offline there is nothing to wait for: either the page is on this
@@ -229,10 +236,10 @@ export function PageContent({ id }: PageContentProps) {
     // 404: the page really is not there. 403: it exists, the caller has no
     // right to it (a private space without membership, or a restricted page).
     if (error instanceof ApiError && error.status === 404) {
-      return <NotFound message={t('routes.page.notFound')} />;
+      return embedded ? <EmbeddedNotice kind="notFound" /> : <NotFound message={t('routes.page.notFound')} />;
     }
     if (error instanceof ApiError && error.status === 403) {
-      return <NoAccess space={routeSpace} page />;
+      return embedded ? <EmbeddedNotice kind="noAccess" /> : <NoAccess space={routeSpace} page />;
     }
     // No network and nothing of this page on this device: not a failure to
     // apologise for in red, just something that has to wait.
@@ -445,7 +452,7 @@ export function PageContent({ id }: PageContentProps) {
             />
           </div>
         </div>
-        <OutlinePanel markdown={data.markdown ?? ''} pageId={data.id} />
+        {!embedded && <OutlinePanel markdown={data.markdown ?? ''} pageId={data.id} />}
       </div>
     </div>
   );

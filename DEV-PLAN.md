@@ -93,6 +93,8 @@ In the order it was built.
 | 56 | Share links open in your own account | A signed-in reader who can open the page is sent from `/share/<token>` to the normal page; `ownAccess` in the share payload only for them, `?as=guest` keeps the guest view. |
 | 57 | Fast page copies | Page writes reindex only the paths they touched (scoped scan, full scan as fallback); folder-prefix lookups use `COLLATE "C"` range indexes (migration 050). Subtree copies on a 6000-page space: ~13 s → ~1.3 s. Page exports (MD, PDF, DOCX, YAML, public and share routes) send `Cache-Control: no-store`, so a CDN that caches by extension no longer serves a stale file. |
 | 58 | Artifacts | A page kind for interactive pages made by agents (Claude artifacts, Cursor canvases, any self-contained HTML): a `<name>.artifact/` folder in the repository, a sandboxed frame without cookies or API access, `window.storage` and `localStorage` that persist per reader (migration 051), import from a link, file or pasted HTML, MCP `publish_artifact` (41 tools). No JSX or TSX runtime yet |
+| 59 | Compare pages and versions | Up to five pages, or older versions of a page, side by side at `/compare?items=…`: a tray of collected pages (also for viewers), live editor columns, read-only version columns from the history panel, "Highlight changes" against the leftmost column, synchronized scrolling, and a link that carries only ids so each reader sees it with their own access. |
+| 60 | Template tools and agent run status | MCP and the assistant get `list_templates`, `create_page_from_template`, `save_page_as_template` and `create_template` (45 tools; `create_page` refuses `_templates/`). Folio AI runs show a thinking token counter, an elapsed counter during silent generation and real tool names, keep paragraphs and links in the live reply, and log per-step timing (`ai_runs.timing`, migration 052). The page tree draws indent guides. |
 
 ## What comes next
 
@@ -104,7 +106,6 @@ picked up.
 - Dark theme for the data-table grid.
 - Callouts and Mermaid diagrams in PDF and DOCX export.
 - Default names that follow the user's language.
-- Choice, status, user and link fields rendered properly in forms.
 - Trash: remove nested folders when emptying.
 - Readiness check that includes the database.
 
@@ -114,8 +115,6 @@ picked up.
 - More providers for the assistant.
 - Share links and content search for file pages.
 - Artifacts: build JSX and TSX sources inside Folio, comments on an artifact, a version list in the interface.
-- A `robots.txt` and a sitemap for public sites, so that a published space can
-  be found (and one that must not be found can say so).
 - Limits that hold across processes: a per-address limit for public search and
   Redis-backed counters and host cache, for more than one server process.
 

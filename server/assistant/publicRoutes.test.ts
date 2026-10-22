@@ -334,7 +334,7 @@ describe('public-site assistant (real PG, fastify inject, mocked Cursor SDK)', (
     openTools.push(handle);
 
     // No write tool and no history is even offered.
-    for (const name of ['create_page', 'update_page', 'create_board', 'update_board', 'board_ops', 'folio_table_insert', 'page_history', 'page_at_sha']) {
+    for (const name of ['create_page', 'update_page', 'create_board', 'update_board', 'board_ops', 'folio_table_insert', 'page_history', 'page_at_sha', 'list_templates', 'create_page_from_template', 'save_page_as_template', 'create_template']) {
       expect(handle.tools[name], name).toBeUndefined();
     }
 

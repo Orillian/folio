@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router';
 import i18next from 'i18next';
 import { ToastProvider } from '../ui/Toast';
 import { HistoryPanel, formatFileSize } from './HistoryPanel';
@@ -21,7 +22,9 @@ function Wrapper({ children }: { children: ReactNode }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return (
     <QueryClientProvider client={client}>
-      <ToastProvider>{children}</ToastProvider>
+      <ToastProvider>
+        <MemoryRouter>{children}</MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }

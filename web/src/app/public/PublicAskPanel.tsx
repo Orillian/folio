@@ -4,7 +4,8 @@ import { Loader2, Plus, Send, Sparkles, Square, X } from 'lucide-react';
 import type { PublicSiteInfo } from '@shared/contracts';
 import { Markdown } from '../../markdown';
 import type { Translate } from '../errorText';
-import { runStepText } from '../assistant/runStream';
+import { runStepParts } from '../assistant/runStream';
+import { useRunElapsed } from '../assistant/useRunElapsed';
 import { useMarkdownPublicSite } from './PublicPageBody';
 import { createPublicAskAdapter, publicAskErrorText } from './publicAsk';
 import { usePublicAsk } from './usePublicAsk';
@@ -68,6 +69,8 @@ export function PublicAskPanel({ site, pageId }: PublicAskPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const busy = ask.isRunning || ask.loading;
+  const runElapsed = useRunElapsed(ask.isRunning, ask.step, ask.streamText);
+  const askStatus = runStepParts(t as Translate, ask.step, runElapsed);
   const { hydrate } = ask;
 
   function setOpen(next: boolean) {
@@ -217,9 +220,9 @@ export function PublicAskPanel({ site, pageId }: PublicAskPanelProps) {
                   }`}
                 >
                   <Loader2 className={`h-3.5 w-3.5 shrink-0 animate-spin ${ask.reconnecting ? 'text-amber-500' : ''}`} aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate">
-                    {ask.reconnecting ? t('assistant.chat.reconnecting') : runStepText(t as Translate, ask.step)}
-                  </span>
+                  <span className="min-w-0 truncate">{ask.reconnecting ? t('assistant.chat.reconnecting') : askStatus.text}</span>
+                  {!ask.reconnecting && askStatus.elapsed ? <span className="shrink-0 tabular-nums">· {askStatus.elapsed}</span> : null}
+                  <span className="flex-1" />
                   <button
                     type="button"
                     onClick={() => void ask.stop()}

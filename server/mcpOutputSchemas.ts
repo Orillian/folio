@@ -140,6 +140,9 @@ export const outputSchemas = {
     entryHtml: z.string().optional().describe('Artifact pages: the HTML of the entry page'),
   },
   page: pageMetaOutput.shape,
+  list_templates: {
+    templates: z.array(pageMetaOutput.extend({ description: z.string().optional().describe('What the template is for, when it has a description') })).describe('Templates of the space'),
+  },
   board_ops: {
     summary: z.string().describe('What the operations changed'),
     elements: z.record(z.string(), z.unknown()).describe('Layout summary of the board after the operations'),

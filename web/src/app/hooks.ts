@@ -64,19 +64,22 @@ export function useDebouncedValue<T>(value: T, delayMs: number): T {
  * Split into two effects deliberately: a title change must not trigger the
  * "restore" cleanup (that only belongs to the final unmount), or the title
  * would flicker back to the pre-mount value on every update in place (e.g.
- * a live rename) before the new title lands.
+ * a live rename) before the new title lands. `enabled=false` leaves the title
+ * alone (a page drawn as a column of the compare view is not the window's page).
  */
-export function useDocumentTitle(title: string | undefined) {
+export function useDocumentTitle(title: string | undefined, enabled = true) {
   useEffect(() => {
+    if (!enabled) return;
     document.title = title ? `${title} · Folio` : 'Folio';
-  }, [title]);
+  }, [title, enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
     const original = document.title;
     return () => {
       document.title = original;
     };
-  }, []);
+  }, [enabled]);
 }
 
 /**

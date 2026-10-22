@@ -8,13 +8,35 @@ export type DiffRow = DiffLine | { kind: 'skip'; count: number };
 
 const LCS_CELL_LIMIT = 4_000_000;
 
-export function diffLines(theirs: string, mine: string): DiffLine[] {
-  const a = theirs === '' ? [] : theirs.split('\n');
-  const b = mine === '' ? [] : mine.split('\n');
+/** The lines of a text; the empty text has none. */
+function toLines(text: string): string[] {
+  return text === '' ? [] : text.split('\n');
+}
+
+/** How many lines the two texts share at the start and at the end. */
+function commonEdges(a: string[], b: string[]): { head: number; tail: number } {
   let head = 0;
   while (head < a.length && head < b.length && a[head] === b[head]) head++;
   let tail = 0;
   while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  return { head, tail };
+}
+
+/**
+ * True when the changed middle of the two texts is too big for the LCS — `diffLines` then degrades to "all removed,
+ * all added", which says nothing. A caller that wants to HIGHLIGHT changes (the compare view) asks first and says so.
+ */
+export function exceedsDiffLimit(theirs: string, mine: string): boolean {
+  const a = toLines(theirs);
+  const b = toLines(mine);
+  const { head, tail } = commonEdges(a, b);
+  return (a.length - head - tail) * (b.length - head - tail) > LCS_CELL_LIMIT;
+}
+
+export function diffLines(theirs: string, mine: string): DiffLine[] {
+  const a = toLines(theirs);
+  const b = toLines(mine);
+  const { head, tail } = commonEdges(a, b);
   const midA = a.slice(head, a.length - tail);
   const midB = b.slice(head, b.length - tail);
 

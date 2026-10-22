@@ -2361,7 +2361,7 @@ export type SendAssistantMessageBody = z.infer<typeof sendAssistantMessageBodySc
 
 export type AssistantStreamEvent =
   | { type: 'conversation'; conversationId: string }
-  | { type: 'status'; status: 'starting' | 'thinking' | 'tool' | 'writing'; label?: string }
+  | { type: 'status'; status: 'starting' | 'thinking' | 'tool' | 'writing'; label?: string; tokens?: number; generating?: boolean }
   | { type: 'delta'; text: string }
   | { type: 'complete'; conversationId: string; message: AssistantMessage }
   | { type: 'stopped'; conversationId: string }
@@ -2377,7 +2377,13 @@ export type AssistantStreamEvent =
 // shows the same run.
 
 export type AssistantRunStatus = 'running' | 'done' | 'error' | 'cancelled';
-export type AssistantRunStep = { status: 'starting' | 'thinking' | 'tool' | 'writing'; label?: string };
+/**
+ * `tokens` / `generating` are set while the model is producing output that is not reply text yet:
+ * `tokens` = approximate tokens so far; `generating` (with status 'tool', `label` = the tool when known) =
+ * the arguments of that tool call are being written (a page for create_page), as opposed to the tool running.
+ * Only counters — never the thinking text or the arguments themselves.
+ */
+export type AssistantRunStep = { status: 'starting' | 'thinking' | 'tool' | 'writing'; label?: string; tokens?: number; generating?: boolean };
 
 export interface AssistantRunInfo {
   runId: string;

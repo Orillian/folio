@@ -2,7 +2,7 @@
 
 A Cursor plugin that connects the agent to your Folio wiki over MCP and teaches it how to work with it. It bundles:
 
-- the `folio` MCP server, with all 41 Folio tools (search, pages, data tables, forms, bases, whiteboards, history);
+- the `folio` MCP server, with all 45 Folio tools (search, pages, data tables, forms, bases, whiteboards, history);
 - the `folio-wiki` rule: for conventions, decisions and runbooks the agent searches the wiki first and links the page it used;
 - the `folio-wiki` skill: find, read, change as little as possible, re-read, link the result;
 - the `release-notes` skill: compare `git log` since the last tag with the wiki and write release notes.

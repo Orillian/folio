@@ -1333,7 +1333,15 @@
         "starting": "Starting the agent…",
         "thinking": "The agent is analyzing the request…",
         "tool": "Working with {{tool}}…",
-        "writing": "The agent is writing a reply…"
+        "writing": "The agent is writing a reply…",
+        "thinkingNow": "Thinking…",
+        "draftingPage": "Writing the page…",
+        "preparingTool": "Preparing the “{{tool}}” action…",
+        "preparingAction": "Preparing an action…",
+        "tokens": "~{{tokens}} tokens",
+        "modelPreparing": "The model is preparing the reply or changes…",
+        "elapsedSeconds": "{{seconds}}s",
+        "elapsedMinutes": "{{minutes}}m {{seconds}}s"
       },
       "stop": "Stop",
       "finished": "Agent finished",
@@ -2089,6 +2097,52 @@
       "tag": "Tags",
       "file": "Attachments",
       "unresolved": "Unresolved"
+    }
+  },
+  "compare": {
+    "title": "Comparison",
+    "add": "Add to comparison",
+    "remove": "Remove from comparison",
+    "clear": "Clear",
+    "added": "Added to comparison ({{count}} of {{max}})",
+    "alreadyAdded": "This is already in the comparison.",
+    "full": "The comparison already has {{max}} items — remove one to add another.",
+    "linkCopied": "Comparison link copied",
+    "tray": {
+      "label": "Comparison · {{count}}",
+      "open": "Open",
+      "needTwo": "Add at least two items",
+      "version": "version {{sha}}"
+    },
+    "page": {
+      "back": "Back",
+      "highlight": "Highlight changes",
+      "syncScroll": "Synchronized scrolling",
+      "refresh": "Refresh base",
+      "refreshHint": "Read the leftmost column's text again (the page may have changed)",
+      "copyLink": "Copy link",
+      "empty": "Nothing to compare. Add pages from the “…” menu in the sidebar (right-click a page) or the button in the page header.",
+      "needMore": "Add another page or version to compare."
+    },
+    "column": {
+      "open": "Open",
+      "remove": "Remove column",
+      "base": "Base",
+      "baseHint": "The other columns are compared with this one",
+      "versionFrom": "version {{sha}} · {{date}}"
+    },
+    "highlight": {
+      "loading": "Loading the base text…",
+      "noBase": "The leftmost column has no text to compare with.",
+      "tooLarge": "This page is too large to highlight.",
+      "identical": "No differences from the base.",
+      "summary": "Changed blocks: {{changed}}, removed fragments: {{removed}}",
+      "removed": "In the base, missing here"
+    },
+    "history": {
+      "withCurrent": "Compare with current",
+      "add": "Add to comparison",
+      "inList": "In comparison"
     }
   }
 }

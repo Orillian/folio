@@ -22,6 +22,9 @@ interface CapturedRunOptions {
   onTextDelta?: (text: string) => void;
   onTool?: (name: string) => void;
   onEvent?: (event: unknown) => void;
+  onUpdate?: (update: { type: string; [key: string]: unknown }) => void;
+  onMilestone?: (milestone: string) => void;
+  onToolFinished?: (timing: { tool: string; ms: number; ok: boolean }) => void;
 }
 
 const cursorMock = vi.hoisted(() => {
@@ -221,5 +224,57 @@ describe('RunManager (server/assistant/runs.ts)', () => {
     expect(historical!.event.seq).toBeGreaterThan(5);
     // ...and comfortably beyond any real run's seq count, not just this one's.
     expect(historical!.event.seq).toBeGreaterThan(1_000_000);
+  });
+
+  it('separates text chunks split by a tool call, shows a token counter while the model writes a tool call, and persists timing', async () => {
+    const { query } = await import('../db/pool.js');
+    const user = await authStore.createUser({
+      email: `assistant-progress-${Date.now()}@test.local`,
+      name: 'Progress Tester',
+      passwordHash: 'x',
+      isAdmin: false,
+    });
+    const conversation = await assistantStore.insertConversation({
+      userId: user.id,
+      title: 'Progress conversation',
+      cursorAgentId: `agent-progress-${Date.now()}`,
+      model: 'auto',
+    });
+    const { runId } = await runs.startRun({
+      user,
+      conversation,
+      message: 'Write a page',
+      runMode: 'agent',
+      currentPath: null,
+      space: null,
+      pageId: null,
+      apiKey: 'test-key',
+    });
+    const events: AssistantRunEvent[] = [];
+    runs.subscribe(runId, 0, (event) => events.push(event));
+    const opts = cursorMock.opts();
+
+    opts.onMilestone?.('agent-ready');
+    opts.onUpdate?.({ type: 'text-delta', text: 'format.' });
+    opts.onTextDelta?.('format.');
+    opts.onUpdate?.({ type: 'partial-tool-call', toolCall: { type: 'mcp', args: { toolName: 'create_page', args: { markdown: 'x'.repeat(400) } } } });
+    opts.onUpdate?.({ type: 'tool-call-started', toolCall: { type: 'mcp' } });
+    opts.onToolFinished?.({ tool: 'create_page', ms: 12, ok: true });
+    opts.onUpdate?.({ type: 'tool-call-completed' });
+    opts.onTextDelta?.('Looking');
+
+    const progress = events.find((e) => e.type === 'status' && e.generating);
+    expect(progress).toMatchObject({ type: 'status', status: 'tool', label: 'create_page', generating: true });
+    expect((progress as { tokens: number }).tokens).toBeGreaterThanOrEqual(100);
+
+    cursorMock.resolve('format.Looking');
+    await waitUntil(() => events.some((e) => e.type === 'complete'));
+    const complete = events.find((e) => e.type === 'complete');
+    expect(complete).toMatchObject({ message: { content: 'format.\n\nLooking' } });
+
+    const [row] = await query<{ timing: { agentReadyMs: number; toolCalls: number; tools: Array<{ tool: string }> } }>('SELECT timing FROM ai_runs WHERE id = $1', [runId]);
+    expect(row?.timing.toolCalls).toBe(1);
+    expect(row?.timing.tools[0]?.tool).toBe('create_page');
+    expect(row?.timing.agentReadyMs).toBeGreaterThanOrEqual(0);
   });
 });

@@ -343,11 +343,11 @@ describe('assistant tools only return what the user may read (real PG, in-proces
     const names = Object.keys((await tools(bob, 'agent')).tools);
     expect(names.sort()).toEqual(
       [
-        'board_ops', 'convert_canvas_to_board', 'create_board', 'create_form', 'create_page', 'folio_table_add_column', 'folio_table_create', 'folio_table_delete',
+        'board_ops', 'convert_canvas_to_board', 'create_board', 'create_form', 'create_page', 'create_page_from_template', 'create_template', 'folio_table_add_column', 'folio_table_create', 'folio_table_delete',
         'folio_table_delete_column', 'folio_table_delete_view', 'folio_table_insert', 'folio_table_list', 'folio_table_query', 'folio_table_save_view', 'folio_table_schema',
         'folio_table_update', 'folio_table_update_column', 'get_backlinks', 'get_graph', 'get_page_metadata', 'list_orphans', 'list_properties', 'list_spaces', 'list_tags',
-        'list_tree', 'list_unresolved_links', 'page_at_sha', 'page_history', 'publish_artifact', 'query_base', 'read_page', 'read_skill', 'rename_tag', 'report_unanswered_question',
-        'resolve_folio_url', 'save_base', 'search_pages', 'set_page_properties', 'update_board', 'update_form', 'update_page',
+        'list_templates', 'list_tree', 'list_unresolved_links', 'page_at_sha', 'page_history', 'publish_artifact', 'query_base', 'read_page', 'read_skill', 'rename_tag', 'report_unanswered_question',
+        'resolve_folio_url', 'save_base', 'save_page_as_template', 'search_pages', 'set_page_properties', 'update_board', 'update_form', 'update_page',
       ].sort(),
     );
     // publish_artifact is offered, but without the two inputs that make Folio fetch or embed something foreign: no `url`, no `embedCode`.

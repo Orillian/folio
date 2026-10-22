@@ -291,3 +291,15 @@ An artifact is an interactive page made by an agent
     title, properties and the visible text of its entry page (the first 100 KB),
     not by what a script draws later. A bundle is limited to 500 files and 50 MB,
     a download from a link to 20 MB, and an MCP request to 25 MB.
+
+## Comparison
+
+Side by side view of pages and versions ([how it works](FEATURES.md)).
+
+32. **Comparison holds five columns, and highlights text only.** Highlighting is
+    block by block: a paragraph that moved shows as changed, and a very large
+    page is not highlighted (the column says so). Only version columns are marked,
+    never the live ones. A table or base version shows its file text with changed
+    lines marked; a whiteboard or a file version is a preview without marks, and
+    version columns are read-only. The list of columns lives in the browser, and
+    the link carries only ids, so each reader sees it with their own access.

@@ -65,4 +65,22 @@ describe('runStepText', () => {
     expect(runStepText(t, { status: 'thinking', label: 'Reading pages' })).toBe('Reading pages');
     expect(runStepText(t, { status: 'writing' })).toBe('assistant.chat.status.writing');
   });
+
+  it('shows a live counter while the model thinks or writes a tool call', () => {
+    expect(runStepText(t, { status: 'thinking', tokens: 120 })).toBe('assistant.chat.status.thinkingNow assistant.chat.status.tokens');
+    expect(runStepText(t, { status: 'tool', label: 'create_page', generating: true, tokens: 900 })).toBe('assistant.chat.status.draftingPage assistant.chat.status.tokens');
+    expect(runStepText(t, { status: 'tool', label: 'save_base', generating: true, tokens: 5 })).toBe('assistant.chat.status.preparingTool:save_base assistant.chat.status.tokens');
+    expect(runStepText(t, { status: 'tool', generating: true })).toBe('assistant.chat.status.preparingAction');
+  });
+
+  it('appends the silence since the last event, and names the silent model-writing phase', () => {
+    const tt = (key: string, values?: Record<string, unknown>) =>
+      key.endsWith('elapsedMinutes') ? `${values?.minutes}m ${values?.seconds}s` : key.endsWith('elapsedSeconds') ? `${values?.seconds}s` : values?.tool ? `${key}:${values.tool}` : key;
+    expect(runStepText(tt, { status: 'thinking' }, null)).toBe('assistant.chat.status.thinking');
+    expect(runStepText(tt, { status: 'thinking' }, 45)).toBe('assistant.chat.status.modelPreparing · 45s');
+    expect(runStepText(tt, { status: 'writing' }, 72)).toBe('assistant.chat.status.modelPreparing · 1m 12s');
+    expect(runStepText(tt, { status: 'tool', label: 'create_page' }, 5)).toBe('assistant.chat.status.tool:create_page · 5s');
+    expect(runStepText(tt, { status: 'thinking', label: 'Reading pages' }, 9)).toBe('Reading pages · 9s');
+    expect(runStepText(tt, null, 4)).toBe('assistant.chat.status.starting · 4s');
+  });
 });

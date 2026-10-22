@@ -30,6 +30,7 @@ import { MCP_WRITE_TOOL_NAMES, buildFolioMcpServer } from '../mcp.js';
 import { isSystemUser } from '../auth/session.js';
 import { MAX_UNANSWERED_REPORTS_PER_RUN, insertUnanswered } from './analytics.js';
 import { listAssistantSkillNames, readAssistantSkill } from './workspace.js';
+import type { ToolTiming } from './runTiming.js';
 
 const MAX_TOOL_RESPONSE_CHARS = 120_000;
 
@@ -65,8 +66,8 @@ function assistantInputSchema(tool: { name: string; inputSchema: unknown }): Rec
   return { ...schema, properties, ...(required ? { required } : {}) } as unknown as Record<string, SDKJsonValue>;
 }
 
-/** Not offered to a public-site run at all (the MCP server refuses them for a public actor too): history shows authors and old revisions, and the property list shows properties, which a public site never does. */
-const NOT_ON_PUBLIC_SITE_TOOL_NAMES = new Set(['page_history', 'page_at_sha', 'list_properties']);
+/** Not offered to a public-site run at all (the MCP server refuses them for a public actor too): history shows authors and old revisions, the property list shows properties, and templates are never public. */
+const NOT_ON_PUBLIC_SITE_TOOL_NAMES = new Set(['page_history', 'page_at_sha', 'list_properties', 'list_templates']);
 
 export interface AssistantToolsHandle {
   tools: Record<string, SDKCustomTool>;
@@ -90,6 +91,8 @@ export interface AssistantToolContext {
    * doc comment in mcp.ts. Such a run is Ask-only.
    */
   publicSpace?: string | null;
+  /** Called after every tool execute() with the tool's name and how long it took (no arguments, no result). */
+  onToolFinished?: (timing: ToolTiming) => void;
 }
 
 export const REPORT_UNANSWERED_TOOL = 'report_unanswered_question';
@@ -227,6 +230,31 @@ export async function buildAssistantTools(user: User, runMode: AssistantRunMode,
   // Built-in, in both modes, and deliberately not registered in the public MCP server (mcp.ts).
   tools[REPORT_UNANSWERED_TOOL] = buildReportUnansweredTool(user, context);
   tools[READ_SKILL_TOOL] = await buildReadSkillTool();
+
+  const onToolFinished = context.onToolFinished;
+  if (onToolFinished) {
+    for (const [name, tool] of Object.entries(tools)) {
+      const execute = tool.execute;
+      tool.execute = async (args, toolContext) => {
+        const startedAt = Date.now();
+        let ok = true;
+        try {
+          const result = await execute(args, toolContext);
+          if (typeof result === 'object' && result !== null && (result as { isError?: unknown }).isError === true) ok = false;
+          return result;
+        } catch (error) {
+          ok = false;
+          throw error;
+        } finally {
+          try {
+            onToolFinished({ tool: name, ms: Date.now() - startedAt, ok });
+          } catch {
+            // timing must never break a tool call
+          }
+        }
+      };
+    }
+  }
 
   return {
     tools,

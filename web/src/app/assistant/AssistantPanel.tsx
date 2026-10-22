@@ -6,13 +6,14 @@ import { Bot, ChevronUp, History, Loader2, MessageCircle, Minus, Plus, Send, Set
 import type { AssistantFeedbackRating, AssistantMessage, AssistantRunMode } from '@shared/contracts';
 import { api } from '../api';
 import { useAssistantRun } from './runState';
-import { runStepText } from './runStream';
+import { runStepParts } from './runStream';
+import { useRunElapsed } from './useRunElapsed';
 import { useApiErrorText } from '../errorText';
 import { useActivePageId, useLocalStorage } from '../hooks';
 import { useToast } from '../ui/Toast';
 import { Menu } from '../ui/Menu';
 import { AssistantSettingsModal } from './AssistantSettingsModal';
-import { AssistantMessageContent } from './AssistantMessageContent';
+import { AssistantMessageContent, AssistantStreamingContent } from './AssistantMessageContent';
 import { AssistantFeedbackButtons, useAssistantFeedback } from './AssistantFeedback';
 import { AssistantSurveyCard } from './AssistantSurvey';
 import '../i18n/register';
@@ -68,9 +69,9 @@ function segmentClass(active: boolean): string {
  * chatMarkdown.ts's own minimal unified pipeline — deliberately not
  * web/src/markdown's <Markdown>, to avoid its mentionable-list fetch firing
  * on every message for a `space`/`pagePath` this panel doesn't really have a
- * stable one of); the in-progress streaming bubble stays plain pre-wrapped
- * text (re-parsing markdown on every delta buys nothing since it's about to
- * be replaced), and user messages are always plain text.
+ * stable one of); the in-progress streaming bubble uses the same renderer
+ * (AssistantStreamingContent: deferred + memoized, so links are links while the
+ * text arrives), and user messages are always plain text.
  *
  * The actual run — starting it, subscribing to its NDJSON events, surviving
  * disconnects/F5/navigation — lives in useAssistantRun() (runState.tsx),
@@ -257,7 +258,8 @@ export function AssistantPanel({ open, onClose }: AssistantPanelProps) {
   function rate(message: AssistantMessage, rating: AssistantFeedbackRating | null) {
     feedback.mutate({ messageId: message.id, rating, previous: message.feedback ?? null });
   }
-  const statusText = runStepText(t, run.step);
+  const runElapsed = useRunElapsed(run.isRunning, run.step, run.streamText);
+  const status = runStepParts(t, run.step, runElapsed);
 
   function newConversation() {
     if (busy) return;
@@ -453,14 +455,16 @@ export function AssistantPanel({ open, onClose }: AssistantPanelProps) {
               })}
               {run.isRunning && (
                 <div className="mr-auto max-w-[88%] rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800/60">
-                  {run.streamText && <p className="whitespace-pre-wrap text-neutral-800 dark:text-neutral-100">{run.streamText}</p>}
+                  {run.streamText && <AssistantStreamingContent text={run.streamText} className="text-neutral-800 dark:text-neutral-100" />}
                   <div
                     className={`flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400 ${
                       run.streamText ? 'mt-2 border-t border-neutral-200 pt-2 dark:border-neutral-700' : ''
                     }`}
                   >
                     <Loader2 className={`h-3.5 w-3.5 shrink-0 animate-spin ${run.reconnecting ? 'text-amber-500' : ''}`} />
-                    <span className="min-w-0 flex-1 truncate">{run.reconnecting ? t('assistant.chat.reconnecting') : statusText}</span>
+                    <span className="min-w-0 truncate">{run.reconnecting ? t('assistant.chat.reconnecting') : status.text}</span>
+                    {!run.reconnecting && status.elapsed ? <span className="shrink-0 tabular-nums">· {status.elapsed}</span> : null}
+                    <span className="flex-1" />
                     <button
                       type="button"
                       onClick={() => void stop()}

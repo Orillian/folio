@@ -217,6 +217,34 @@ them, the header says **Not saved** and closing the tab asks first.
 
 ---
 
+## Compare pages and versions
+
+Two translations of one page, this quarter's plan next to last quarter's, a spec
+next to the draft that should follow it: put up to five pages, or older versions
+of a page, side by side.
+
+![Two pages side by side, the left one as a reader sees it and the right one open for editing](docs/images/compare-live.png)
+
+- **Collect, then open.** "Add to comparison" is in the sidebar menu (also for
+  people who can only read), in the page header and in the history panel. A chip
+  at the bottom of the window holds the list, from any spaces you can open.
+- **Live columns.** A current page is the page itself, with the same editor and
+  live collaboration: type in a column and everyone on the page sees it.
+- **Versions next to the page.** In a page's history, "Compare with current" puts
+  a read-only version beside the live page. "Highlight changes" marks what is new
+  or changed in green and what was removed in red against the leftmost column,
+  and synchronized scrolling keeps the columns together.
+
+![A page next to an older version of itself, with the changes highlighted](docs/images/compare-highlight.png)
+
+- **A link to share.** "Copy link" copies an address with only page ids and
+  version numbers; whoever opens it sees each column with their own access.
+
+Highlighting compares text block by block. See
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+
+---
+
 ## Works offline
 
 On a train, on a plane, on bad hotel Wi-Fi — keep writing.
@@ -489,6 +517,10 @@ it appears in the table on the left — and answered from the data.
   builds a form, restructures a section — inside your rights, never beyond them.
 - **Runs live on the server.** Close the browser and the work continues; come
   back and pick up where it was.
+- **You see what it is doing.** The status line shows the model's thinking
+  with a token counter, an elapsed-time counter while it writes a long answer or
+  page, and the real name of the tool it is calling; the live reply keeps its
+  paragraphs and links.
 - **The same tools as everyone else.** The assistant works through the very
   tools an outside agent gets over MCP — there is no second, weaker
   implementation, and in Ask mode the write tools are switched off on the
@@ -578,10 +610,10 @@ Without a key everything else in Folio works as usual.
 
 ## Built for agents
 
-**MCP server.** 41 tools over `/mcp`: list and search spaces, read and write
+**MCP server.** 45 tools over `/mcp`: list and search spaces, read and write
 pages, build forms, edit data table columns and views, convert a canvas to a board, read a page's outline, tags, properties and links, list a space's tags and
 property keys, rename a tag, set page properties, find unresolved links
-and orphan pages, read the link graph, query, create and edit Obsidian bases, create and edit whiteboards, publish interactive artifacts, query and update data tables,
+and orphan pages, read the link graph, query, create and edit Obsidian bases, create and edit whiteboards, publish interactive artifacts, list templates and create pages from them, query and update data tables,
 read history.
 Connect with a personal access token, or through OAuth 2.1 from clients that
 run in a vendor's cloud (claude.ai, Claude Desktop, ChatGPT). `search` and

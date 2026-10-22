@@ -8,6 +8,8 @@
  */
 import { mkdir } from 'node:fs/promises';
 import type { ModelSelection, Run, SDKAgent, SDKMessage } from '@cursor/sdk';
+import { realToolName, type SdkUpdateLike } from './genProgress.js';
+import type { RunMilestone, ToolTiming } from './runTiming.js';
 import type { AssistantRunMode } from '../../shared/contracts.js';
 import type { User } from '../../shared/contracts.js';
 import type { AssistantConversationRow } from './store.js';
@@ -34,6 +36,12 @@ export interface RunAssistantInput {
   onEvent?: (event: SDKMessage) => void;
   onTextDelta?: (text: string) => void;
   onTool?: (name: string) => void;
+  /** Every SDK delta update (text, thinking, partial tool call, token counter, step/turn markers…) — for progress and timing only. */
+  onUpdate?: (update: SdkUpdateLike) => void;
+  /** Setup milestones: tools built, SDK agent ready (created/resumed + reloaded), agent.send() returned. */
+  onMilestone?: (milestone: RunMilestone) => void;
+  /** A tool's execute() finished (name, duration, whether it returned an error). */
+  onToolFinished?: (timing: ToolTiming) => void;
   /** Deadline for the whole call (agent.send() + stream()). Defaults per runMode — see defaultTotalTimeoutMs. */
   totalTimeoutMs?: number;
   /** Reset on every delta/tool/thinking event — catches a run that's silently stuck rather than actively erroring, without forcing every Agent-mode run to fit inside one short total deadline. Default CURSOR_AGENT_IDLE_TIMEOUT_MS (600000 = 10 min). */
@@ -150,7 +158,9 @@ export async function runCursorAssistant(input: RunAssistantInput): Promise<stri
     space: input.space,
     pageId: input.pageId,
     publicSpace: input.publicSpace ?? null,
+    onToolFinished: input.onToolFinished,
   });
+  input.onMilestone?.('tools-ready');
   ensureAssistantCursorPermissions();
   const sdk = await configureSdk();
   const agentOptions = {
@@ -175,6 +185,7 @@ export async function runCursorAssistant(input: RunAssistantInput): Promise<stri
     const agent = await resumeOrCreateAgent(sdk, input.conversation.cursorAgentId, agentOptions);
     try {
       await agent.reload().catch(() => undefined);
+      input.onMilestone?.('agent-ready');
       // The context is inlined into the prompt: every extra file read is a
       // separate model turn (the first run spent 8-10 read/glob calls before
       // its first action). Skills stay files: they are large and each is
@@ -249,13 +260,19 @@ export async function runCursorAssistant(input: RunAssistantInput): Promise<stri
           local: { customTools: toolsHandle.tools },
           onDelta: ({ update }) => {
             bumpIdle();
+            try {
+              input.onUpdate?.(update as SdkUpdateLike);
+            } catch {
+              // progress/timing must never break the run
+            }
             if (update.type === 'text-delta') input.onTextDelta?.(update.text);
-            if (update.type === 'tool-call-started') input.onTool?.(update.toolCall.type);
+            if (update.type === 'tool-call-started') input.onTool?.(realToolName(update.toolCall.type, (update.toolCall as { args?: unknown }).args));
           },
         }),
         deadline,
       ]);
       runRef = run;
+      input.onMilestone?.('sent');
       input.onRun?.(run);
       const abort = () => void run.cancel().catch(() => undefined);
       if (input.signal?.aborted) abort();

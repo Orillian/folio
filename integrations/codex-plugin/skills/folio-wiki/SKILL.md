@@ -18,9 +18,9 @@ Write only when the user asked for a change in the current message. Reading is a
 
 ## Tools
 
-Reading: `list_spaces`, `list_tree`, `search_pages`, `read_page`, `resolve_folio_url`, `get_backlinks`, `page_history`, `page_at_sha`, `folio_table_list`, `folio_table_schema`, `folio_table_query`, `get_page_metadata` (a page's outline, tags, properties, links), `list_tags` (the tag tree with page counts), `list_properties` (property keys in use, with type and sample values), `query_base` (the rows of a base). For an artifact, `read_page` returns its manifest, file list and entry HTML. `search` and `fetch` are read-only aliases made for ChatGPT's deep research. Prefer `search_pages` and `read_page` unless your client asks for `search` and `fetch`.
+Reading: `list_spaces`, `list_tree`, `search_pages`, `read_page`, `resolve_folio_url`, `get_backlinks`, `page_history`, `page_at_sha`, `folio_table_list`, `folio_table_schema`, `folio_table_query`, `get_page_metadata` (a page's outline, tags, properties, links), `list_tags` (the tag tree with page counts), `list_properties` (property keys in use, with type and sample values), `query_base` (the rows of a base), `list_templates` (a space's page templates). For an artifact, `read_page` returns its manifest, file list and entry HTML. `search` and `fetch` are read-only aliases made for ChatGPT's deep research. Prefer `search_pages` and `read_page` unless your client asks for `search` and `fetch`.
 
-Writing (needs a token with the `write` scope): `create_page`, `update_page`, `create_board`, `update_board`, `board_ops`, `convert_canvas_to_board`, `folio_table_create`, `folio_table_add_column`, `folio_table_update_column`, `folio_table_delete_column`, `folio_table_save_view`, `folio_table_delete_view`, `folio_table_insert`, `folio_table_update`, `folio_table_delete`, `create_form`, `update_form`, `rename_tag`, `set_page_properties`, `save_base`, `publish_artifact`.
+Writing (needs a token with the `write` scope): `create_page`, `update_page`, `create_board`, `update_board`, `board_ops`, `convert_canvas_to_board`, `folio_table_create`, `folio_table_add_column`, `folio_table_update_column`, `folio_table_delete_column`, `folio_table_save_view`, `folio_table_delete_view`, `folio_table_insert`, `folio_table_update`, `folio_table_delete`, `create_form`, `update_form`, `rename_tag`, `set_page_properties`, `save_base`, `publish_artifact`, `create_page_from_template` (a page copied from a template of `list_templates`), `save_page_as_template`, `create_template`.
 
 If a write tool is refused, the token is read-only. Say so. Do not look for a workaround.
 
@@ -59,6 +59,12 @@ If a write tool is refused, the token is read-only. Say so. Do not look for a wo
 - `rename_tag(space, from, to)` renames a tag across the whole space (bodies, front matter, tables, boards, files) in one Git commit. It touches many pages, so confirm with the user first. Pages you cannot edit are skipped and counted in `pagesSkipped`.
 - `set_page_properties(id, properties, etag?, merge?)` writes front matter for any kind of page. To set one key, pass `merge: true` with only that key (`null` removes a key). Without `merge`, `properties` is the whole map and keys you leave out are removed. A conflict error names the current etag: re-read and retry.
 - `save_base(space, yaml, path?, id?, etag?)` creates a `.base` file (`path` such as `views/tasks.base`) or replaces one (`id`). Invalid YAML is refused with a line number. The reply previews the first view.
+
+## Templates
+
+- A template is a page under the space's `_templates/` folder; `list_tree` and `search_pages` never show it, `list_templates(space)` does (id, title, kind, description).
+- When the user wants a page "from a template" or "like our usual meeting notes", call `list_templates` for the space first. If one fits, `create_page_from_template(templateId, space, parentPath)`, then read the copy and fill it with `update_page`, keeping its structure. `{{date}}`, `{{author}}` and `{{title}}` in its documents are filled in for you. If nothing fits, say so and offer a plain `create_page`; do not invent a template.
+- To make a page reusable, `save_page_as_template(id, description?)`; the original stays. A new template from scratch: `create_template`. `create_page` refuses the `_templates/` folder.
 
 ## Artifacts
 

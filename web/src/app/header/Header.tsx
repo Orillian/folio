@@ -12,6 +12,7 @@ import { ShareButton } from '../share/ShareButton';
 import { ExportMenu } from '../export/ExportMenu';
 import { CreateFormButton } from './CreateFormButton';
 import { PageAccessButton } from './PageAccessButton';
+import { CompareButton } from './CompareButton';
 import { ReplaceFileButton } from '../files/ReplaceFileButton';
 import { PagePresenceIndicator } from './PagePresence';
 import { NotificationsBell } from './NotificationsBell';
@@ -196,6 +197,9 @@ export function Header({ space, pageId, pagePath, title, icon, table, fileAction
 
         {serverPageId && <PageAccessButton key={`access-${serverPageId}`} pageId={serverPageId} />}
 
+        {/* Compare mode: open to every role that can open the page (comparing changes nothing). A folder listing has no page id, so none here. */}
+        {serverPageId && title !== undefined && <CompareButton key={`compare-${serverPageId}`} pageId={serverPageId} space={space} title={title} />}
+
         {serverPageId && <StarButton kind="page" id={serverPageId} />}
       </div>
 
@@ -230,6 +234,7 @@ export function Header({ space, pageId, pagePath, title, icon, table, fileAction
               )}
               {canEdit && table && <CreateFormButton key={`create-form-m-${serverPageId}`} pageId={serverPageId} space={space} />}
               <PageAccessButton key={`access-m-${serverPageId}`} pageId={serverPageId} />
+              {title !== undefined && <CompareButton key={`compare-m-${serverPageId}`} pageId={serverPageId} space={space} title={title} />}
               <StarButton kind="page" id={serverPageId} />
             </div>
           )}

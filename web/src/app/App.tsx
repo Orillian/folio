@@ -7,6 +7,8 @@ import { ToastProvider } from './ui/Toast';
 import { SettingsProvider } from './settings';
 import { AuthProvider } from './auth/AuthProvider';
 import { AssistantHost } from './assistant/AssistantHost';
+import { CompareProvider } from './compare/CompareProvider';
+import { ComparePage } from './compare/ComparePage';
 import { NotificationsHost } from './notifications/NotificationsHost';
 import { Shell } from './Shell';
 import { RootRedirect } from './routes/RootRedirect';
@@ -141,11 +143,15 @@ function AppRoutes() {
           "once, above the route tree", for the same reason as AssistantHost:
           moving between pages must not reopen the connection. Draws nothing. */}
       <NotificationsHost />
+      {/* Compare mode: the reader's compare list (sidebar row, header, history panel) and its floating tray — once, above the routes. */}
+      <CompareProvider>
       <Routes>
         <Route path="/" element={<RootRedirect />} />
         {/* The welcome wizard on purpose, as a tour (the account menu links
             here). On a first run RootRedirect shows the same component. */}
         <Route path="/welcome" element={<Onboarding />} />
+        {/* Compare mode: pages and versions from any spaces side by side; the columns are in the query (compare/compareList.ts). */}
+        <Route path="/compare" element={<ComparePage />} />
         <Route path="/s/:space" element={<Shell />}>
           <Route index element={<SpaceHome />} />
           <Route path="p/:id" element={<PageView />} />
@@ -186,6 +192,7 @@ function AppRoutes() {
         <Route path="/admin/spaces" element={<Navigate to="/admin/access?tab=spaces" replace />} />
         <Route path="*" element={<NotFound message={t('routes.notFound.generic')} />} />
       </Routes>
+      </CompareProvider>
       </AssistantHost>
     </AuthProvider>
   );

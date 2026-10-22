@@ -125,7 +125,10 @@ record in the creator's language (English or Ukrainian); a space cloned from Git
 gets none. Limits: `{{title}}` is filled only in documents (not tables or
 forms); templates need a connection (offline mode does not cover them); two
 templates with the same title show their file names in the tree. Copies are
-fast: a page write re-indexes only the paths it touched.
+fast: a page write re-indexes only the paths it touched. Agents use templates
+over MCP too: `list_templates`, `create_page_from_template`,
+`save_page_as_template` and `create_template` (see [MCP.md](MCP.md)); the
+assistant in Agent mode has the same four.
 
 ## 3. Working together
 
@@ -338,6 +341,30 @@ shape, click a chip to add or remove yours, and the tooltip names who reacted.
 They sync in real time, two people reacting at once both keep theirs, people
 with the viewer role, or anyone in View mode, see them but cannot add any, and they are not part of the
 board's SVG file or Git history.
+
+### Compare pages and versions
+
+Up to five pages, or older versions of a page, side by side in one view.
+"Add to comparison" is in a page's context menu and "..." menu in the sidebar
+(people who can only read a space get it too), in the page header, and in the
+history panel for a version. A "Comparison · N" chip at the bottom of the window
+holds the list (up to five items, from any spaces you can open, kept in the
+browser); "Open" shows them as equal columns at `/compare?items=…`. A column of
+a current page is the page itself, with the same editor and live collaboration:
+type in it and everyone on the page sees the change. In the history panel,
+"Compare with current" opens the page as a live column with the chosen version
+next to it, read-only. With "Highlight changes" every version column is marked
+against the leftmost column (the base): green for text that is new or changed,
+red and struck through for text the base has and the version lacks, with a count
+of changed blocks and removed fragments; "Refresh base" rereads the base and
+"Synchronized scrolling" scrolls all columns together (on by default when a
+version is among the columns). "Copy link" copies an address that holds only page
+ids and version numbers; whoever opens it sees each column with their own rights,
+and a column they cannot open shows a notice. Limits: highlighting compares text
+block by block (a moved paragraph shows as changed), marks only version columns,
+and skips a very large page; a table or base version shows its file text with
+changed lines marked, a whiteboard or a file version is a preview without marks;
+on a phone the columns scroll sideways. See [LIMITATIONS.md](LIMITATIONS.md).
 
 ## 4. Offline mode
 
@@ -750,6 +777,14 @@ The assistant uses **the same set of tools** as external clients do through
 MCP (section 12). In Ask mode the write tools are unavailable, and that is
 checked on the server, not only in the interface.
 
+While a run streams, the status line shows what the agent is doing: its
+thinking with a token counter, an elapsed-time counter (after about three
+seconds of silence, for example while a long page is written) and the real name
+of the tool being called. The live reply keeps paragraph breaks and renders
+Markdown links. The server logs the timing of each step of a run (agent ready,
+first text, each tool, rounds, token totals) and stores it with the run
+(`ai_runs.timing`, migration 052); no arguments or results are recorded.
+
 **Your own agent in every space — `.agent`.** A folder of ordinary pages in
 the space, visible to and editable by space administrators only. Everything in
 it — the agent's role, tone, glossary, rules, templates — is added to every
@@ -815,10 +850,10 @@ work continues; come back and read on from where it stopped.
 ## 12. Integration for external tools (MCP)
 
 The `/mcp` endpoint with a personal access token (`folio_pat_…`), scopes
-`read` and `write`. 41 tools: listing spaces and trees, reading a page,
+`read` and `write`. 45 tools: listing spaces and trees, reading a page,
 search (plus `search` and `fetch` for ChatGPT deep research), creating and updating pages, resolving a Folio link, backlinks
 with context, a page's metadata (outline, tags, properties, links), a space's
-unresolved links and orphan pages, the link graph of a space or a page's neighbourhood, the rows of an Obsidian base (and creating or replacing one), publishing an interactive artifact, a space's tags and property keys, renaming a tag across a space, setting a page's properties, history and reading a page at a given
+unresolved links and orphan pages, the link graph of a space or a page's neighbourhood, the rows of an Obsidian base (and creating or replacing one), publishing an interactive artifact, listing a space's templates and creating pages from them or saving a page as a template, a space's tags and property keys, renaming a tag across a space, setting a page's properties, history and reading a page at a given
 commit, working with whiteboards (and converting an Obsidian canvas into one), a full set of operations on data tables (rows, columns, views), and building forms with the table their answers go to.
 See [MCP.md](MCP.md).
 

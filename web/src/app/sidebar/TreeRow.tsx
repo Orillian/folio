@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ClipboardList, CloudOff, Copy, CopyPlus, Files, FileText, FileType2, Folder, LayoutDashboard, LayoutTemplate, Link as LinkIcon, MoreHorizontal, Move, Pencil, Plus, Presentation, RefreshCw, Sheet, Table2, Trash2, Upload, Waypoints, Database, AppWindow } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ClipboardList, CloudOff, Copy, CopyPlus, Files, FileText, FileType2, Folder, LayoutDashboard, LayoutTemplate, Link as LinkIcon, MoreHorizontal, Move, Pencil, Plus, Presentation, RefreshCw, Sheet, Table2, Trash2, Upload, Waypoints, Database, AppWindow, Columns2 } from 'lucide-react';
 import { officeFormat, type PageKind, type PageMeta, type TreeNode } from '@shared/contracts';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
 import { Menu, MenuItem } from '../ui/Menu';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useToast } from '../ui/Toast';
+import { useCompare } from '../compare/compareContext';
 import { OfflineUnsupportedError, createPageOfflineAware } from '../offline/createPage';
 import { discardLocalPage, useIsLocalPage } from '../offline/localPages';
 import { clearPersistedState } from '../offline/ydocPersistence';
@@ -40,6 +41,11 @@ export interface DraggedNode {
 
 /** How long a collapsed row must be hovered mid-drag before it springs open. */
 const SPRING_OPEN_MS = 600;
+
+/** Row's left padding at a given depth. The 14px step is narrower than chevron + icon slot, so on its own it reads ambiguously. */
+const rowIndentPx = (depth: number) => depth * 14 + 6;
+/** Indent guide x: the horizontal center of this row's 16px chevron, so the line drops from the parent's chevron through its children. */
+const guideLeftPx = (depth: number) => rowIndentPx(depth) + 8;
 
 export interface TreeRowProps {
   node: TreeNode;
@@ -107,6 +113,7 @@ export function TreeRow({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const showToast = useToast();
+  const compare = useCompare();
 
   const [editing, setEditing] = useState(false);
   const [renameValue, setRenameValue] = useState(node.title);
@@ -401,6 +408,24 @@ export function TreeRow({
     }
   }
 
+  /** "Add to comparison" / "Remove from comparison" — for a page the server has (a page that exists only on this device cannot be opened by anyone else, nor by the compare view's fetch). */
+  function compareMenuItem(close: () => void) {
+    if (isLocal) return null;
+    const inList = compare.has({ pageId: node.id });
+    return (
+      <MenuItem
+        icon={<Columns2 size={14} />}
+        onSelect={() => {
+          close();
+          if (inList) compare.remove({ pageId: node.id });
+          else compare.add({ pageId: node.id, space, title: node.title });
+        }}
+      >
+        {t(inList ? 'compare.remove' : 'compare.add')}
+      </MenuItem>
+    );
+  }
+
   function commitRename() {
     if (committedRef.current) return; // guards against a duplicate call from the blur that fires when the input unmounts post-success
     const trimmed = renameValue.trim();
@@ -569,9 +594,9 @@ export function TreeRow({
         onDrop={handleDrop}
         // A right click opens the same "…" menu as the button (the owner,
         // 17.09). The menu can only open from its own button, so that is what
-        // we press — the panel lands next to the row. A viewer has no such
-        // button at all (the menu is for canEdit only), and for them a right
-        // click does the only menu action available — copies the link to the page.
+        // we press — the panel lands next to the row. A viewer's menu is the short
+        // one (copy the link, add to the comparison), so it opens the same way;
+        // only a row without a menu at all (a folder, a rename in progress) does nothing.
         onContextMenu={(e) => {
           if (editing || isFolder) return;
           const holder = e.currentTarget.querySelector<HTMLElement>('.folio-tree__more');
@@ -589,7 +614,7 @@ export function TreeRow({
             navigate(href);
           }
         }}
-        style={{ paddingLeft: `${depth * 14 + 6}px` }}
+        style={{ paddingLeft: `${rowIndentPx(depth)}px` }}
         // py-2 md:py-1: touch-target floor (round 14), pared back in round 25
         // after owner feedback that R14's ≥40px rows read as "very stretched"
         // once a real, deep tree was scrolled on <md. 36px tall on <md (8px
@@ -683,8 +708,9 @@ export function TreeRow({
           </span>
         )}
 
-        {!editing && canEdit && !isFolder && (
+        {!editing && !isFolder && (
           <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 focus-within:opacity-100 group-hover:opacity-100">
+            {canEdit && (
             <Menu triggerLabel={t('sidebar.tree.addPage')} trigger={<Plus size={13} />}>
               {(close) => (
                 <>
@@ -782,9 +808,24 @@ export function TreeRow({
                 </>
               )}
             </Menu>
+            )}
             <Menu className="folio-tree__more" triggerLabel={t('sidebar.tree.moreActions')} align="right" trigger={<MoreHorizontal size={13} />}>
               {(close) =>
-                isLocal ? (
+                !canEdit ? (
+                  // A viewer's short menu: nothing here changes the page.
+                  <>
+                    <MenuItem
+                      icon={<Copy size={14} />}
+                      onSelect={() => {
+                        close();
+                        void copyLink();
+                      }}
+                    >
+                      {t('sidebar.tree.copyLink')}
+                    </MenuItem>
+                    {compareMenuItem(close)}
+                  </>
+                ) : isLocal ? (
                   <MenuItem
                     icon={<Trash2 size={14} />}
                     destructive
@@ -831,6 +872,7 @@ export function TreeRow({
                   >
                     {t('sidebar.tree.copyLink')}
                   </MenuItem>
+                  {compareMenuItem(close)}
                   {/* A FILE page (pdf/docx/xlsx/pptx) has no separate title to
                       edit — its title IS its filename, extension included
                       (server/storage.ts's titleFallback), and the server
@@ -936,7 +978,13 @@ export function TreeRow({
       </div>
 
       {hasChildren && isOpen && (
-        <div>
+        <div className="relative">
+          {/* Indent guide: makes nesting depth unambiguous. Never takes pointer events, so drop zones are untouched. */}
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 w-px bg-neutral-200 dark:bg-neutral-700/70"
+            style={{ left: `${guideLeftPx(depth)}px` }}
+          />
           {node.children.map((child) => (
             <TreeRow
               key={child.id}

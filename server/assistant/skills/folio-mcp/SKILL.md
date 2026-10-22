@@ -39,6 +39,7 @@ audit of the current user of the session, without a separate token.
 | `get_graph` | The link graph of a space, or of one page's neighbourhood (`page`, `depth` 1–3, `direction`): nodes with their degree and edges; optional tag, file and unresolved nodes. For "what is connected to X", hub pages, clusters |
 | `query_base` | The rows of a base page (an Obsidian `.base` file: a saved query over the pages of a space): values by column, groups, summaries; `view`, `limit`, `offset`. Read its YAML with `read_page` |
 | `list_tags` | The tag tree of a space (`a/b` under `a`) with page counts (`pages` exact, `total` with children); `prefix`, `limit`. Counts only pages the user can open |
+| `list_templates` | The templates of a space (the pages of `_templates/`, which `list_tree` and `search_pages` never show): id, path, title, kind, description. Empty when the space has none |
 | `list_properties` | The property (front matter) keys used in a space: type (declared or inferred), number of pages, a few sample values. Look here before setting a property or writing a base filter |
 | `page_history` | The git commit history of a page: sha/author/date/message |
 | `page_at_sha` | The content of a page at the given commit (a sha from `page_history`) |
@@ -59,6 +60,9 @@ audit of the current user of the session, without a separate token.
 | `board_ops` | Align/distribute/move/automatically lay out the elements of an EXISTING board by their ids (from `read_page`), keeping labels and arrows — for "make it tidy", "align it" |
 | `create_page` | Create a page (`doc` by default, or `kind: 'table'` with a starting schema of columns) |
 | `update_page` | Replace the markdown body of a document (NOT for `board`/`table`) |
+| `create_page_from_template` | Copy a template (`templateId` from `list_templates`, any kind, its subpages along) under `parentPath` of `space`, optional `title`; `{{date}}`, `{{author}}`, `{{title}}` in its documents are filled in. Returns the new page and its `url` |
+| `save_page_as_template` | Copy an existing page (`id`) into `_templates/` so it can be reused; optional `title`, `description`, `includeChildren` (default true). The original stays. Returns the template and its `id` |
+| `create_template` | A new document template in `_templates/` (`space`, `title`, optional `description`, `markdown` with `{{date}}`/`{{author}}`/`{{title}}`). To make a template of an existing page use `save_page_as_template` |
 | `create_board` | Create an Excalidraw board from the `sketch` DSL (or a full `scene`) — see the `folio-boards` skill |
 | `update_board` | Overwrite the scene of an existing board — `sketch` or `scene` |
 | `folio_table_create` | Create a data table with an explicit schema of columns |
@@ -88,6 +92,8 @@ audit of the current user of the session, without a separate token.
 | Form | `create_form` | `update_form`; its answers are rows of the paired table |
 | Base | `save_base` (`path`) | `save_base` (`id`); values: `set_page_properties` on the row's page |
 | Artifact (interactive HTML page) | `publish_artifact` | `publish_artifact` with its `id` (replaced whole), `set_page_properties` |
+| Page from a template | `create_page_from_template` | then `update_page` to fill it |
+| Template | `create_template`, `save_page_as_template` | — |
 | Any page | — | `set_page_properties` (properties), `rename_tag` (a tag across the space) |
 
 An Obsidian canvas is read-only (`read_page` gives its outline); offer
@@ -106,6 +112,24 @@ one self-contained HTML, data inlined, libraries only from the CDN allowlist).
 markdown; `update_page` does not work for it — replace it with
 `publish_artifact` and its `id`. An artifact an external agent published (a
 Claude artifact, a Cursor canvas) can be read the same way.
+
+## Templates
+
+A template is a page under the space's `_templates/` folder; `list_tree` and
+`search_pages` never show them, `list_templates` does.
+
+- The user asks for a page "by a template" / "like our template" / "the
+  usual meeting notes": first `list_templates` for that space. If one fits
+  (by title and description), `create_page_from_template` (under the
+  current page or the `parentPath` they named), then fill it with
+  `update_page` — read the copy first, keep its structure and only replace
+  what is placeholder. No fitting template: say so and offer a plain
+  `create_page`; do not invent a template.
+- The user wants a page to be reusable ("make this a template"):
+  `save_page_as_template` with its `id` (the original stays), and a one-line
+  `description`. A brand-new template from scratch: `create_template`.
+- Never put anything into `_templates/` with `create_page` — it refuses that
+  folder.
 
 ## Important pitfalls (from `docs/AGENT-API.md`, checked against the code)
 

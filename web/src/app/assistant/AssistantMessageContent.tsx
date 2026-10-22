@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useDeferredValue, useMemo } from 'react';
 import { renderChatMarkdown } from './chatMarkdown';
 
 /**
@@ -26,6 +26,26 @@ export interface AssistantMessageContentProps {
   className?: string;
   /** Open every link, in-app ones included, in a new tab (a table the reader must not leave). */
   newTabLinks?: boolean;
+}
+
+/** Same markdown, but never throws: a half-written reply (unclosed fence, link or table) that the parser could not take falls back to escaped plain text. */
+function renderStreamingMarkdown(text: string, newTabLinks: boolean | undefined): string {
+  try {
+    return renderChatMarkdown(text, { allLinksNewTab: newTabLinks });
+  } catch {
+    return `<p>${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</p>`;
+  }
+}
+
+/**
+ * The live bubble of a streaming reply: the same renderer as AssistantMessageContent, so links, lists and
+ * code are already formatted while the text arrives. `text` changes every animation frame, so it is deferred
+ * (React skips intermediate values when the parse falls behind) and the parse is memoized per value.
+ */
+export function AssistantStreamingContent({ text, className }: { text: string; className?: string }) {
+  const deferred = useDeferredValue(text);
+  const html = useMemo(() => renderStreamingMarkdown(deferred, undefined), [deferred]);
+  return <div className={className ? `${CHAT_MARKDOWN_CLASS} ${className}` : CHAT_MARKDOWN_CLASS} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 /** Assistant reply body: rendered markdown (sanitized), memoized per text — see chatMarkdown.ts. */

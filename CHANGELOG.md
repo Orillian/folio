@@ -4,43 +4,45 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ## [Unreleased]
 
-### Changed
+## [0.4.1] - 2026-10-22
 
-- **Starter templates have descriptions.** The three templates a new space starts
-  with (Meeting notes, How-to, Decision record) carry a `template-description` in
-  the creator's language, shown as the second line in the "From template…" picker.
-- **Copying pages is about ten times faster on large spaces.** Make template,
-  From template, Duplicate, Copy and New page reindex only the pages they wrote
-  instead of rescanning the whole space, and the "is this a folder" lookup walks
-  new range indexes (migration 050) instead of every file of the space. On a
-  6150-page space with 5 ms per database query, duplicating a page with 40
-  subpages went from 12.7 s to 1.3 s.
-
-- **A share link opens in your own account.** If you are signed in and can open
-  the page yourself, `/share/<token>` takes you to the normal page
-  (`/s/<space>/p/<id>`) with your sidebar and rights instead of the guest view.
-  `GET /api/share/:token` adds `ownAccess` only for such a reader (never for a
-  guest or a signed-in outsider) and answers with `Cache-Control: private,
-  no-store`. Add `?as=guest` to the link to see what a guest sees.
-
-- **Properties update live.** When someone else changes a page's properties (the
-  panel, a base cell, MCP `set_page_properties`, a tag rename, the page icon, a Git
-  sync), everyone who has the page open and may read it sees the change without a
-  reload, and the bases of that space refresh. The server sends a small
-  `page-properties` event over the existing `/events` socket only to sessions that
-  may read that page. A field you are typing into is never overwritten: it says
-  "Someone else changed this to …", Enter keeps yours, Esc takes theirs.
-- **`status` is an ordinary property in a vault** (an Obsidian vault or a
-  repository with files of its own): any value, editable in the panel and in base
-  cells, typed like other keys. Folio's page status reads only `draft`,
-  `published` and `archived` from it; anything else counts as `published`. Search:
-  `status:todo` (any value other than those three) matches the front matter
-  `status`; the public site never matches it. Native Folio spaces are unchanged.
-
-- **"Sync now" for editors.** Anyone who can edit a space can sync it with Git from the space menu or the quick switcher; taking the Git version, connecting Git and the other space settings stay with space admins.
+Compare pages and versions side by side, custom page templates, artifacts for
+Claude and Cursor, and a clearer Folio AI. Pages and versions open in up to five
+columns, with the changes highlighted and a link to share. Any page can be a
+template, the MCP server has 45 tools (four of them for templates), Claude
+artifacts and Cursor canvases become interactive pages, and properties update
+live for everyone on the page. Share links open in your own account, copying
+pages is about ten times faster on large spaces, and page exports are no longer
+served stale behind a CDN. Adds migrations 049 to 052.
 
 ### Added
 
+- **Compare pages and versions side by side.** Up to five pages, or older
+  versions of a page, in one view (`/compare?items=…`). "Add to comparison" is in
+  the sidebar and right-click menu (people who can only read a space get it too),
+  in the page header and in the history panel. A "Comparison · N" chip at the
+  bottom of the window holds the list (any spaces you can open, kept in the
+  browser). A column of a current page is the page itself, with the live editor and
+  live collaboration. In the history panel, "Compare with current" opens the page
+  with the chosen version beside it, read-only, and "Add to comparison" sets a
+  version aside. "Highlight changes" marks every version column against the
+  leftmost one (green: new or changed blocks; red, struck through: removed text,
+  with a count), "Refresh base" rereads the leftmost column, and synchronized
+  scrolling keeps the columns together. "Copy link" copies an address with only
+  page ids and version numbers; whoever opens it sees each column with their own
+  access. Highlighting is block by block and skips a very large page; see
+  [LIMITATIONS.md](docs/LIMITATIONS.md).
+- **Template tools for MCP and the assistant.** Four new tools, 45 in all (21
+  read-only, 24 that write): `list_templates`, `create_page_from_template`,
+  `save_page_as_template` and `create_template`. `create_page` refuses a
+  `parentPath` inside `_templates/` and points to them. The assistant in Agent mode
+  has the same tools, and its guide to them covers templates. See [MCP.md](docs/MCP.md).
+- **Live status for Folio AI runs.** The status line shows the model's thinking
+  with a token counter, an elapsed-time counter after about three seconds of
+  silence (a long page being written reports nothing for minutes) and the real
+  tool names instead of a generic "mcp". The live reply keeps its paragraph breaks
+  and renders Markdown links. The server logs the timing of each step of a run and
+  stores it with the run (`ai_runs.timing`, migration 052).
 - **Artifacts: publish Claude artifacts and Cursor canvases.** A new page kind,
   "Artifact": an interactive page made by an agent (a Claude artifact, a Cursor
   canvas or any self-contained HTML page) that lives in the tree, search, trash and
@@ -57,8 +59,7 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   Claude artifact; claude.ai and Cursor share links are not downloaded (the dialog
   suggests publishing over MCP). On the page: "Show source", "Download .zip",
   "Replace…", and a "works partially" note when the page expects calls to Claude,
-  network access or connectors. New MCP tool **`publish_artifact`** (41 tools now)
-  creates an artifact or replaces one by `id`; `read_page` returns an artifact's
+  network access or connectors. New MCP tool **`publish_artifact`** creates an artifact or replaces one by `id`; `read_page` returns an artifact's
   manifest, files and entry HTML; `kind:artifact` works in search. The MCP request
   body limit outside the demo is now 25 MB, so a page with its data inlined fits.
   Folio does not build JSX or TSX: agents send finished HTML. See
@@ -104,6 +105,39 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ### Changed
 
+- **Starter templates have descriptions.** The three templates a new space starts
+  with (Meeting notes, How-to, Decision record) carry a `template-description` in
+  the creator's language, shown as the second line in the "From template…" picker.
+- **Copying pages is about ten times faster on large spaces.** Make template,
+  From template, Duplicate, Copy and New page reindex only the pages they wrote
+  instead of rescanning the whole space, and the "is this a folder" lookup walks
+  new range indexes (migration 050) instead of every file of the space. On a
+  6150-page space with 5 ms per database query, duplicating a page with 40
+  subpages went from 12.7 s to 1.3 s.
+
+- **A share link opens in your own account.** If you are signed in and can open
+  the page yourself, `/share/<token>` takes you to the normal page
+  (`/s/<space>/p/<id>`) with your sidebar and rights instead of the guest view.
+  `GET /api/share/:token` adds `ownAccess` only for such a reader (never for a
+  guest or a signed-in outsider) and answers with `Cache-Control: private,
+  no-store`. Add `?as=guest` to the link to see what a guest sees.
+
+- **Properties update live.** When someone else changes a page's properties (the
+  panel, a base cell, MCP `set_page_properties`, a tag rename, the page icon, a Git
+  sync), everyone who has the page open and may read it sees the change without a
+  reload, and the bases of that space refresh. The server sends a small
+  `page-properties` event over the existing `/events` socket only to sessions that
+  may read that page. A field you are typing into is never overwritten: it says
+  "Someone else changed this to …", Enter keeps yours, Esc takes theirs.
+- **`status` is an ordinary property in a vault** (an Obsidian vault or a
+  repository with files of its own): any value, editable in the panel and in base
+  cells, typed like other keys. Folio's page status reads only `draft`,
+  `published` and `archived` from it; anything else counts as `published`. Search:
+  `status:todo` (any value other than those three) matches the front matter
+  `status`; the public site never matches it. Native Folio spaces are unchanged.
+
+- **"Sync now" for editors.** Anyone who can edit a space can sync it with Git from the space menu or the quick switcher; taking the Git version, connecting Git and the other space settings stay with space admins.
+
 - A tab left open across an update no longer reloads in a loop when a lazily loaded
   part of the app (the graph, the space settings, the board editor) is gone from
   the server. The page reloads at most once per missing file per minute; if the
@@ -117,6 +151,8 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
   Excalidraw's blog and YouTube links are hidden. The error screens have a
   "Report a problem" button that attaches the crash to the report. With no
   `SENTRY_DSN` the issue link is hidden too.
+- The page tree draws indent guides: a thin line drops from a parent's chevron
+  through its children, so deep trees are easier to read.
 
 ### Fixed
 

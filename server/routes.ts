@@ -106,7 +106,7 @@ import * as gitProviders from './gitProviders.js';
 import { buildSpaceZip } from './export/spaceZip.js';
 import * as importProgress from './spaceImportProgress.js';
 import * as pageAccess from './pageAccess.js';
-import { resolveCopyScope } from './copyScope.js';
+import { liveCopyContent, resolveCopyScope } from './copyScope.js';
 import { clearTemplateDescription, setTemplateDescription } from './templateMeta.js';
 import { findTrashItemId, recordPageChange, snapshotPageChange } from './pageChanges.js';
 import * as bootScan from './bootScan.js';
@@ -116,22 +116,6 @@ import { parseBaseConfig } from '../shared/bases/parse.js';
 /** PUBLIC_URL is normally set; this is only the fallback when it's not (round 8: "URL built from PUBLIC_URL, fallback request origin"). */
 function requestOrigin(request: FastifyRequest): string {
   return `${request.protocol}://${request.hostname}`;
-}
-
-/**
- * What a copy of `entry` starts from. A live collaboration room is
- * authoritative: copy exactly what the user can see now instead of waiting for
- * the debounced file write. Boards, forms and file pages are read from disk by
- * storage.copyPage itself.
- */
-async function liveCopyContent(entry: storage.PageIndexEntry): Promise<string | undefined> {
-  if (entry.kind === 'doc') {
-    return collab.isDocLive(entry.id)
-      ? (collab.getLiveText(entry.id) ?? (await storage.readFreshDocBody(entry.id)))
-      : storage.readFreshDocBody(entry.id);
-  }
-  if (entry.kind === 'table') return tables.readTableMarkdown(entry.id);
-  return undefined;
 }
 
 /**

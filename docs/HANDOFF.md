@@ -158,6 +158,27 @@ Claude artifact, a Cursor canvas, any self-contained HTML. Code: `server/artifac
 - A new empty space gets three starter templates written from the server i18n
   bundles in the creator's language; a space cloned from Git gets none.
 
+### Compare view
+
+- `/compare?items=<id>,<id>@<sha>,…` (`web/src/app/compare/`): up to five
+  columns, each a page as it is now (a live column) or one of its commits (a
+  version column). The list a reader collects lives in the browser
+  (`localStorage`), the address carries only page ids and commits: no titles, no
+  text. Whoever opens a link fetches every column with their own rights, so a
+  column they cannot open shows a notice and the rest still work; a link never
+  grants access. `parseCompareParam` drops garbage and duplicates and cuts
+  extras, so a hand-edited or stale link still opens.
+- A live column is the ordinary page content, with the same editor and the same
+  collaboration connection as the page route, not a second implementation. A
+  version column is read-only (`VersionBody`): a document is rendered, a table or
+  base shows its file text, a board or a file is a preview.
+- "Highlight changes" diffs each version column against the leftmost column,
+  block by block (`compareDiff.ts` over `settings/lineDiff.ts`); text that is new
+  or changed is green, text that is gone is red and struck through, placed where
+  it used to be. It is capped for very large pages and only marks version
+  columns. "Add to comparison" is offered to viewers too, and not for a page that
+  exists only on the device (offline).
+
 ### Real-time collaboration
 
 One Yjs document per open page, in a room named by the page id, over
@@ -463,7 +484,7 @@ PostgreSQL, not in Git.
 
 ### Agents
 
-- **MCP** at `/mcp`, 41 tools, each with explicit `title` and
+- **MCP** at `/mcp`, 45 tools, each with explicit `title` and
   `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`
   annotations, plus a short `instructions` text on `initialize`. `search` and `fetch` are read-only twins of `search_pages` and `read_page` with the same access rules; they exist because ChatGPT deep research and company knowledge only accept tools with exactly those names. Ready-made client setups live in `integrations/` (placeholders only), and `.claude-plugin/marketplace.json` makes the Claude Code plugin installable from this repository. It accepts a
   personal access token (`folio_pat_…`) or an OAuth access token
@@ -491,6 +512,19 @@ PostgreSQL, not in Git.
   or page gets "not found", identical to a missing one. `toolAccess.test.ts`
   pins every read tool against a private space, a page hidden by page access
   and `.agent`.
+- **Run progress and timing** (`server/assistant/genProgress.ts`,
+  `runTiming.ts`, `web/src/app/assistant/runStream.ts`). While the model writes a
+  long tool call (a whole page) the SDK reports nothing, so the status line shows
+  the thinking token counter, then an elapsed counter after about three seconds
+  without an event, and names the real tool. Each run logs one timing line and
+  stores the same data in `ai_runs.timing` (agent ready, first text, each tool
+  with its duration, rounds, token totals; migration 052): never arguments or
+  results.
+- **Template tools** (`list_templates`, `create_page_from_template`,
+  `save_page_as_template`, `create_template`) mirror the HTTP template routes and
+  their gates. The three writes are in `MCP_WRITE_TOOL_NAMES`, so Ask mode and the
+  public demo's write limit see them; `list_templates` is not offered to a
+  public-site run, and `create_page` refuses a path under `_templates/`.
 - **Whose key pays** (`server/assistant/sharedKeys.ts`, migration 037). A run
   uses the first key that exists: the person's own (while personal keys are
   allowed), then the key of the space the question is asked in, then the key of
@@ -636,12 +670,17 @@ PostgreSQL, not in Git.
 - The host of `PUBLIC_URL` is never served as a public site.
 - MCP-only tools (`search`/`fetch`) are not offered to the in-app assistant;
   the assistant tool set must not contain URL/path/command-looking tools. The
-  external `/mcp` endpoint keeps all 23. The skip list is
+  external `/mcp` endpoint keeps all 45. The skip list is
   `MCP_ONLY_TOOL_NAMES` in `server/assistant/tools.ts`, pinned in
   `toolAccess.test.ts`.
 - `_templates/` never leaks: not into the page tree, graph, tags, bases, public
   sites, and not into the public page set. A new place that lists pages has to
   skip it, and the sidebar "Templates" section stays the one exception.
+
+- A compare link must carry only page ids and commits, and every column must be
+  fetched with the rights of whoever opens it. Putting a title, a text or a
+  resolved permission into the address, or fetching a column with the sender's
+  rights, would turn the link into a way around page access.
 
 - An artifact's frame must stay an opaque origin and `/art/…` must stay
   independent of the session: a bundle is code written by a stranger or an agent.
@@ -816,11 +855,10 @@ Each of these was a real defect. They are here so that nobody pays twice.
   whole subtree" mode.
 - No user groups, no SSO or SCIM.
 - The assistant supports one provider. One agent per space.
-- Forms show choice, status, user and link columns as plain text fields, and
-  do not follow later changes to the table's columns.
+- Forms do not follow later changes to the table's columns.
 - File pages have no share links and no search by content. Their version
-  history lists, downloads and restores versions, but offers no side-by-side
-  comparison, and an Office version has no in-browser preview in the history
+  history lists, downloads and restores versions; the compare view shows a
+  version as a preview without change marks, and an Office version has no in-browser preview in the history
   panel (only a download; a PDF is previewed).
 - Moving or renaming a page rewrites `[text](path)` links and images, but not
   HTML tags or reference-style links.
@@ -831,6 +869,10 @@ Each of these was a real defect. They are here so that nobody pays twice.
   edits; it cannot tell a dropped connection from a role that does not allow
   editing, so its hint mentions both.
 - Assets are not carried along when a space's repository is moved.
+- Compare: five columns at most; highlighting is block by block, so a moved
+  paragraph shows as changed, a very large page is skipped, and only version
+  columns are marked. The collected list is per browser; the link is how it is
+  shared.
 - Artifacts: no JSX or TSX runtime, no comments, no version list in the interface
   (Git has them); the Claude API inside a page is a stub and network calls are
   blocked; search sees the visible text of the entry page, not what scripts draw;
