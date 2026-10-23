@@ -13,6 +13,7 @@
 import type { Server as HttpServer } from 'node:http';
 import * as WS from 'ws';
 import * as session from '../auth/session.js';
+import { trackConnection } from '../liveConnections.js';
 import type { NotificationSocketEvent } from '../../shared/contracts.js';
 
 /**
@@ -38,6 +39,8 @@ const sessionTokenOf = new WeakMap<WS.WebSocket, string>();
 
 function register(userId: string, token: string, conn: WS.WebSocket): void {
   sessionTokenOf.set(conn, token);
+  // Closed when the session is revoked / the account deactivated (liveConnections.ts).
+  trackConnection(userId, token, conn);
   let set = connectionsByUser.get(userId);
   if (!set) {
     set = new Set();

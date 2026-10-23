@@ -143,6 +143,7 @@ export function PublicAskPanel({ site, pageId }: PublicAskPanelProps) {
       <section
         role="dialog"
         aria-label={t('publicSite.ask.title')}
+        data-report-exclude=""
         hidden={!open}
         className="ph-no-capture fixed inset-x-2 bottom-2 z-[60] flex h-[min(80vh,720px)] flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white text-neutral-900 shadow-2xl md:inset-x-auto md:bottom-4 md:right-4 md:top-16 md:h-auto md:max-h-[720px] md:w-[420px] dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
       >

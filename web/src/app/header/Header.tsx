@@ -195,7 +195,7 @@ export function Header({ space, pageId, pagePath, title, icon, table, fileAction
             uses. */}
         {serverPageId && canEdit && table && <CreateFormButton key={`create-form-${serverPageId}`} pageId={serverPageId} space={space} />}
 
-        {serverPageId && <PageAccessButton key={`access-${serverPageId}`} pageId={serverPageId} />}
+        {serverPageId && <PageAccessButton key={`access-${serverPageId}`} pageId={serverPageId} space={space} />}
 
         {/* Compare mode: open to every role that can open the page (comparing changes nothing). A folder listing has no page id, so none here. */}
         {serverPageId && title !== undefined && <CompareButton key={`compare-${serverPageId}`} pageId={serverPageId} space={space} title={title} />}
@@ -233,7 +233,7 @@ export function Header({ space, pageId, pagePath, title, icon, table, fileAction
                 <ExportMenu key={`export-m-${serverPageId}`} pageId={serverPageId} pagePath={pagePath} title={title} table={table} />
               )}
               {canEdit && table && <CreateFormButton key={`create-form-m-${serverPageId}`} pageId={serverPageId} space={space} />}
-              <PageAccessButton key={`access-m-${serverPageId}`} pageId={serverPageId} />
+              <PageAccessButton key={`access-m-${serverPageId}`} pageId={serverPageId} space={space} />
               {title !== undefined && <CompareButton key={`compare-m-${serverPageId}`} pageId={serverPageId} space={space} title={title} />}
               <StarButton kind="page" id={serverPageId} />
             </div>

@@ -36,6 +36,36 @@ services:
     volumes:
       - folio-minio:/data
 
+  # Single sign-on test provider, only with `docker compose --profile sso up -d keycloak`.
+  # Realm "folio" (deploy/keycloak/folio-realm.json): client folio / folio-dev-secret, a `groups`
+  # claim, users alice@acme.test (verified, engineering) and bob@acme.test (email NOT verified).
+  # Point Folio at it (docs/AUTH.md):
+  #   FOLIO_OIDC_KEYCLOAK_ISSUER=http://localhost:8085/realms/folio
+  #   FOLIO_OIDC_KEYCLOAK_CLIENT_ID=folio
+  #   FOLIO_OIDC_KEYCLOAK_CLIENT_SECRET=folio-dev-secret
+  #   FOLIO_OIDC_KEYCLOAK_NAME=Keycloak
+  #   FOLIO_OIDC_KEYCLOAK_DOMAINS=acme.test
+  #   FOLIO_OIDC_KEYCLOAK_JIT=true
+  # The same realm has a SAML 2.0 client, folio-saml (signed assertions, persistent NameID,
+  # email / givenName / sn / groups attributes):
+  #   FOLIO_SAML_KEYCLOAK_SAML_METADATA_URL=http://localhost:8085/realms/folio/protocol/saml/descriptor
+  #   FOLIO_SAML_KEYCLOAK_SAML_SP_ENTITY_ID=folio-saml
+  #   FOLIO_SAML_KEYCLOAK_SAML_NAME=Keycloak (SAML)
+  #   FOLIO_SAML_KEYCLOAK_SAML_DOMAINS=acme.test
+  #   FOLIO_SAML_KEYCLOAK_SAML_JIT=true
+  # Admin console: http://localhost:8085/admin (admin / admin — local development only).
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.0
+    profiles: [sso]
+    command: start-dev --import-realm --http-port 8085
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "127.0.0.1:8085:8085"
+    volumes:
+      - ./deploy/keycloak/folio-realm.json:/opt/keycloak/data/import/folio-realm.json:ro
+
 volumes:
   folio-pg:
   folio-minio:

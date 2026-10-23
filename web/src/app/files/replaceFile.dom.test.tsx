@@ -128,10 +128,10 @@ describe('tree row menu', () => {
     expect(screen.queryByText(REPLACE)).toBeNull();
   });
 
-  it('shows no row menu at all to a viewer', async () => {
+  it('gives a viewer no way to replace the file', async () => {
     stubFetch();
     await renderTree(false);
-    expect(within(rowFor('deck.pptx')).queryByLabelText('More actions')).toBeNull();
+    // A viewer's row menu exists (copy link, side by side) but carries no file actions.
     expect(screen.queryByTestId('replace-file-input')).toBeNull();
   });
 

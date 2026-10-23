@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ClipboardList, CloudOff, Copy, CopyPlus, Files, FileText, FileType2, Folder, LayoutDashboard, LayoutTemplate, Link as LinkIcon, MoreHorizontal, Move, Pencil, Plus, Presentation, RefreshCw, Sheet, Table2, Trash2, Upload, Waypoints, Database, AppWindow, Columns2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ClipboardList, CloudOff, Copy, CopyPlus, Files, FileText, FileType2, Folder, LayoutDashboard, LayoutTemplate, Link as LinkIcon, MoreHorizontal, Move, Pencil, Plus, Presentation, RefreshCw, Sheet, Table2, Trash2, Upload, Waypoints, Database, AppWindow, Columns2, Lock } from 'lucide-react';
 import { officeFormat, type PageKind, type PageMeta, type TreeNode } from '@shared/contracts';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
@@ -679,6 +679,18 @@ export function TreeRow({
         ) : (
           <span className="min-w-0 flex-1 truncate" title={rowTitleHint}>
             {displayTitle}
+          </span>
+        )}
+
+        {/* Stage 7: a restricted page, or one restricted through a parent page (lighter). */}
+        {!editing && node.access && (
+          <span
+            className={`shrink-0 ${node.access === 'inherited' ? 'opacity-30' : 'opacity-60'}`}
+            data-testid={`tree-lock-${node.access}`}
+            title={node.access === 'inherited' ? t('sidebar.tree.lockInherited') : t('sidebar.tree.lockRestricted')}
+            aria-label={node.access === 'inherited' ? t('sidebar.tree.lockInherited') : t('sidebar.tree.lockRestricted')}
+          >
+            <Lock size={11} aria-hidden="true" />
           </span>
         )}
 

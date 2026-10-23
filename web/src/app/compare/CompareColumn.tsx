@@ -9,12 +9,15 @@ import { formatRelativeDate, shortSha } from '../history';
 import { api } from '../api';
 import { VersionBody, type CompareBase } from './VersionBody';
 import type { CompareRef } from './compareList';
+import { zoomAppliesToKind } from './compareZoom';
 import '../i18n/register';
 
 export interface CompareColumnProps {
   entry: CompareRef;
   /** The leftmost column: the one the others are compared with. */
   isBase: boolean;
+  /** The view's zoom, in percent: applied to the body of the column, never to its title bar. */
+  zoom: number;
   /** Draw the base marker (only when something is compared with it). */
   showBaseMarker: boolean;
   /** Text to compare a version column with; null when this is the base or highlighting is off. */
@@ -27,7 +30,7 @@ export interface CompareColumnProps {
  * on its own. A column of the CURRENT page is the page itself — PageContent, the same editor with the same live
  * collaboration (its own session per page, see useCollabSession); a column of a VERSION is read-only.
  */
-export function CompareColumn({ entry, isBase, showBaseMarker, base, onRemove }: CompareColumnProps) {
+export function CompareColumn({ entry, isBase, zoom, showBaseMarker, base, onRemove }: CompareColumnProps) {
   const { t } = useTranslation('app');
   // The page's own cache entry (PageContent reads the same one): title, space, kind, path.
   const { data: page } = useQuery({ queryKey: ['page', entry.pageId], queryFn: () => fetchPage(entry.pageId), networkMode: 'always' });
@@ -36,6 +39,8 @@ export function CompareColumn({ entry, isBase, showBaseMarker, base, onRemove }:
     queryFn: () => api.getPageHistory(entry.pageId),
     enabled: Boolean(entry.sha),
   });
+  // A board, canvas, artifact or file viewer keeps its own scale: CSS zoom would clip Excalidraw's canvas and skew its pointer.
+  const effectiveZoom = zoomAppliesToKind(page?.kind) ? zoom : 100;
   const version = entry.sha ? history?.find((item) => item.sha === entry.sha) : undefined;
 
   return (
@@ -81,20 +86,23 @@ export function CompareColumn({ entry, isBase, showBaseMarker, base, onRemove }:
           <X size={14} aria-hidden="true" />
         </button>
       </header>
-      {/* The column's own scroll area, like the shell's <main>. The editors and the reading view scroll inside themselves (scrollSync.ts finds whichever scrolls). */}
-      <div data-compare-body="" className="min-h-0 flex-1 overflow-y-auto">
-        <ErrorBoundary
-          resetKey={`${entry.pageId}@${entry.sha ?? ''}`}
-          fallback={(error, reset, eventId) => <PageCrashed onRetry={reset} eventId={eventId} error={error} />}
-        >
-          {entry.sha ? (
-            <VersionBody pageId={entry.pageId} sha={entry.sha} page={page} base={base} />
-          ) : (
-            <div className="h-full">
-              <PageContent id={entry.pageId} embedded />
-            </div>
-          )}
-        </ErrorBoundary>
+      {/* The column's own scroll area, like the shell's <main>. The editors and the reading view scroll inside themselves (scrollSync.ts finds whichever scrolls). A wide table or code block scrolls inside its own box (compare.css); this area only scrolls sideways for what has no box of its own.
+          The zoom (only for document-like kinds, see zoomAppliesToKind) is CSS `zoom` on an inner wrapper: it scales lengths and fonts alike, so the text reflows to the column (a 50% column shows twice the text per line), unlike a transform that would only shrink the picture. */}
+      <div data-compare-body="" className="min-h-0 flex-1 overflow-x-auto overflow-y-auto">
+        <div data-compare-zoom={effectiveZoom} className="h-full" style={effectiveZoom === 100 ? undefined : { zoom: effectiveZoom / 100 }}>
+          <ErrorBoundary
+            resetKey={`${entry.pageId}@${entry.sha ?? ''}`}
+            fallback={(error, reset, eventId) => <PageCrashed onRetry={reset} eventId={eventId} error={error} />}
+          >
+            {entry.sha ? (
+              <VersionBody pageId={entry.pageId} sha={entry.sha} page={page} base={base} />
+            ) : (
+              <div className="h-full">
+                <PageContent id={entry.pageId} embedded />
+              </div>
+            )}
+          </ErrorBoundary>
+        </div>
       </div>
     </section>
   );

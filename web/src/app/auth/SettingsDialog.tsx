@@ -8,6 +8,7 @@ import { useSettings } from '../settings';
 import { setUiLanguage } from '../../i18n';
 import { Modal } from '../ui/Modal';
 import { api, ApiError } from '../api';
+import { SessionsList } from '../sessions/SessionsList';
 import { useToast } from '../ui/Toast';
 import '../i18n/register';
 import { UI_LANGUAGES, languageName } from '../../i18n/languages';
@@ -87,6 +88,9 @@ export function SettingsDialog({ user, onClose }: SettingsDialogProps) {
             onChange={(lang) => void setUiLanguage(lang)}
             options={LANGUAGE_OPTIONS}
           />
+        </Field>
+        <Field label={t('sessions.title')}>
+          <SessionsList />
         </Field>
       </div>
     </Modal>

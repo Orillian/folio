@@ -3,9 +3,11 @@ import type { ClipboardEvent } from 'react';
 import { useLocation } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ImagePlus, X } from 'lucide-react';
+import { Crop, ImagePlus, X } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
+import { PageShotCropper } from './PageShotCropper';
+import { canvasToImageFile, captureViewport } from './pageShot';
 import { describePath, isReplayAvailable, MAX_IMAGE_BYTES, REPLAY_UNMASK_CLASS, sendFeedback } from '../../sentry';
 import '../i18n/register';
 
@@ -31,6 +33,11 @@ export function ReportProblemDialog({ onClose, eventId }: ReportProblemDialogPro
   const queryClient = useQueryClient();
   const [message, setMessage] = useState('');
   const [image, setImage] = useState<File | null>(null);
+  /** The attached image is a capture of the app (not a file the person chose), so it may show page content. */
+  const [isPageShot, setIsPageShot] = useState(false);
+  /** 'hidden' while the page is captured (the dialog is out of the way), 'cropping' while a part is chosen. */
+  const [phase, setPhase] = useState<'idle' | 'hidden' | 'cropping'>('idle');
+  const [shot, setShot] = useState<HTMLCanvasElement | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -49,7 +56,7 @@ export function ReportProblemDialog({ onClose, eventId }: ReportProblemDialogPro
     return () => URL.revokeObjectURL(url);
   }, [image]);
 
-  function pick(file: File | null) {
+  function pick(file: File | null, fromPage = false) {
     if (!file) return;
     if (file.size > MAX_IMAGE_BYTES) {
       setError(t('feedback.tooLarge'));
@@ -57,6 +64,32 @@ export function ReportProblemDialog({ onClose, eventId }: ReportProblemDialogPro
     }
     setError(null);
     setImage(file);
+    setIsPageShot(fromPage);
+  }
+
+  /** Takes the dialog off the screen, lets the page repaint without it, then captures the viewport. */
+  async function startCapture() {
+    setError(null);
+    setPhase('hidden');
+    try {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50))));
+      setShot(await captureViewport());
+      setPhase('cropping');
+    } catch {
+      setError(t('feedback.captureFailed'));
+      setPhase('idle');
+    }
+  }
+
+  async function finishCrop(result: HTMLCanvasElement | null) {
+    setPhase('idle');
+    setShot(null);
+    if (!result) return;
+    try {
+      pick(await canvasToImageFile(result, MAX_IMAGE_BYTES), true);
+    } catch {
+      setError(t('feedback.tooLarge'));
+    }
   }
 
   function onPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
@@ -88,6 +121,9 @@ export function ReportProblemDialog({ onClose, eventId }: ReportProblemDialogPro
       setSending(false);
     }
   }
+
+  if (phase === 'hidden') return null;
+  if (phase === 'cropping' && shot) return <PageShotCropper canvas={shot} onDone={(result) => void finishCrop(result)} />;
 
   return (
     <Modal
@@ -139,15 +175,26 @@ export function ReportProblemDialog({ onClose, eventId }: ReportProblemDialogPro
             <div className="flex items-center gap-2">
               <img src={preview} alt="" className="h-14 w-20 rounded border border-neutral-200 object-cover dark:border-neutral-700" />
               <span className="min-w-0 flex-1 truncate text-xs text-neutral-500">{image.name}</span>
-              <button type="button" aria-label={t('feedback.removeImage')} onClick={() => setImage(null)} className="rounded p-1 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800">
+              <button type="button" aria-label={t('feedback.removeImage')} onClick={() => { setImage(null); setIsPageShot(false); }} className="rounded p-1 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800">
                 <X size={14} />
               </button>
             </div>
           ) : (
-            <button type="button" onClick={() => fileInput.current?.click()} className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-neutral-300 px-2.5 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
-              <ImagePlus size={14} />
-              {t('feedback.attach')}
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => fileInput.current?.click()} className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-neutral-300 px-2.5 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+                <ImagePlus size={14} />
+                {t('feedback.attach')}
+              </button>
+              <button type="button" onClick={() => void startCapture()} className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-neutral-300 px-2.5 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+                <Crop size={14} />
+                {t('feedback.capture')}
+              </button>
+            </div>
+          )}
+          {isPageShot && image && (
+            <p role="note" className="mt-1.5 text-xs text-amber-700 dark:text-amber-400">
+              {t('feedback.shotPrivacy')}
+            </p>
           )}
         </div>
         {replayAvailable && (
@@ -172,7 +219,7 @@ export function ReportProblemDialog({ onClose, eventId }: ReportProblemDialogPro
           </div>
         )}
         {eventId && <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('feedback.forError')}</p>}
-        <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('feedback.privacy')}</p>
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">{t(isPageShot && image ? 'feedback.privacyShot' : 'feedback.privacy')}</p>
         {error && (
           <p role="alert" className="text-xs text-red-600 dark:text-red-400">
             {error}

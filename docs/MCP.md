@@ -185,8 +185,9 @@ No record for a page means the mode `space`: the page is available according
 to the user's role in the space. `restricted` leaves the page to the owner of
 the rule and to explicit `viewer`/`editor` grants.
 
-The restriction applies to the page itself and is not inherited by child pages.
-The tree, search, quick switcher, subtree, backlinks, collaborative editing,
+The restriction is inherited by child pages: a page is readable only by whoever
+passes its own restriction and those of all its restricted ancestors, with the
+lowest of the roles they give. The tree, search, quick switcher, subtree, backlinks, collaborative editing,
 MCP, authorized export, raw files (`/files/…`), copy and duplicate all filter
 out inaccessible pages. A share token is
 a separate, explicit access channel.

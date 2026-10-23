@@ -379,7 +379,8 @@ describe('a restricted page keeps its restriction through the trash', () => {
       const openChild = await doc(dir, 'Open Child', `body ${openWord}`);
       const secretChild = await doc(dir, 'Secret Child', `body ${secretWord}`);
       const deepGrand = await doc(`${dir}/secret-child`, 'Deep Grandchild', `body ${deepWord}`);
-      await restrict(secretChild.id, ownerAuth);
+      // The grantee is let into the child and the grandchild: restrictions are inherited (stage 7), so the grandchild needs both.
+      await restrict(secretChild.id, ownerAuth, [{ userId: grantee.id, role: 'viewer' }]);
       await restrict(deepGrand.id, ownerAuth, [{ userId: grantee.id, role: 'viewer' }]);
 
       const ids = [parent.id, openChild.id, secretChild.id, deepGrand.id];
@@ -394,7 +395,7 @@ describe('a restricted page keeps its restriction through the trash', () => {
       const accessBefore = await Promise.all(ids.map((id) => accessOf(id)));
       // Sanity of the fixture: the restricted ones are hidden, the open ones are not.
       expect(before.editor.map((p) => p.page)).toEqual([200, 200, 403, 403]);
-      expect(before.grantee.map((p) => p.page)).toEqual([200, 200, 403, 200]);
+      expect(before.grantee.map((p) => p.page)).toEqual([200, 200, 200, 200]);
       expect(accessBefore.map((a) => a !== undefined)).toEqual([false, false, true, true]);
 
       const itemId = await trash(parent.id);
@@ -409,7 +410,7 @@ describe('a restricted page keeps its restriction through the trash', () => {
       expect(await Promise.all(ids.map((id) => accessOf(id)))).toEqual(accessBefore);
     });
 
-    it('a restricted parent: it comes back restricted, its open child as open as before (the rule is not inherited), and the list keeps its name from an admin it was hidden from', async () => {
+    it('a restricted parent: it comes back restricted, its child restricted by it again (inherited, no rule of its own), and the list keeps its name from an admin it was hidden from', async () => {
       const tag = `t${counter++}`;
       const { parent, dir } = await build(tag);
       const parentWord = word('restrictedparent');
@@ -419,7 +420,7 @@ describe('a restricted page keeps its restriction through the trash', () => {
       await restrict(parent.id, ownerAuth);
       const parentBefore = await probe(parent.id, parentWord, editorAuth);
       expect(parentBefore.page).toBe(403);
-      expect((await probe(child.id, childWord, editorAuth)).page).toBe(200);
+      expect((await probe(child.id, childWord, editorAuth)).page).toBe(403);
 
       const itemId = await trash(parent.id);
       const seenByStranger = (await listTrash(otherAdminAuth)).items.find((i) => i.id === itemId);
@@ -429,7 +430,8 @@ describe('a restricted page keeps its restriction through the trash', () => {
 
       expect(await probe(parent.id, parentWord, editorAuth)).toEqual(parentBefore);
       expect((await probe(parent.id, parentWord, ownerAuth)).page).toBe(200);
-      expect((await probe(child.id, childWord, editorAuth)).page).toBe(200);
+      expect((await probe(child.id, childWord, editorAuth)).page).toBe(403);
+      expect((await probe(child.id, childWord, ownerAuth)).page).toBe(200);
       expect(await accessOf(parent.id)).toEqual({ ownerId: owner.id, grants: [] });
       expect(await accessOf(child.id)).toBeUndefined();
     });

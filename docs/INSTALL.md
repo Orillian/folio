@@ -87,8 +87,9 @@ All settings live in the `.env` file next to `docker-compose.yml`. Copy
 | `FOLIO_DOMAIN` | — | Domain for the bundled HTTPS proxy. |
 | `FOLIO_SECRET` | generated | Encrypts saved git tokens and AI keys. See below. |
 | `POSTGRES_PASSWORD` | `folio` | Database password, applied when the database is first created. |
+| `FOLIO_OIDC_SSO_ISSUER`, `FOLIO_OIDC_SSO_CLIENT_ID`, `FOLIO_OIDC_SSO_CLIENT_SECRET` | — | Single sign-on through an OpenID Connect provider (Keycloak, Authentik, Entra ID, Okta…). More `FOLIO_OIDC_SSO_*` settings below; see [Single sign-on](#single-sign-on-openid-connect). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | Turn on "Sign in with Google". |
-| `GOOGLE_ALLOWED_DOMAINS` | empty | Email domains allowed to sign in with Google, comma-separated. Empty means nobody. |
+| `GOOGLE_ALLOWED_DOMAINS` | empty | Email domains allowed to sign in with Google, comma-separated. Empty means nobody new gets in. |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | — | Turn on "Connect with GitHub" in "Git access" (a GitHub OAuth App). See below. |
 | `FOLIO_SLACK_*`, `FOLIO_TEAMS_*` | — | Link previews in Slack and Microsoft Teams. See [CHAT-PREVIEWS.md](CHAT-PREVIEWS.md). |
 | `CURSOR_API_KEY` | — | Server-wide fallback key for the AI assistant, used when neither the person, the space nor the instance has a key of their own. Administrators can also set an instance key and per-space keys in the interface; those win over this variable. |
@@ -97,6 +98,7 @@ All settings live in the `.env` file next to `docker-compose.yml`. Copy
 | `PUBLIC_ASSISTANT_RUNS_PER_HOUR` | `20` | Questions one address may ask Folio AI per hour across all public sites. |
 | `PUBLIC_ASSISTANT_SPACE_RUNS_PER_HOUR` | `200` | Questions all visitors of one public site together may ask Folio AI per hour. |
 | `TRUST_PROXY` | off | Set `true` behind a reverse proxy on the same host or Docker network so the sign-in rate limit is per visitor instead of one shared bucket. Only a proxy on a loopback or private address is believed. |
+| `FOLIO_SESSION_TTL_DAYS` | `30` | How long a browser sign-in lasts, in days, counted from sign-in (not extended while the person works). A missing or invalid value keeps 30. |
 | `FOLIO_DEMO_MODE` | off | `1` turns on public-demo mode for running your own demo: one-click demo accounts and a banner, and tokens, the assistant, outbound git and import, new spaces, share links and invitations are disabled. The accounts it offers are listed in `FOLIO_DEMO_ACCOUNTS` (a JSON array, in single quotes in `.env`); `FOLIO_DEMO_RESET_HOURS`, `FOLIO_DEMO_MAX_UPLOAD_MB`, `FOLIO_DEMO_MCP_RPM` and `FOLIO_DEMO_MCP_WRITES_PER_HOUR` are optional. See `.env.example`. |
 | `FOLIO_DEFAULT_REPO_URL` | empty | Prefilled into the repository field of the "create space" dialog. |
 | `CURSOR_AGENT_TIMEOUT_MS`, `CURSOR_AGENT_TIMEOUT_MS_AGENT`, `CURSOR_AGENT_IDLE_TIMEOUT_MS` | `300000`, `1800000`, `600000` | Deadlines of one assistant run in milliseconds: Ask mode, Agent mode, and no activity at all. Empty keeps the default. |
@@ -230,12 +232,343 @@ described below.
 If you set your own, never change it afterwards: credentials saved earlier
 would stop decrypting and would have to be entered again.
 
+### Single sign-on (OpenID Connect)
+
+People can sign in through your identity provider with OpenID Connect: Keycloak,
+Authentik, Microsoft Entra ID, Okta, Google, or any other provider that publishes
+`/.well-known/openid-configuration`. Folio uses the authorization code flow with
+PKCE and checks the ID token's signature, issuer, audience, expiry and nonce.
+For SAML 2.0 see the next section; for provisioning accounts and groups from
+the identity provider see [SCIM provisioning](#scim-provisioning).
+
+A provider is set up in one of two ways:
+
+- **In the interface**: an instance administrator opens the account menu →
+  **Single sign-on** (`/admin/auth`), adds the provider and presses **Test
+  connection**. The test signs in once in a popup and shows the claims the
+  provider sent, without creating or linking an account. The client secret is
+  stored encrypted with `FOLIO_SECRET` and is never shown again.
+- **With environment variables** (read-only in the interface). Each provider
+  has a short name, its *slug*; the bundled `docker-compose.yml` passes one
+  provider with the slug `sso`:
+
+| Setting | What it does |
+|---|---|
+| `FOLIO_OIDC_SSO_ISSUER` | Issuer URL, for example `https://sso.example.com/realms/acme`. |
+| `FOLIO_OIDC_SSO_CLIENT_ID`, `FOLIO_OIDC_SSO_CLIENT_SECRET` | The client registered at the provider. Without a secret Folio acts as a public client (PKCE only). |
+| `FOLIO_OIDC_SSO_NAME` | Button text: "Continue with <name>". |
+| `FOLIO_OIDC_SSO_DOMAINS` | Email domains of your organization, comma-separated. Only these may sign in through the provider; the login page sends these emails to it; existing accounts in these domains can be linked. Empty: anyone the provider signs in, no linking. |
+| `FOLIO_OIDC_SSO_JIT` | `true`: a person without an account gets one at first sign-in (no password, not an administrator). Otherwise only existing and invited people get in. |
+| `FOLIO_OIDC_SSO_JIT_SPACES` | Spaces a new account joins, for example `handbook:viewer,engineering:editor`. |
+| `FOLIO_OIDC_SSO_ENFORCE` | `true`: people in those domains cannot use a password at all. Instance administrators keep an emergency password sign-in at `<PUBLIC_URL>/login?local`; every such sign-in is written to the audit log. |
+| `FOLIO_OIDC_SSO_SCOPES` | Default `openid email profile`. |
+| `FOLIO_OIDC_SSO_GROUP_SYNC`, `_GROUP_SYNC_MODE`, `_GROUP_MAP`, `_GROUP_CREATE`, `_GROUP_ALLOW` | Group sync, see [Syncing groups](#syncing-groups-from-the-identity-provider). |
+| `FOLIO_OIDC_SSO_EMAIL_CLAIM`, `_NAME_CLAIM`, `_GROUPS_CLAIM` | Claim names, default `email`, `name`, `groups`. The groups claim feeds group sync, see [Syncing groups](#syncing-groups-from-the-identity-provider). |
+
+Outside the bundled compose file (or to add a second provider) use any slug:
+`FOLIO_OIDC_<SLUG>_ISSUER` and so on, for example `FOLIO_OIDC_KEYCLOAK_ISSUER`
+(slug `keycloak`). Register this redirect URL at the provider:
+`<PUBLIC_URL>/api/auth/oidc/<slug>/callback` (the admin screen shows it with a
+copy button). An `http://` issuer is accepted for `localhost` only, or with
+`FOLIO_OIDC_ALLOW_HTTP=1`.
+
+How accounts are matched: the provider's account id (`sub`) is linked to one
+Folio account. At the first sign-in, an existing Folio account with the same email
+is linked only when the provider says the email is verified and its domain is in
+the list; otherwise the sign-in is refused with an explanation. An invitation
+pinned to an email of an enforced domain is accepted through the provider.
+
+Provider notes:
+
+- **Keycloak**: issuer `https://<host>/realms/<realm>`. Create a confidential
+  OpenID Connect client with "Standard flow"; for a groups claim add a "Group
+  Membership" mapper with the claim name `groups` (turn off "Full group path"
+  for plain names).
+- **Authentik**: create an OAuth2/OpenID provider and an application; issuer
+  `https://<host>/application/o/<application-slug>/` (with the trailing slash).
+- **Microsoft Entra ID**: register an app with a web redirect URI; issuer
+  `https://login.microsoftonline.com/<tenant-id>/v2.0` (a tenant id, not
+  `common`). Entra does not send `email_verified`, so existing accounts are not
+  linked automatically: invite people, let them create accounts with JIT, or
+  provision them over [SCIM](#scim-provisioning), which Folio trusts by email
+  (see there). Add
+  the optional `email` claim, and `groups` if you want it.
+- **Okta**: an OIDC web application; issuer `https://<org>.okta.com` (or your
+  custom authorization server, `https://<org>.okta.com/oauth2/default`). Add a
+  `groups` claim in the authorization server if you want it.
+- **Google**: see below.
+
+### Syncing groups from the identity provider
+
+Folio can put people into its [groups](FEATURES.md) according to the groups the
+identity provider says they belong to. It works the same for OpenID Connect and
+SAML and is off until you turn it on for a provider (provider dialog → **Group
+sync**, or the variables below).
+
+At **every** sign-in through the provider (a first sign-in that creates the
+account included) Folio reads the groups claim or attribute and:
+
+- adds the person to the matching Folio groups they are not in yet;
+- removes them from groups the provider put them in earlier and no longer
+  reports.
+
+Only memberships that came from that provider are ever removed. A person added
+to a group by hand stays in it, and a manager flag set in Folio is never
+changed. Archived groups are skipped. If removing someone would leave a space
+without an administrator (the group is the only source of the admin role), the
+membership is kept and a warning goes to the audit log; the sign-in is never
+refused because of group sync. Changes show up at the next sign-in, not
+instantly. Each change is written to the audit log (`group.member_add`,
+`group.member_remove` with source `idp`, and one `auth.group_sync` summary per
+sign-in); a skipped sync is `auth.group_sync_skipped` with the reason.
+
+| Setting (provider dialog / environment) | What it does |
+|---|---|
+| **Sync groups at sign-in** / `FOLIO_OIDC_<SLUG>_GROUP_SYNC`, `FOLIO_SAML_<SLUG>_GROUP_SYNC` | `true` turns it on. |
+| **Groups claim / attribute** / `_GROUPS_CLAIM`, `_GROUPS_ATTR` | Where the groups are, default `groups`. A dotted path such as `realm_access.roles` works for OpenID Connect. |
+| **Match** / `_GROUP_SYNC_MODE` | `name` (default): an IdP group matches the Folio group with the same slug or name (case does not matter). `mapping`: only the table below is used. |
+| **Table** / `_GROUP_MAP` | `IdP value=folio-group-slug`, comma-separated: `Engineering=eng,3f2a9c1e-…=admins`. Use it when the provider sends ids (Entra ID sends object ids) or names that differ from yours. Setting a map without a mode means `mapping`. |
+| **Create missing groups** / `_GROUP_CREATE` | `true`: an IdP group with no match becomes a new Folio group (marked as coming from OIDC or SAML; its slug is made from the name). |
+| **Only these IdP groups** / `_GROUP_ALLOW` | Optional filter applied first: prefixes (`folio-,team-`) or a regular expression between slashes (`/^folio-/`). Use it so that unrelated directory groups do not become Folio groups. |
+
+Groups that came from a provider show a badge on the Groups tab of the Access
+page; their provider-sourced members cannot be removed by hand (a person added
+manually can).
+
+Per provider:
+
+- **Keycloak**: add the *Group Membership* mapper (OpenID Connect client, claim
+  name `groups`, "Full group path" off) or, for SAML, the *Group list* mapper.
+  Values are the group names, so `name` matching works as is.
+- **Microsoft Entra ID**: *Token configuration → Add groups claim*. Choose
+  *Groups assigned to the application* so that the token stays small, and
+  prefer *Group ID*: it sends object ids, so use a table
+  (`<object id>=folio-group`). With *All groups* or with sAMAccountName names
+  the list can grow too long: past 200 groups in a JWT (150 in SAML) Entra sends a
+  pointer to Microsoft Graph instead of the list ("overage"). Folio does not
+  call Graph: in that case **nothing is added or removed** and
+  `auth.group_sync_skipped` with reason `overage` is audited. Restrict the claim
+  to the groups assigned to the application to avoid it.
+- **Okta**: add a *groups claim* to the authorization server (OpenID Connect) or
+  a group attribute statement named `groups` (SAML), with a filter such as
+  *Starts with* `folio-` so that only the relevant groups are sent. Values are
+  group names.
+
+### Single sign-on (SAML 2.0)
+
+Folio also signs people in through a SAML 2.0 identity provider (IdP): Microsoft
+Entra ID, Okta, Keycloak, Google Workspace, ADFS and others. The sign-in starts
+at Folio (SP-initiated); the account rules are the same as for OpenID Connect:
+allowed domains, JIT, invitations, enforced sign-in with the administrators'
+emergency login.
+
+What Folio checks in every response: the assertion is signed with the IdP's
+certificate (a signed response around an unsigned assertion is refused), its
+issuer is the IdP's entity ID, its audience is Folio's entity ID, it is inside
+its validity window (at most 120 seconds of clock difference are tolerated), it
+answers the sign-in request this browser started, and it has not been used
+before. Documents with a `DOCTYPE` are refused. Encrypted assertions, signed
+sign-in requests and single logout are not supported.
+
+**Set up in the interface**: account menu → **Single sign-on** → **Add
+provider** → protocol **SAML 2.0**. Give the IdP's metadata URL (Folio re-reads
+it every hour, so certificate rollovers are picked up) or paste the metadata XML;
+without metadata, fill in the IdP entity ID, SSO URL and signing certificate.
+The provider card then shows what to register at the IdP, each with a copy
+button:
+
+| At the IdP | Value |
+|---|---|
+| Entity ID / Identifier / Audience URI | `<PUBLIC_URL>/api/auth/saml/<slug>/metadata` (or your own value in **Folio entity ID**) |
+| ACS / Reply / Single sign-on URL | `<PUBLIC_URL>/api/auth/saml/<slug>/acs` (HTTP-POST) |
+| SP metadata, if the IdP can import it | `<PUBLIC_URL>/api/auth/saml/<slug>/metadata` |
+
+Then press **Test connection**: it signs in once in a popup and shows the
+attributes the IdP sent, without creating or linking an account.
+
+**NameID and email.** Folio identifies a person by the IdP's entity ID plus the
+NameID, so ask the IdP for a *persistent* NameID (an email NameID works too, but
+the link breaks when the email changes; a transient one is refused). The email
+comes from the email attribute or, without one, from an email-format NameID.
+Left at their defaults (`email`, `name`, `groups`), the attribute settings also
+recognize the usual Entra ID, Okta, Keycloak and Google names, such as
+`http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress`. Folio
+reads the groups attribute for group sync, see
+[Syncing groups](#syncing-groups-from-the-identity-provider).
+
+**Linking existing accounts.** SAML has no "email verified" flag. An existing
+Folio account is linked at the first SAML sign-in only when **The IdP is
+authoritative for these domains' emails** is on and the email's domain is in
+the allowed domains. Turn it on only when the IdP owns those accounts (your
+company directory). Otherwise invite people or let JIT create their accounts.
+Without it, a person who already has a Folio account is told the provider
+"isn't trusted to confirm email addresses for linking".
+
+**OpenID Connect and SAML for the same domain.** A linked identity belongs to
+one provider. Someone linked through one protocol who signs in through the other
+goes through the linking rules again: a verified email (OpenID Connect) or an
+authoritative IdP (SAML), a domain in the allowed list, and no identity yet at
+that provider. We recommend one protocol per domain; if you run both while
+migrating, turn on **The IdP is authoritative** on the SAML provider so existing
+accounts link on the first sign-in.
+
+**IdP-initiated sign-in** (starting from the IdP's app portal) is off by
+default: such a response is not tied to anything the browser started. Turn on
+**Accept IdP-initiated sign-in** only if you need it.
+
+**With environment variables** (read-only in the interface), with any slug, for
+example `ENTRA`. The bundled `docker-compose.yml` passes the `FOLIO_SAML_SSO_*`
+ones (slug `sso`; set either these or `FOLIO_OIDC_SSO_*`):
+
+| Setting | What it does |
+|---|---|
+| `FOLIO_SAML_<SLUG>_METADATA_URL` | The IdP's metadata URL (`https`; `http` only for `localhost` or with `FOLIO_OIDC_ALLOW_HTTP=1`). |
+| `FOLIO_SAML_<SLUG>_METADATA` | The metadata XML itself, instead of the URL. |
+| `FOLIO_SAML_<SLUG>_SSO_URL`, `_ENTITY_ID`, `_CERT` | Without metadata: the IdP's SSO URL, entity ID and signing certificate (PEM or base64; `\n` for newlines is fine). They also override the metadata. |
+| `FOLIO_SAML_<SLUG>_SP_ENTITY_ID` | Folio's entity ID, if the IdP needs a specific one. |
+| `FOLIO_SAML_<SLUG>_NAMEID_FORMAT` | `persistent` (default), `email` or `unspecified`. |
+| `FOLIO_SAML_<SLUG>_EMAIL_AUTHORITATIVE` | `true`: emails in the allowed domains count as verified (linking, see above). |
+| `FOLIO_SAML_<SLUG>_ALLOW_IDP_INITIATED` | `true`: accept IdP-initiated sign-in. |
+| `FOLIO_SAML_<SLUG>_EMAIL_ATTR`, `_NAME_ATTR`, `_GROUPS_ATTR` | Attribute names (defaults above). |
+| `FOLIO_SAML_<SLUG>_NAME`, `_DOMAINS`, `_JIT`, `_JIT_SPACES`, `_ENFORCE` | As for OpenID Connect. |
+| `FOLIO_SAML_<SLUG>_GROUP_SYNC`, `_GROUP_SYNC_MODE`, `_GROUP_MAP`, `_GROUP_CREATE`, `_GROUP_ALLOW` | Group sync, see [Syncing groups](#syncing-groups-from-the-identity-provider). |
+
+The cookie that ties the IdP's answer to the browser is `SameSite=None; Secure`
+when Folio runs on HTTPS, because the IdP posts the answer from its own site. On
+plain `http` (local testing) the IdP must be on the same site, such as
+`localhost`.
+
+IdP notes:
+
+- **Microsoft Entra ID**: Enterprise applications → New application → Create
+  your own → *Integrate any other application* → Single sign-on → SAML. Basic
+  SAML configuration: Identifier = Folio's entity ID, Reply URL = the ACS URL.
+  Copy the *App Federation Metadata Url* into the metadata URL. Keep *Unique
+  User Identifier* as `user.objectid` with a persistent format (or
+  `user.userprincipalname`). Entra sends the email as
+  `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress` and,
+  after *Add a group claim*, groups as
+  `http://schemas.microsoft.com/ws/2008/06/identity/claims/groups`; both are
+  recognized.
+- **Okta**: Applications → Create App Integration → SAML 2.0. Single sign-on
+  URL = the ACS URL ("Use this for Recipient URL and Destination URL" on),
+  Audience URI = Folio's entity ID, Name ID format *Persistent* (or
+  *EmailAddress*), Application username *Okta username* or *Email*. Add
+  attribute statements `email` → `user.email`, `name` → `user.displayName`, and a
+  group attribute statement `groups` if you want it. Use the metadata URL from
+  the app's Sign On tab.
+- **Keycloak**: Clients → Create client → SAML, Client ID = Folio's entity ID,
+  Valid redirect URIs = `<PUBLIC_URL>/*`. Keep "Sign assertions" on, turn
+  "Client signature required" off (Folio does not sign requests), Name ID format
+  *persistent* with "Force name ID format". Add mappers: *User Property* `email`
+  → `email`, `firstName` → `givenName`, `lastName` → `sn`, and *Group list* →
+  `groups` ("Single group attribute" on, "Full group path" off). Metadata URL:
+  `https://<host>/realms/<realm>/protocol/saml/descriptor`.
+- **Google Workspace**: Admin console → Apps → Web and mobile apps → Add app →
+  Add custom SAML app. Download the IdP metadata and paste it (Google has no
+  metadata URL). ACS URL = the ACS URL, Entity ID = Folio's entity ID, Name ID
+  format *EMAIL* with *Basic Information > Primary email*, and set Folio's
+  NameID format to `email`. Map *Primary email* to
+  `email` and, for groups, *Group membership* to `groups`. Turn the app on for
+  the right organizational units.
+
+### SCIM provisioning
+
+An identity provider that already signs people in to Folio (an OpenID Connect or
+SAML provider above) can also create, update and deactivate their accounts and
+groups over SCIM 2.0: Okta, Microsoft Entra ID, Keycloak (with a SCIM plugin),
+OneLogin, JumpCloud and others.
+
+**Turn it on**: account menu → **Single sign-on** → the provider's card →
+**SCIM provisioning** → **Generate token**. Copy the token at once: it is shown
+only once and stored hashed. Give the identity provider:
+
+| At the IdP | Value |
+|---|---|
+| SCIM base URL / Tenant URL | `<PUBLIC_URL>/scim/v2` (shown with a copy button) |
+| Authentication | HTTP header, `Authorization: Bearer <token>` |
+
+**Rotate token** replaces it (the old one stops working at once); **Revoke
+token** turns SCIM off for the provider, leaving provisioned people and groups
+as they are. The panel shows the last sync, how many people and groups the
+provider manages, and links to the `scim.*` events in the audit log
+(`/admin/audit`). Each token can only see and change the people and groups of
+its own provider.
+
+What the identity provider can do:
+
+- **Users**: create (an account with no password, never an administrator),
+  update the name and email, deactivate (`active: false`, or DELETE) and
+  reactivate. Deactivation ends every session, API token and connected app of
+  the person at once. DELETE never deletes the account: it is deactivated and
+  hidden from SCIM; provisioning the same person again brings it back. The last
+  active instance administrator cannot be deactivated.
+- **An existing Folio account** with the same email is taken over only when its
+  domain is in the provider's allowed domains, it is not an instance
+  administrator and it is not linked to another provider; otherwise SCIM gets a
+  409 and you link it by hand (the person signs in through the provider once).
+- **Groups**: create, rename, set members, add and remove members, and DELETE,
+  which archives the group (its space roles stop applying; provisioning a group
+  with the same `externalId` again restores it). Groups made over SCIM are
+  ordinary Folio groups: give them roles in spaces as usual. A membership added
+  by hand in Folio is never removed by SCIM. A change that would leave a space
+  without an administrator is refused with a 409 that names the space.
+- **No JIT while SCIM is on**: accounts then come only from SCIM, so creating
+  accounts at first sign-in is turned off for the provider (for a provider
+  defined by environment variables, `_JIT` is ignored while SCIM is on).
+
+How a provisioned person is recognized at their first sign-in through the
+provider: the account is linked when the sign-in's subject (OIDC `sub`, SAML
+NameID) equals the `externalId` the provider sent over SCIM, or, for SAML, the
+SCIM `userName`. Failing that, a provisioned person who has not signed in yet is
+also recognized by email: the sign-in email equals, exactly (case aside), the
+email or `userName` the same provider sent over SCIM, and its domain is in the
+provider's allowed domains (when the list is not empty). This works without
+`email_verified`, which Entra ID over OIDC never sends. It applies only to
+accounts still waiting for their first sign-in at that provider, never to other
+accounts and never across providers; deactivated people are refused. Every
+other account follows the usual rule: it is linked when the email counts as
+verified (OIDC `email_verified`; SAML: the IdP is marked authoritative) and its
+domain is allowed.
+
+Supported: `/Users` and `/Groups` (GET with `filter` on `userName`,
+`externalId`, `emails`, `displayName`, `id`, `members` using `eq` and `and`,
+paging with `startIndex` / `count` up to 200; POST, PUT, PATCH, DELETE),
+`/ServiceProviderConfig`, `/ResourceTypes`, `/Schemas`. Not supported: bulk
+operations, sorting, ETags, passwords (ignored), `or` filters. Requests are
+limited per token (`FOLIO_SCIM_RATE_PER_MINUTE`, default 1200 a minute).
+
+IdP notes:
+
+- **Okta**: in the app integration, General → Provisioning: SCIM; Provisioning
+  → Integration: SCIM connector base URL = the base URL, unique identifier field
+  `userName`, actions *Import New Users and Profile Updates*, *Push New Users*,
+  *Push Profile Updates*, *Push Groups*, authentication mode *HTTP Header* with
+  the token. Then To App: enable *Create Users*, *Update User Attributes*,
+  *Deactivate Users*. Okta sends its user id as `externalId`, which is also the
+  OIDC `sub`, so OIDC sign-in matches directly; with SAML, use *Okta username*
+  as the NameID.
+- **Microsoft Entra ID**: Enterprise application → Provisioning → Automatic;
+  Tenant URL = the base URL, Secret Token = the token, **Test Connection**, then
+  Mappings (keep `userPrincipalName` → `userName`, `mail` → work email) and
+  turn provisioning on. Entra's OIDC `sub` is specific to the app and Entra
+  sends no `email_verified`, so with OIDC a provisioned person is recognized at
+  first sign-in by email: add the optional `email` claim, and list the domain in
+  the provider's allowed domains. With SAML, the NameID `user.userprincipalname`
+  equals the SCIM `userName` and matches directly.
+- **Keycloak**: Keycloak has no built-in SCIM client; with a SCIM plugin (for
+  example `scim-for-keycloak` or `keycloak-scim`), point it at the base URL with
+  the token as a bearer token. These plugins send the Keycloak user id as
+  `externalId`, which is also the OIDC `sub`.
+
 ### Sign in with Google
 
 Create an OAuth client in the Google Cloud Console, register the redirect URI
 `<PUBLIC_URL>/api/auth/google/callback`, and set the three `GOOGLE_*` values.
-List the email domains that may sign in — with an empty list Google sign-in
-lets nobody in.
+List the email domains that may sign in — with an empty list nobody new gets in
+(people already linked to Google keep signing in). Google is an OpenID Connect
+provider like the others, with the slug `google`; `GOOGLE_ENFORCE_SSO=true`
+makes it mandatory for those domains.
 
 ### Connect with GitHub
 
@@ -319,9 +652,9 @@ the proxy's address and therefore one budget.
 **What to know before publishing.**
 
 - Everything in the space is public except pages with their own access
-  restrictions, the `.agent` folder and templates. A restriction is **not
-  inherited** by child pages, so look at the whole tree and lock each page that
-  must stay closed.
+  restrictions, the `.agent` folder and templates. A restriction is
+  **inherited** by child pages: locking a page keeps everything below it closed
+  too. The sidebar marks restricted pages with a small lock.
 - Search engines may index a public site unless an administrator switches
   "Allow search engines to index this site" off in the publishing dialog. The
   public demo is never indexed.

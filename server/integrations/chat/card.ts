@@ -15,20 +15,21 @@
  *
  * Access is EXACTLY the page API's (`GET /api/pages/:id` → session.requirePageRole):
  * session.effectivePageRole decides — space role (explicit membership, or the implicit viewer of
- * an `instance`/`public` space), the page's own ACL (page_access: owner + grants), `.agent/**`
+ * an `instance`/`public` space), the page ACL (page_access: owner + grants, its own and its restricted ancestors'), `.agent/**`
  * for space/instance admins only, a disabled user nothing. A page the viewer cannot open, an
  * unknown id and a deleted page all give the same `noaccess` card, which carries no title, no
  * space name, nothing but the URL the poster already pasted: it never confirms a page exists.
  *
  * A preview is posted INTO A CONVERSATION: everyone in that channel sees it, whatever their own
  * Folio rights (that is how Slack and Teams unfurls work — the card is built once, for the person
- * who shared the link). So for a page that is not open to its whole space (a page_access row, or
+ * who shared the link). So for a page that is not open to its whole space (a page_access row of its own or an ancestor's, or
  * `.agent/**`) the card is `limited`: title and breadcrumb only — no text, no headings, no tags,
  * no table columns. And a breadcrumb never names a parent the viewer cannot read, nor a
  * restricted one: such a level shows as "…".
  */
 import type { User } from '../../../shared/contracts.js';
 import { PUBLIC_SITE_PATH_PREFIX } from '../../../shared/contracts.js';
+import { restrictionChainSql } from '../../access/roleSql.js';
 import { isAgentPath } from '../../agentPath.js';
 import * as session from '../../auth/session.js';
 import { query, queryOne } from '../../db/pool.js';
@@ -239,7 +240,8 @@ async function tagsOf(pageId: string): Promise<string[]> {
 
 async function isRestricted(entry: Pick<PageIndexEntry, 'id' | 'relPath'>): Promise<boolean> {
   if (isAgentPath(entry.relPath)) return true;
-  return (await queryOne<{ id: string }>('SELECT page_id AS id FROM page_access WHERE page_id = $1', [entry.id])) !== undefined;
+  // Its own rule or an inherited one (a restricted ancestor): either way not open to the whole space.
+  return (await queryOne<{ page_id: string }>(`SELECT page_id FROM (${restrictionChainSql('$1')}) c LIMIT 1`, [entry.id])) !== undefined;
 }
 
 /** Last committer of the page file (git history), best effort and bounded: a slow or missing repo just leaves it out. */

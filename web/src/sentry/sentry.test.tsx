@@ -30,6 +30,13 @@ const sdk = vi.hoisted(() => ({
   browserTracingIntegration: vi.fn(() => ({ name: 'BrowserTracing' })),
 }));
 vi.mock('@sentry/react', () => sdk);
+// The capture itself needs a real browser; the dialog is tested with a stand-in canvas and a stand-in encoder.
+const shot = vi.hoisted(() => ({ capture: vi.fn(), encode: vi.fn() }));
+vi.mock('../app/feedback/pageShot', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../app/feedback/pageShot')>()),
+  captureViewport: shot.capture,
+  canvasToImageFile: shot.encode,
+}));
 
 const CONFIG: SentryWebConfig = { dsn: 'https://k@o1.ingest.de.sentry.io/1', environment: 'test', release: 'abc1234', tracesSampleRate: 0.1 };
 const USER: User = { id: 'u1', email: 'ann@folio.local', name: 'Anna Lee', isAdmin: false, createdAt: '2024-01-01T00:00:00.000Z', username: 'ann' };
@@ -204,6 +211,50 @@ describe('the report dialog', () => {
     expect(hint.attachments).toHaveLength(1);
     expect(hint.attachments[0]).toMatchObject({ filename: 'shot.png', contentType: 'image/png' });
     expect(Array.from(hint.attachments[0]!.data)).toEqual([1, 2, 3]);
+  });
+
+  it('captures the page, keeps the whole of it, and sends it like a picked screenshot', async () => {
+    initSentry(CONFIG);
+    await waitFor(() => expect(sdk.init).toHaveBeenCalled());
+    const canvas = document.createElement('canvas');
+    shot.capture.mockResolvedValueOnce(canvas);
+    shot.encode.mockResolvedValueOnce(new File([new Uint8Array([9, 8, 7])], 'page-screenshot.png', { type: 'image/png' }));
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => 'blob:shot', revokeObjectURL: () => {} }));
+    wrap(<ReportProblemDialog onClose={() => {}} />, '/s/eng');
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'looks wrong' } });
+    expect(screen.getByText(/^Sent to the Folio team with the page address .* Page text is not included/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capture page' }));
+    expect(screen.queryByRole('dialog', { name: 'Report a problem' })).toBeNull(); // out of the way of the capture
+    fireEvent.click(await screen.findByRole('button', { name: 'Whole page' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Report a problem' })).toBeTruthy();
+    expect(shot.encode).toHaveBeenCalledWith(canvas, 5 * 1024 * 1024);
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('looks wrong'); // the message survived
+    expect(screen.getByText(/^The screenshot shows the page content/)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Remove the screenshot' })).toBeTruthy(); // the same preview as a picked file
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(sdk.captureFeedback).toHaveBeenCalled());
+    const hint = (sdk.captureFeedback.mock.calls[0] as unknown as [unknown, { attachments: Array<{ filename: string; contentType: string; data: Uint8Array }> }])[1];
+    expect(hint.attachments[0]).toMatchObject({ filename: 'page-screenshot.png', contentType: 'image/png' });
+    expect(Array.from(hint.attachments[0]!.data)).toEqual([9, 8, 7]);
+  });
+
+  it('brings the dialog back with nothing attached when the capture is cancelled or fails', async () => {
+    initSentry(CONFIG);
+    await waitFor(() => expect(sdk.init).toHaveBeenCalled());
+    wrap(<ReportProblemDialog onClose={() => {}} />, '/s/eng');
+    shot.capture.mockResolvedValueOnce(document.createElement('canvas'));
+    fireEvent.click(screen.getByRole('button', { name: 'Capture page' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByRole('dialog', { name: 'Report a problem' })).toBeTruthy();
+    expect(shot.encode).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Remove the screenshot' })).toBeNull();
+
+    shot.capture.mockRejectedValueOnce(new Error('blocked'));
+    fireEvent.click(screen.getByRole('button', { name: 'Capture page' }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Could not capture the page/);
   });
 
   it('keeps the dialog open and says so when sending fails', async () => {

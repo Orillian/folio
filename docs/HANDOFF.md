@@ -158,7 +158,7 @@ Claude artifact, a Cursor canvas, any self-contained HTML. Code: `server/artifac
 - A new empty space gets three starter templates written from the server i18n
   bundles in the creator's language; a space cloned from Git gets none.
 
-### Compare view
+### Side-by-side comparison view
 
 - `/compare?items=<id>,<id>@<sha>,…` (`web/src/app/compare/`): up to five
   columns, each a page as it is now (a live column) or one of its commits (a
@@ -176,7 +176,7 @@ Claude artifact, a Cursor canvas, any self-contained HTML. Code: `server/artifac
   block by block (`compareDiff.ts` over `settings/lineDiff.ts`); text that is new
   or changed is green, text that is gone is red and struck through, placed where
   it used to be. It is capped for very large pages and only marks version
-  columns. "Add to comparison" is offered to viewers too, and not for a page that
+  columns. "Compare side by side" is offered to viewers too, and not for a page that
   exists only on the device (offline).
 
 ### Real-time collaboration
@@ -383,11 +383,12 @@ There is no service worker: Folio itself is loaded from the server.
 
 ### Access
 
-Roles per space (admin, editor, viewer); space visibility (`private`, `instance`
-for reading by every active user, or `public` for reading by anyone, see
-"Public sites"); page-level access that can only narrow what the space allows
-and is not inherited by child pages. The instance administrator
-manages people and access but has no automatic access to private spaces.
+Roles per space (admin, editor, viewer) given to a person or to a **group**;
+space visibility (`private`, `instance` for reading by every active user, or
+`public` for reading by anyone, see "Public sites"); page-level access that can
+only narrow what the space allows and is inherited by child pages (the lowest
+role on the chain of restrictions wins). The instance administrator manages
+people and access but has no automatic access to private spaces.
 An invitation opened by someone who is already signed in can be accepted with
 that account; signing out is a separate secondary action.
 
@@ -430,6 +431,64 @@ consent steps are server-rendered pages without scripts, so the server reports
 them itself with the same anonymous id. Anything new that is sent must be
 added to this list and to `docs/INSTALL.md`.
 
+### Groups, single sign-on and the audit log
+
+- **One role resolver.** "Which role does this person have in this space, and on
+  this page" is answered in one place, in two forms that must agree:
+  `server/access/roles.ts` (TypeScript) and `server/access/roleSql.ts` (SQL for
+  search, the index and every list). Nothing else decides it. A person's space
+  role is the highest of their own, their active (not archived) groups' and the
+  implicit viewer role of an `instance` space. A page's role is the lowest of
+  the roles along the chain of restricted ancestors, each of which is the
+  person's own grant or the highest of their groups'. `roles.test.ts` compares
+  both forms on random trees.
+- **Inheritance has no table.** Ancestors come from the page path, so moves,
+  renames, Git sync, trash and restore need no upkeep. Copies, duplicates and
+  templates of a page restricted through its parent get their own restriction
+  at the root; a page restored from the trash never comes back more open.
+  `npm run access:inherit-report` (`server/tools`, read-only) lists who loses
+  which page when an installation upgrades to inheritance.
+- **Groups** (`groups`, `group_members`, `space_group_roles`, a group grant on
+  `page_access_grants`, `invites.group_ids`): instance administrators manage
+  groups, members flagged as managers manage the membership, space
+  administrators grant a group a role in their space. Every membership has a
+  `source` (`local`, `oidc`, `saml`, `scim`) and, for a provider, the provider
+  it came from; a sync only ever removes memberships of its own source and
+  provider. A space must keep an administrator, counting admins through groups.
+- **Sign-in** (`server/auth/`): email first (`POST /api/auth/sso/discover`
+  routes an address by domain), then password, OpenID Connect (`oidc.ts`,
+  `openid-client`) or SAML 2.0 (`saml.ts`, `@node-saml/node-saml`). Both protocol
+  modules only verify the provider's answer and reduce it to the same claims;
+  the decision to sign in, link, create or refuse, the audit and the session
+  are shared (`sso.ts`). Providers come from environment variables
+  (`FOLIO_OIDC_<SLUG>_*`, `FOLIO_SAML_<SLUG>_*`, read-only in the interface) or
+  from `/admin/auth` (client secrets encrypted with `FOLIO_SECRET`, never
+  returned). "Sign in with Google" is one OIDC provider (`google`) and keeps its
+  old callback address. An existing account is linked only when the provider
+  vouches for the email (OIDC `email_verified`; SAML: the IdP is marked
+  authoritative) and the domain is allowed. Enforced SSO makes the server refuse
+  a password for the provider's domains in every route that sets or checks one;
+  `/login?local` is the audited emergency way in for instance administrators.
+- **Group sync** (`groupSync.ts`) runs from the shared sign-in, so OIDC and SAML
+  behave alike, in one transaction. It never touches `local` memberships or the
+  manager flag, skips archived groups, refuses a change that would leave a space
+  without an administrator, and does nothing (but audits it) when the provider
+  reports an overage instead of the list.
+- **SCIM 2.0** (`server/scim/`, own thin layer on `zod`, no dependency): a
+  bearer token per provider (sha256, one active), users and groups, no JIT
+  while a token is active. A provisioned person is a placeholder identity
+  (`urn:folio:scim:<provider>`) until the first sign-in, when it is turned into a
+  real identity by subject, SAML `userName`, or the sign-in email when the
+  provider vouches for nothing (Entra over OIDC). Only placeholders of the same
+  provider are matched by email.
+- **Deactivation** goes through one function (`revokeAllAccessForUser`): sessions,
+  personal tokens, MCP OAuth grants and the open sockets. Every way to disable a
+  person, SCIM included, must use it.
+- **Sessions** have an id, last-seen time (updated at most every five minutes),
+  user agent and address. **The audit log** (`/admin/audit`, CSV streamed up to
+  100,000 rows) shows what `audit_log` holds; every new action needs a label in
+  both interface languages.
+
 ### Public sites
 
 A space whose visibility is `public` is also a read-only website for people
@@ -447,12 +506,12 @@ PostgreSQL, not in Git.
   unique).
 - **An anonymous caller is not a `User`.** The policy is a set of page ids,
   `publicReadablePageIds(slug)` in `server/publicSites.ts`: every page, minus
-  pages with a `page_access` row, minus `.agent/**`, minus `_templates/`.
+  pages with a `page_access` row and everything below them, minus `.agent/**`,
+  minus `_templates/`.
   `isPublicPage` is the point check used by collaboration, page, export and
   MCP code; `publicMayReadFile` decides files (a file is public only if a
-  public page uses it). A restriction is not inherited, so the children of a
-  locked page stay public. The documents say so; the publishing dialog only
-  says that restricted pages stay hidden.
+  public page uses it). A restriction is inherited, so the children of a
+  locked page are not public either.
 - **Settings.** `GET|PUT /api/spaces/:space/public-settings` (cookie session
   only; space or instance administrator; audited as `space.public_settings`
   and `space.visibility`; refused for demo accounts). Changing visibility
@@ -676,6 +735,25 @@ PostgreSQL, not in Git.
 - `_templates/` never leaks: not into the page tree, graph, tags, bases, public
   sites, and not into the public page set. A new place that lists pages has to
   skip it, and the sidebar "Templates" section stays the one exception.
+- A person's role comes from the one resolver (`access/roles.ts` and
+  `roleSql.ts`), never from a query or a check written next to it. Do not add a
+  third place that decides "may this person open this page". A restricted
+  ancestor can only narrow what a child allows, never widen it.
+- A single sign-on assertion is accepted only when it is signed, answers the
+  sign-in this browser started (state, nonce, `InResponseTo`), is within its
+  validity and has not been seen before. SAML XML with a `DOCTYPE` is refused.
+  Never log a token, an assertion or a client secret, and never return a secret
+  from an endpoint.
+- An existing account is linked to a provider only when the provider vouches for
+  the email and the domain is allowed. A SCIM placeholder is matched only within
+  its own provider and only while it has not signed in.
+- Group sync removes only what it added (same source, same provider), never
+  hand-made memberships and never the last administrator of a space.
+- Deactivating a person revokes sessions, tokens, OAuth grants and sockets
+  together; a new way to disable an account must call the same function.
+- Provider settings and SCIM tokens are changed by an instance administrator's
+  cookie session only, never by a token, and every change is audited. A SCIM
+  token sees and changes only the people and groups of its own provider.
 
 - A compare link must carry only page ids and commits, and every column must be
   fetched with the rights of whoever opens it. Putting a title, a text or a
@@ -851,9 +929,15 @@ Each of these was a real defect. They are here so that nobody pays twice.
 - `{{title}}` is substituted only in documents, not in the text of data tables
   or forms. The subpages of a template appear only in the Templates section
   tree, nowhere else.
-- Page access is not inherited by child pages, and there is no "close the
-  whole subtree" mode.
-- No user groups, no SSO or SCIM.
+- A child page cannot be opened wider than its restricted parent; a page moved
+  out from under a restricted page is open to its space again.
+- Group sync runs at sign-in only: a change at the provider reaches Folio at
+  the person's next sign-in (SCIM is immediate). Entra ID's overage (too many
+  groups for the token) is not resolved through Graph. Groups do not nest.
+- SAML: no encrypted assertions, no signed requests, no single logout. SCIM is
+  the subset providers use (no bulk, sort, ETag). No LDAP.
+- Audit entries are written without waiting and never pruned; actions such as
+  ordinary page edits are not audited.
 - The assistant supports one provider. One agent per space.
 - Forms do not follow later changes to the table's columns.
 - File pages have no share links and no search by content. Their version

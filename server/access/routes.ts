@@ -34,6 +34,7 @@ import {
 } from '../../shared/contracts.js';
 import * as storage from '../storage.js';
 import * as store from '../auth/store.js';
+import * as groupStore from '../groups/store.js';
 import * as session from '../auth/session.js';
 import { recordAudit } from '../audit.js';
 import { badRequest, forbidden, notFound } from '../errors.js';
@@ -52,17 +53,27 @@ const ACCESS_LOG_LIMIT = 100;
 export async function buildAccessMatrix(actor: User): Promise<AccessMatrixResponse> {
   if (!actor.isAdmin) throw forbidden('requires instance admin');
 
-  const [users, spaces, memberships] = await Promise.all([store.listUsers(), storage.listSpaces(), store.listAllMemberships()]);
+  const [users, spaces, memberships, groups, groupRoleRows] = await Promise.all([
+    store.listUsers(),
+    storage.listSpaces(),
+    store.listAllMemberships(),
+    groupStore.listGroups({ includeArchived: true }),
+    groupStore.listAllGroupRoles(),
+  ]);
 
   const roles: Record<string, Record<string, SpaceRole>> = {};
   for (const m of memberships) {
     (roles[m.userId] ??= {})[m.space] = m.role;
   }
+  const groupRoles: Record<string, Record<string, SpaceRole>> = {};
+  for (const r of groupRoleRows) (groupRoles[r.groupId] ??= {})[r.space] = r.role;
 
   return {
     users: users.map((u) => ({ id: u.id, name: u.name, email: u.email, isAdmin: u.isAdmin, disabled: Boolean(u.disabled) })),
     spaces: spaces.map((s) => ({ slug: s.slug, name: s.name, visibility: s.visibility ?? 'private' })),
     roles,
+    groups: groups.map((g) => ({ id: g.id, slug: g.slug, name: g.name, memberCount: g.memberCount, archived: g.archivedAt !== null })),
+    groupRoles,
   };
 }
 
@@ -172,8 +183,12 @@ export async function getUserAccess(actor: User, targetId: string): Promise<User
   if (!actor.isAdmin) throw forbidden('requires instance admin');
   const target = await store.findUserById(targetId);
   if (!target) throw notFound('user');
-  const [memberships, log] = await Promise.all([store.spacesForUser(targetId), store.listAccessLogForUser(targetId, ACCESS_LOG_LIMIT, resolveTextLanguage(actor.lang))]);
-  return { memberships, log };
+  const [memberships, log, groups] = await Promise.all([
+    store.spacesForUser(targetId),
+    store.listAccessLogForUser(targetId, ACCESS_LOG_LIMIT, resolveTextLanguage(actor.lang)),
+    groupStore.groupsOfUser(targetId),
+  ]);
+  return { memberships, log, groups };
 }
 
 /**

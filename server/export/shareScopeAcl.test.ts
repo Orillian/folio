@@ -143,10 +143,10 @@ describe('F-02: a subtree share excludes restricted pages and everything below t
     await teardownSchema();
   });
 
-  it('precondition: page access hides the restricted child from the editor, but not its (non-inheriting) descendant', async () => {
+  it('precondition: page access hides the restricted child from the editor, and its descendant too (inherited, stage 7)', async () => {
     expect(await session.effectivePageRole(editor, root)).toBe('editor');
     expect(await session.effectivePageRole(editor, secret)).toBeUndefined();
-    expect(await session.effectivePageRole(editor, belowSecret)).toBe('editor');
+    expect(await session.effectivePageRole(editor, belowSecret)).toBeUndefined();
   });
 
   it('the allowed set holds the root and the open descendants — not the restricted child, not anything below it', async () => {

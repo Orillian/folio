@@ -54,6 +54,7 @@ export function NewVersionNotice() {
   return (
     <div
       role="status"
+      data-report-exclude=""
       className="fixed bottom-4 left-4 z-[100] flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-800 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
     >
       <span>{t('newVersion.message')}</span>

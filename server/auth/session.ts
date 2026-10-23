@@ -7,7 +7,6 @@
  * module's role-resolution helpers are async where round 2's were sync.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { spaceOpenToInstance } from '../../shared/contracts.js';
 import type { ApiTokenScope, SpaceRole, User } from '../../shared/contracts.js';
 import * as store from './store.js';
 import * as storage from '../storage.js';
@@ -15,13 +14,14 @@ import type { PageIndexEntry } from '../storage.js';
 import { forbidden, notFound } from '../errors.js';
 import { checkLoginRateLimitRedis, isRedisReady, type RateLimitResult } from '../db/redis.js';
 import * as pageAccess from '../pageAccess.js';
+import * as roles from '../access/roles.js';
+import { roleAtLeast } from '../access/roles.js';
 import { isAgentPath } from '../agentPath.js';
 import { normalizePublicUrl } from '../publicUrl.js';
 import { setSentryUser } from '../sentry.js';
 import { isPublicPage, publicReadablePageIds } from '../publicSites.js';
 
 export const SESSION_COOKIE_NAME = 'folio_session';
-const SESSION_TTL_SECONDS = Math.floor(store.SESSION_TTL_MS / 1000);
 const PAT_PREFIX = 'folio_pat_';
 
 declare module 'fastify' {
@@ -43,11 +43,8 @@ declare module 'fastify' {
 // Roles
 // ---------------------------------------------------------------------------
 
-const ROLE_RANK: Record<SpaceRole, number> = { viewer: 0, editor: 1, admin: 2 };
-
-export function roleAtLeast(role: SpaceRole | undefined, min: SpaceRole): boolean {
-  return role !== undefined && ROLE_RANK[role] >= ROLE_RANK[min];
-}
+// The rank table and roleAtLeast live with the resolver (access/roles.ts); re-exported for the many existing callers.
+export { roleAtLeast };
 
 /**
  * A built-in system account (13.10.2026: the "Public visitor" that anonymous
@@ -71,14 +68,11 @@ export function isSystemUser(user: Pick<User, 'id' | 'isSystem'>): boolean {
  * itself — that's the whole point of this round (spec-access.md §1/§2): "not
  * 'an admin cannot read a private space', but 'an admin cannot read it
  * silently'". A disabled user gets nothing via either path (spec §5).
+ * The rule itself lives in access/roles.ts (resolveSpaceRole) and its SQL twin
+ * access/roleSql.ts — this is a thin wrapper.
  */
 export async function effectiveRole(user: User, space: string): Promise<SpaceRole | undefined> {
-  if (user.disabled) return undefined;
-  if (isSystemUser(user)) return (await store.getSpaceVisibility(space)) === 'public' ? 'viewer' : undefined;
-  const explicit = await store.getMembershipRole(space, user.id);
-  if (explicit) return explicit;
-  const visibility = await store.getSpaceVisibility(space);
-  return spaceOpenToInstance(visibility) ? 'viewer' : undefined;
+  return roles.effectiveSpaceRole(roles.roleSubject(user, isSystemUser(user)), space);
 }
 
 /**
@@ -89,14 +83,7 @@ export async function effectiveRole(user: User, space: string): Promise<SpaceRol
  * Disabled: nothing, same as effectiveRole.
  */
 export async function membershipsFor(user: User): Promise<Record<string, SpaceRole>> {
-  if (user.disabled) return {};
-  if (isSystemUser(user)) return Object.fromEntries((await store.listPublicSpaceSlugs()).map((slug) => [slug, 'viewer' as SpaceRole]));
-  const explicit = await store.spacesForUser(user.id);
-  const out: Record<string, SpaceRole> = { ...explicit };
-  for (const slug of await store.listInstanceVisibleSpaceSlugs()) {
-    if (!(slug in out)) out[slug] = 'viewer';
-  }
-  return out;
+  return roles.spaceRolesForUser(roles.roleSubject(user, isSystemUser(user)));
 }
 
 export async function visibleSpaceSlugs(user: User): Promise<Set<string>> {
@@ -115,8 +102,8 @@ export async function visibleSpaceSlugs(user: User): Promise<Set<string>> {
 export async function canAdministerSpace(user: User, space: string): Promise<boolean> {
   if (isSystemUser(user)) return false;
   if (user.isAdmin) return true;
-  const role = await store.getMembershipRole(space, user.id);
-  return role === 'admin';
+  // 'admin' never comes from visibility (the implicit grant is 'viewer'), so this is "an admin member of the space".
+  return (await effectiveRole(user, space)) === 'admin';
 }
 
 /** Throws 403 unless the request's user is an instance admin. Call only after requireSession has run. */
@@ -136,6 +123,16 @@ export async function requireSpaceRole(request: FastifyRequest, space: string, m
   const role = await effectiveRole(request.authUser!, space);
   if (!roleAtLeast(role, min)) throw forbidden(`requires ${min}+ role in this space`);
   return role as SpaceRole;
+}
+
+/**
+ * Membership management of a space (docs/spec-access.md §8): 404 if the space doesn't exist, 403 unless the caller
+ * is an instance admin or an admin member of it (canAdministerSpace). It lets an instance admin manage who is in a
+ * space, NOT read its content: effectiveRole / requirePageRole are untouched.
+ */
+export async function requireSpaceAdministrator(request: FastifyRequest, space: string): Promise<void> {
+  if (!(await storage.spaceExists(space))) throw notFound('space');
+  if (!(await canAdministerSpace(request.authUser!, space))) throw forbidden('requires instance admin, or admin role in this space');
 }
 
 /**
@@ -219,7 +216,7 @@ export function setSessionCookie(reply: FastifyReply, token: string): void {
     httpOnly: true,
     sameSite: 'lax',
     secure: cookiesSecure(),
-    maxAge: SESSION_TTL_SECONDS,
+    maxAge: Math.floor(store.sessionTtlMs() / 1000),
     path: '/',
   });
 }
@@ -267,7 +264,7 @@ export async function userForToken(token: string | undefined | null): Promise<Us
     await store.destroyAllSessionsForUser(userId);
     return null;
   }
-  const { passwordHash: _passwordHash, googleSub: _googleSub, ...user } = stored;
+  const { passwordHash: _passwordHash, ...user } = stored;
   return user;
 }
 
@@ -304,8 +301,13 @@ async function resolvePat(request: FastifyRequest): Promise<ResolvedAuth | null>
 }
 
 export async function resolveAuth(request: FastifyRequest): Promise<ResolvedAuth | null> {
-  const cookieUser = await userForToken(request.cookies?.[SESSION_COOKIE_NAME]);
-  if (cookieUser) return { user: cookieUser };
+  const cookieToken = request.cookies?.[SESSION_COOKIE_NAME];
+  const cookieUser = await userForToken(cookieToken);
+  if (cookieUser) {
+    // Throttled bookkeeping for the session list ("last active", device, address); request.ip is the real client address only with TRUST_PROXY.
+    if (cookieToken) store.touchSession(cookieToken, { userAgent: request.headers['user-agent'], ip: request.ip });
+    return { user: cookieUser };
+  }
   return resolvePat(request);
 }
 

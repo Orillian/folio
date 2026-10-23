@@ -184,13 +184,16 @@ describe('member cards', () => {
     }
   });
 
-  it('never names a restricted parent in the breadcrumb', async () => {
-    for (const who of [viewer, owner]) {
-      const c = ok(await card(pageUrl(space, ids.note), who));
-      expect(c.title).toBe('Open note');
-      expect(c.breadcrumb[1]).toBe('…');
-      expect(JSON.stringify(c)).not.toContain('Vault Hidden Title');
-    }
+  it('never names a restricted parent in the breadcrumb; a child of a restricted page is restricted too (inherited)', async () => {
+    // The note has no rule of its own, but its parent is restricted (stage 7): closed to the viewer…
+    expect((await card(pageUrl(space, ids.note), viewer))?.status).toBe('noaccess');
+    // …and limited for the owner, whose card is posted into a conversation.
+    const c = ok(await card(pageUrl(space, ids.note), owner));
+    expect(c.title).toBe('Open note');
+    expect(c.limited).toBe(true);
+    expect(c.breadcrumb[1]).toBe('…');
+    expect(JSON.stringify(c)).not.toContain('Vault Hidden Title');
+    expect(JSON.stringify(c)).not.toContain('Visible to the space');
   });
 
   it('.agent pages: not for editors or viewers; a space admin gets title only', async () => {

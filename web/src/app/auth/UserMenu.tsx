@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Bot, Building2, ChartColumn, CircleHelp, Bug, Compass, GitBranch, HardDriveDownload, KeyRound, LogOut, MessageSquare, SlidersHorizontal, Trash2, Users } from 'lucide-react';
+import { Bot, Building2, ChartColumn, CircleHelp, Bug, Compass, GitBranch, HardDriveDownload, KeyRound, LogOut, MessageSquare, ScrollText, SlidersHorizontal, Trash2, Users } from 'lucide-react';
 import { useAuth } from './AuthProvider';
 import { Menu, MenuItem } from '../ui/Menu';
 import { SettingsDialog } from './SettingsDialog';
@@ -190,6 +190,28 @@ export function UserMenu({ space = '' }: UserMenuProps) {
                 }}
               >
                 {t('auth.userMenu.chatIntegrations')}
+              </MenuItem>
+            )}
+            {user.isAdmin && (
+              <MenuItem
+                icon={<ScrollText size={14} />}
+                onSelect={() => {
+                  close();
+                  navigate('/admin/audit');
+                }}
+              >
+                {t('auth.userMenu.auditLog')}
+              </MenuItem>
+            )}
+            {user.isAdmin && (
+              <MenuItem
+                icon={<KeyRound size={14} />}
+                onSelect={() => {
+                  close();
+                  navigate('/admin/auth');
+                }}
+              >
+                {t('auth.userMenu.sso')}
               </MenuItem>
             )}
             {/* Trash round: instance-wide trash. Space admins reach the same

@@ -342,17 +342,17 @@ They sync in real time, two people reacting at once both keep theirs, people
 with the viewer role, or anyone in View mode, see them but cannot add any, and they are not part of the
 board's SVG file or Git history.
 
-### Compare pages and versions
+### Side-by-side comparison
 
 Up to five pages, or older versions of a page, side by side in one view.
-"Add to comparison" is in a page's context menu and "..." menu in the sidebar
+"Compare side by side" is in a page's context menu and "..." menu in the sidebar
 (people who can only read a space get it too), in the page header, and in the
-history panel for a version. A "Comparison · N" chip at the bottom of the window
+history panel for a version ("Add to side by side"). A "Side by side · N" chip at the bottom of the window
 holds the list (up to five items, from any spaces you can open, kept in the
 browser); "Open" shows them as equal columns at `/compare?items=…`. A column of
 a current page is the page itself, with the same editor and live collaboration:
 type in it and everyone on the page sees the change. In the history panel,
-"Compare with current" opens the page as a live column with the chosen version
+"Compare side by side with current" opens the page as a live column with the chosen version
 next to it, read-only. With "Highlight changes" every version column is marked
 against the leftmost column (the base): green for text that is new or changed,
 red and struck through for text the base has and the version lacks, with a count
@@ -364,7 +364,10 @@ and a column they cannot open shows a notice. Limits: highlighting compares text
 block by block (a moved paragraph shows as changed), marks only version columns,
 and skips a very large page; a table or base version shows its file text with
 changed lines marked, a whiteboard or a file version is a preview without marks;
-on a phone the columns scroll sideways. See [LIMITATIONS.md](LIMITATIONS.md).
+on a phone the columns scroll sideways. Columns are compact (tables and code
+scroll inside their own box), and a zoom control at the bottom, or Ctrl/Cmd with
+`-`, `=` and `0`, scales every column together from 50 to 125% (not boards,
+canvases, artifacts or file previews). See [LIMITATIONS.md](LIMITATIONS.md).
 
 ## 4. Offline mode
 
@@ -477,7 +480,23 @@ connection is back.
 - **Space visibility**: `private` (explicit members only), `instance` (any
   active user may view) or `public` (any active user may view, and anyone on
   the internet may read it as a website, see section 7).
-- **Rights on a single page** can be narrower than the role in the space.
+- **Rights on a single page** can be narrower than the role in the space, and
+  they are **inherited by child pages** (like Confluence view restrictions): a
+  child of a restricted page is restricted too, and its own restriction can
+  only narrow that. The page access dialog shows "Restricted by parent page …"
+  and who can open the page; the sidebar marks restricted pages with a lock.
+- **Groups**: a named set of people that gets a role in a space and access to a
+  restricted page, the same way a single person does. A person's role is the
+  highest of their own, their active groups' and the implicit viewer role.
+  Instance administrators create and delete groups; a group's managers edit its
+  membership; a space administrator grants or revokes a group's role in their
+  own space. Groups can be filled from the identity provider: with group sync
+  on, each single sign-on sign-in adds and removes the memberships the provider
+  asserts (matched by name or an explicit table, optionally creating missing
+  groups); memberships added by hand are never touched. Groups do not nest;
+  "All members" is the `instance` visibility. The
+  Access page has a Groups tab, and groups appear in the matrix, the space
+  members dialog, page access and invitations.
 - **The instance administrator does not see the content of spaces** they are
   not a member of: they manage users and invitations, but the pages are closed
   to them. They can grant access to themselves — and that is written to the
@@ -487,6 +506,46 @@ connection is back.
   use another account.
 - **Access requests**: a user who runs into a 403 sends a request; the space
   administrators are notified and decide.
+- **Deactivating a person cuts off all access.** A disabled account at once loses
+  its browser sessions, personal API tokens, OAuth connections of apps (Claude,
+  ChatGPT, chat previews) and the open editor and notification connections. The
+  audit log records `user.disable` with the number of things revoked, and
+  `user.enable` when the account is switched back on; revoked credentials do not
+  come back.
+- **Sign-in sessions.** Everyone sees their own sessions (device, address, last
+  activity) in Settings and can sign out their other devices. An instance
+  administrator sees any person's sessions in the edit-user dialog and can end
+  one or all of them; the audit log records `session.revoke` and
+  `session.revoke_all`. The session lifetime is `FOLIO_SESSION_TTL_DAYS`
+  (default 30, counted from sign-in, not extended while you work).
+- **Audit log** (`/admin/audit`, instance administrators; "Audit log" in the
+  account menu): a table of events filtered by actor, action prefix, target and
+  date range, loaded page by page, with readable names for known actions (unknown
+  ones show the action string and details as they are) and a CSV export of the
+  current filter (streamed, up to 100,000 rows; the export is itself logged).
+  Space administrators keep the access changes feed of their own space.
+- **Single sign-on (OpenID Connect)**: Keycloak, Authentik, Microsoft Entra ID,
+  Okta, Google or any other OIDC provider, configured in the interface or with
+  environment variables, with a "Test connection" that shows what the provider
+  sends. Email first: the login page sends an email of your organization's
+  domain to its provider. Accounts can be created at first sign-in with preset
+  spaces, or only invited people get in; an existing account is linked only when
+  the provider has verified the email. Single sign-on can be made mandatory for
+  your domains — instance administrators keep an audited emergency password
+  sign-in.
+- **Single sign-on (SAML 2.0)**: Microsoft Entra ID, Okta, Keycloak, Google
+  Workspace, ADFS or any other SAML IdP, from its metadata URL or XML, with the
+  same account rules, "Test connection" and email routing as OpenID Connect.
+  Signed assertions only, bound to the sign-in the browser started, each one
+  usable once. The admin screen shows Folio's entity ID, ACS URL and SP metadata
+  to register at the IdP.
+- **SCIM 2.0 provisioning**: Okta, Microsoft Entra ID, Keycloak (with a SCIM
+  plugin), OneLogin, JumpCloud and others create, update and deactivate people
+  and groups. A bearer token per provider, generated at `/admin/auth` and shown
+  once; deactivation ends every session and token of the person at once;
+  DELETE deactivates (never deletes) and archives groups; memberships added by
+  hand in Folio are never removed; every change is in the audit log (`scim.*`).
+  While SCIM is on, accounts are not created at first sign-in.
 
 ## 7. Sharing outside
 
@@ -534,8 +593,8 @@ it exactly as they read a space with `instance` visibility.
   visitor's search query is cut at 200 characters.
 - **Ask Folio AI** (opt-in per space, see section 11).
 - **Never published**: pages with their own access restrictions, the `.agent`
-  folder and templates. A restriction is not inherited by child pages, so each
-  page that must stay closed needs its own lock. A raw file is served only if a
+  folder and templates, nor anything below a restricted page (restrictions are
+  inherited). A raw file is served only if a
   public page uses it. Visitors are not sent the names or cursors of the people
   editing, and there are no comments, history, backlinks or notifications on
   the site.

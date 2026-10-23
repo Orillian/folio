@@ -306,10 +306,12 @@ describe('MCP builders: forms, table columns and views, canvas -> board (real PG
       fails(await call(as(viewer), 'update_form', { id: ids.feedback, title: 'V' }), 'requires editor+');
       fails(await call(as(editor, ['read']), 'update_form', { id: ids.feedback, title: 'R' }), 'write scope');
       fails(await call(as(outsider), 'update_form', { id: ids.feedback, title: 'O' }), 'page not found');
-      // A form on the locked table: the editor may edit the form's wording but not add a column to that table.
+      // A form on the locked table is placed under it and inherits its restriction (stage 7): the editor, who may only
+      // view the table, may not edit the form either; the owner may.
       const lockedForm = ok(await call(as(owner), 'create_form', { space: slug, title: 'Locked form', table: ids.locked }));
-      ok(await call(as(editor), 'update_form', { id: lockedForm.id, title: 'Locked form, renamed' }));
-      fails(await call(as(editor), 'update_form', { id: lockedForm.id, fields: [{ columnId: 'name', label: 'Name' }, { label: 'New' }] }), 'cannot add a column to the paired table');
+      fails(await call(as(editor), 'update_form', { id: lockedForm.id, title: 'Locked form, renamed' }), 'requires editor+');
+      fails(await call(as(editor), 'update_form', { id: lockedForm.id, fields: [{ columnId: 'name', label: 'Name' }, { label: 'New' }] }), 'requires editor+');
+      ok(await call(as(owner), 'update_form', { id: lockedForm.id, title: 'Locked form, renamed' }));
       expect((await tables.getTableSnapshot(ids.locked)).columns.map((c) => c.id)).toEqual(['name']);
     });
   });

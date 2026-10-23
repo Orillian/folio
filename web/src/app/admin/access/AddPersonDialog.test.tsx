@@ -29,6 +29,8 @@ const MATRIX: AccessMatrixResponse = {
     { slug: 'sales', name: 'Sales', visibility: 'private' },
   ],
   roles: { 'u-1': { eng: 'editor', sales: 'viewer' } },
+  groups: [],
+  groupRoles: {},
 };
 
 function jsonResponse(body: unknown, status = 200): Response {

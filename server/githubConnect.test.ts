@@ -313,6 +313,7 @@ describe('redactRequestUrl', () => {
   it('hides the query string of OAuth callbacks only', () => {
     expect(redactRequestUrl('/api/auth/github-connect/callback?code=abc&state=def')).toBe('/api/auth/github-connect/callback?[redacted]');
     expect(redactRequestUrl('/api/auth/google/callback?code=abc')).toBe('/api/auth/google/callback?[redacted]');
+    expect(redactRequestUrl('/api/auth/oidc/keycloak/callback?code=abc&state=s')).toBe('/api/auth/oidc/keycloak/callback?[redacted]');
     expect(redactRequestUrl('/api/pages?space=x')).toBe('/api/pages?space=x');
     expect(redactRequestUrl('/api/auth/github-connect/callback')).toBe('/api/auth/github-connect/callback');
   });

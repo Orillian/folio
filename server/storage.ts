@@ -29,6 +29,7 @@ import { compileScanIgnore } from './scanIgnore.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
 import { translitSlug } from './translit.js';
 import { query, queryOne, withTransaction } from './db/pool.js';
+import { restrictionChainSql } from './access/roleSql.js';
 import { withSpaceLock } from './db/redis.js';
 import * as links from './links.js';
 import * as pageIndex from './indexV2/store.js';
@@ -4441,11 +4442,10 @@ async function rewritePageFileId(space: string, abs: string, kind: PageKind, new
  *  - a page the caller cannot open (`hiddenPageIds`: a private page they
  *    neither own nor hold a grant on, and `.agent/**` unless they administer
  *    the space) is not copied, and neither is anything below it — its file,
- *    its children folder, its subfolder, however open those children are by
- *    themselves. The same "nothing below a hidden page" rule as a subtree
- *    share link (export/shareScope.ts). Page access is per page, so the tree
- *    still shows such a child; a copy is stricter on purpose, because it moves
- *    the content to a place the caller can edit and strips the restriction;
+ *    its children folder, its subfolder. Since restrictions are inherited
+ *    (stage 7) such children are hidden from the caller as well
+ *    (`hiddenPageIds` holds them), and the folder cut keeps non-page files
+ *    of the hidden subtree behind too;
  *  - files that belong only to hidden pages (`privateFiles`: referenced by
  *    them and by no page the caller can open — the same ownership rule as the
  *    raw-file route, fileAccess.ts) stay behind; a file shared with an open
@@ -4461,6 +4461,13 @@ async function rewritePageFileId(space: string, abs: string, kind: PageKind, new
  *    purpose. The original owner's and grantees' rights are NOT copied: they
  *    may not be members of the destination space at all, and a grant cannot
  *    outlive a membership (pageAccess.setAccess refuses it).
+ *    Restrictions are inherited (stage 7), so the same holds for the copy's
+ *    ROOT when the page copied is restricted through an ancestor that does
+ *    not travel with it and the copy does not land under that ancestor too:
+ *    the root copy gets its own row (owner = the maker), and everything
+ *    copied below it inherits that. A copy out of a restricted subtree never
+ *    lands open; a duplicate next to the original stays under the same
+ *    parents and gets no extra row.
  *
  * `copyPage`/`duplicatePage` without a scope apply none of the access rules
  * above (no page is left out and no copy is restricted) — for a caller that
@@ -4513,7 +4520,23 @@ function copyFilter(sourceSpace: string, srcDirAbs: string, sourceEntries: PageI
  * copy, owned by `actorId` and with no grants (see CopyScope). Run after the
  * destination has been scanned: the row references the copy's index row.
  */
-async function restrictCopies(sourceEntries: PageIndexEntry[], copied: Array<{ sourceAbs: string; copyId: string }>, actorId: string): Promise<void> {
+async function restrictCopies(
+  sourceEntries: PageIndexEntry[],
+  copied: Array<{ sourceAbs: string; copyId: string }>,
+  actorId: string,
+  root: { sourceId: string; copyId: string },
+): Promise<void> {
+  // Restricted through an ancestor the copy is not under (a duplicate next to the original keeps its parents and
+  // needs nothing): the copy's root takes the restriction along (see CopyScope).
+  await query(
+    `INSERT INTO page_access (page_id, owner_id)
+     SELECT c.id, $2::uuid FROM pages_index c
+      WHERE c.id = $1
+        AND EXISTS (SELECT 1 FROM (${restrictionChainSql('$3')}) r
+                     WHERE r.page_id <> $3 AND r.page_id NOT IN (SELECT k.page_id FROM (${restrictionChainSql('$1')}) k))
+     ON CONFLICT (page_id) DO NOTHING`,
+    [root.copyId, actorId, root.sourceId],
+  );
   const idByAbs = new Map(sourceEntries.map((e) => [e.absPath, e.id]));
   const sourceIds: string[] = [];
   const copyIds: string[] = [];
@@ -4670,7 +4693,7 @@ async function copyPageInternal(
       );
       await copySubtreeSidecars(source.space, srcDirAbs, toSpace, destDirAbs, copied);
       await scanPathsOrAll(toSpace, { dirs: [uniqueDirRel] }, copiedId);
-      if (scope) await restrictCopies(sourceEntries, copied, scope.actorId);
+      if (scope) await restrictCopies(sourceEntries, copied, scope.actorId, { sourceId: source.id, copyId: copiedId });
       return { meta: toPageMeta(await requireEntry(copiedId)), copiedIds: copied.map((c) => c.copyId) };
     }
 
@@ -4766,7 +4789,7 @@ async function copyPageInternal(
     }
 
     await scanPathsOrAll(toSpace, { files: [relPath], dirs: copiedChildDirRel ? [copiedChildDirRel] : [] }, copiedId);
-    if (scope) await restrictCopies(sourceEntries, copied, scope.actorId);
+    if (scope) await restrictCopies(sourceEntries, copied, scope.actorId, { sourceId: source.id, copyId: copiedId });
     return { meta: toPageMeta(await requireEntry(copiedId)), copiedIds: copied.map((c) => c.copyId) };
   });
 }
@@ -5089,6 +5112,8 @@ export async function renamePageSlug(id: string, rawSlug: string): Promise<SlugR
 export interface PageAccessRule {
   ownerId: string;
   grants: Array<{ userId: string; role: 'viewer' | 'editor' }>;
+  /** Grants to groups (migration 053); absent in records made before it. */
+  groupGrants?: Array<{ groupId: string; role: 'viewer' | 'editor' }>;
 }
 
 /**
@@ -5101,6 +5126,48 @@ export interface TrashAccessEntry extends PageAccessRule {
   pageId: string;
   /** Space-relative path at deletion time: the fallback match for a file that cannot carry its own id (pdf/office), see RestoredAccess. */
   relPath: string;
+  /**
+   * Stage 7 (inherited restrictions): set on the entry that records what the
+   * deleted ROOT page inherited from restricted ancestors that stay behind —
+   * their ids, and as owner/grants the intersection of their rules
+   * (intersectAccessRules). A restore applies it only when the page does not
+   * land under all of those ancestors again (trash/access.ts).
+   */
+  inheritedFrom?: string[];
+}
+
+/**
+ * One rule that lets in nobody the given `levels` (rules that all apply at
+ * once) would not: a person keeps a grant only when every level lets them in
+ * by name (as its owner or with a grant), a group only when every level has a
+ * grant for it, each with the LOWEST role. The owner is the first level owner,
+ * from the last level back (the nearest), who every level lets in by name;
+ * when there is none, the nearest level's owner (a rule needs one).
+ */
+export function intersectAccessRules(levels: readonly PageAccessRule[]): PageAccessRule {
+  const rank = (role: 'viewer' | 'editor') => (role === 'editor' ? 1 : 0);
+  const userRole = (rule: PageAccessRule, userId: string): 'viewer' | 'editor' | undefined =>
+    rule.ownerId === userId ? 'editor' : rule.grants.find((grant) => grant.userId === userId)?.role;
+  const lowest = (roles: Array<'viewer' | 'editor' | undefined>): 'viewer' | 'editor' | undefined =>
+    roles.some((role) => role === undefined) ? undefined : roles.reduce((a, b) => (rank(b!) < rank(a!) ? b : a));
+  const people = new Set(levels.flatMap((rule) => [rule.ownerId, ...rule.grants.map((grant) => grant.userId)]));
+  const passing = new Map<string, 'viewer' | 'editor'>();
+  for (const userId of people) {
+    const role = lowest(levels.map((rule) => userRole(rule, userId)));
+    if (role) passing.set(userId, role);
+  }
+  const ownerId = [...levels].reverse().map((rule) => rule.ownerId).find((id) => passing.has(id)) ?? levels[levels.length - 1].ownerId;
+  const groups = new Set(levels.flatMap((rule) => (rule.groupGrants ?? []).map((grant) => grant.groupId)));
+  const groupGrants: NonNullable<PageAccessRule['groupGrants']> = [];
+  for (const groupId of groups) {
+    const role = lowest(levels.map((rule) => rule.groupGrants?.find((grant) => grant.groupId === groupId)?.role));
+    if (role) groupGrants.push({ groupId, role });
+  }
+  return {
+    ownerId,
+    grants: [...passing].filter(([userId]) => userId !== ownerId).map(([userId, role]) => ({ userId, role })),
+    ...(groupGrants.length > 0 ? { groupGrants } : {}),
+  };
 }
 
 /** trash_items.payload of every kind but 'space'; absent `access` = nothing in the item was restricted, or the item is older than this record. */
@@ -5140,6 +5207,8 @@ export interface TrashSpaceSnapshot extends TrashPagePayload {
     primaryHost?: string;
   };
   members: Array<{ userId: string; role: string }>;
+  /** Roles of groups in the space (migration 053); absent in snapshots taken before it. */
+  groupRoles?: Array<{ groupId: string; role: string }>;
   /** New admin-space deletion moves the complete repo (incl. .git), not only rootPath. */
   fullRepo?: boolean;
 }
@@ -5168,6 +5237,13 @@ async function insertPageAccess(client: PoolClient, pageId: string, rule: PageAc
       grant.role,
     ]);
   }
+  for (const grant of rule.groupGrants ?? []) {
+    await client.query('INSERT INTO page_access_grants (page_id, group_id, role) VALUES ($1, $2, $3) ON CONFLICT (page_id, group_id) DO NOTHING', [
+      pageId,
+      grant.groupId,
+      grant.role,
+    ]);
+  }
 }
 
 /** The rules scanSpace did not get to give while it indexed (the file was skipped as unchanged: somebody else's scan had already indexed it). Matches the index by id, then by path; a page that is not there is skipped. */
@@ -5193,10 +5269,18 @@ async function reconcileRestoredAccess(space: string, restored: RestoredAccess, 
  * the rescan drops the index rows — afterwards the rules are gone.
  */
 async function snapshotPageAccess(space: string, scope: { all: boolean; pageId?: string; dirPrefix?: string }): Promise<TrashAccessEntry[]> {
-  const rows = await query<{ id: string; path: string; owner_id: string; grants: Array<{ userId: string; role: 'viewer' | 'editor' }> }>(
+  const rows = await query<{
+    id: string;
+    path: string;
+    owner_id: string;
+    grants: Array<{ userId: string; role: 'viewer' | 'editor' }>;
+    group_grants: Array<{ groupId: string; role: 'viewer' | 'editor' }>;
+  }>(
     `SELECT p.id, p.path, a.owner_id,
             COALESCE((SELECT json_agg(json_build_object('userId', g.user_id, 'role', g.role) ORDER BY g.user_id)
-                        FROM page_access_grants g WHERE g.page_id = a.page_id), '[]'::json) AS grants
+                        FROM page_access_grants g WHERE g.page_id = a.page_id AND g.user_id IS NOT NULL), '[]'::json) AS grants,
+            COALESCE((SELECT json_agg(json_build_object('groupId', g.group_id, 'role', g.role) ORDER BY g.group_id)
+                        FROM page_access_grants g WHERE g.page_id = a.page_id AND g.group_id IS NOT NULL), '[]'::json) AS group_grants
        FROM page_access a
        JOIN pages_index p ON p.id = a.page_id
       WHERE p.space_slug = $1
@@ -5204,7 +5288,42 @@ async function snapshotPageAccess(space: string, scope: { all: boolean; pageId?:
       ORDER BY p.path`,
     [space, scope.all, scope.pageId ?? null, scope.dirPrefix ?? null],
   );
-  return rows.map((row) => ({ pageId: row.id, relPath: row.path, ownerId: row.owner_id, grants: row.grants }));
+  const entries: TrashAccessEntry[] = rows.map((row) => ({
+    pageId: row.id,
+    relPath: row.path,
+    ownerId: row.owner_id,
+    grants: row.grants,
+    ...(row.group_grants.length > 0 ? { groupGrants: row.group_grants } : {}),
+  }));
+  if (!scope.all && scope.pageId) {
+    // What the deleted page inherits from restricted ancestors that are not deleted with it (stage 7).
+    const ancestors = await query<{
+      page_id: string;
+      owner_id: string;
+      grants: Array<{ userId: string; role: 'viewer' | 'editor' }>;
+      group_grants: Array<{ groupId: string; role: 'viewer' | 'editor' }>;
+    }>(
+      `SELECT c.page_id, c.owner_id,
+              COALESCE((SELECT json_agg(json_build_object('userId', g.user_id, 'role', g.role) ORDER BY g.user_id)
+                          FROM page_access_grants g WHERE g.page_id = c.page_id AND g.user_id IS NOT NULL), '[]'::json) AS grants,
+              COALESCE((SELECT json_agg(json_build_object('groupId', g.group_id, 'role', g.role) ORDER BY g.group_id)
+                          FROM page_access_grants g WHERE g.page_id = c.page_id AND g.group_id IS NOT NULL), '[]'::json) AS group_grants
+         FROM (${restrictionChainSql('$1')}) c
+        WHERE c.page_id <> $1
+        ORDER BY length(c.path), c.path`,
+      [scope.pageId],
+    );
+    const root = await getEntry(scope.pageId);
+    if (ancestors.length > 0 && root) {
+      const levels: PageAccessRule[] = ancestors.map((row) => ({
+        ownerId: row.owner_id,
+        grants: row.grants,
+        ...(row.group_grants.length > 0 ? { groupGrants: row.group_grants } : {}),
+      }));
+      entries.push({ pageId: root.id, relPath: root.relPath, ...intersectAccessRules(levels), inheritedFrom: ancestors.map((row) => row.page_id) });
+    }
+  }
+  return entries;
 }
 
 interface TrashRecord {
@@ -5274,6 +5393,7 @@ async function buildSpaceSnapshot(space: string): Promise<TrashSpaceSnapshot | n
   );
   if (!row) return null;
   const members = await query<{ user_id: string; role: string }>('SELECT user_id, role FROM space_members WHERE space_slug = $1', [space]);
+  const groupRoles = await query<{ group_id: string; role: string }>('SELECT group_id, role FROM space_group_roles WHERE space_slug = $1', [space]);
   // The `DELETE FROM spaces` below cascades to pages_index and, through it, to every page-access rule of the space.
   const access = await snapshotPageAccess(space, { all: true });
   const ids = await snapshotIndexOnlyIds(space, { all: true });
@@ -5298,6 +5418,7 @@ async function buildSpaceSnapshot(space: string): Promise<TrashSpaceSnapshot | n
       primaryHost: row.public_primary_host,
     },
     members: members.map((m) => ({ userId: m.user_id, role: m.role })),
+    ...(groupRoles.length > 0 ? { groupRoles: groupRoles.map((r) => ({ groupId: r.group_id, role: r.role })) } : {}),
   };
 }
 

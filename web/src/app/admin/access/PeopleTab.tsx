@@ -10,7 +10,8 @@ import { roleLabel } from '../../auth/roles';
 import { useToast } from '../../ui/Toast';
 import { EditUserDialog } from '../EditUserDialog';
 import { ConfirmDialog } from '../../ui/ConfirmDialog';
-import { chipsForUser, hasNoExplicitAccess, matchesUserQuery } from './logic';
+import { displayAction } from '../audit/logic';
+import { accessLogDetail, accessLogTarget, chipsForUser, hasNoExplicitAccess, matchesUserQuery } from './logic';
 import '../../i18n/register';
 
 type Filter = 'all' | 'noAccess' | 'admins' | 'disabled';
@@ -328,14 +329,32 @@ function PersonPanel({ userId, spaces }: { userId: string; spaces: AccessMatrixR
             </div>
           )}
 
+          {access.data.groups.length > 0 && (
+            <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
+              <p className="mb-1 text-xs font-medium text-neutral-500 dark:text-neutral-400">{t('access.people.groups')}</p>
+              <div className="flex flex-wrap gap-1">
+                {access.data.groups.map((g) => (
+                  <span
+                    key={g.id}
+                    className={`rounded-full px-2 py-0.5 text-xs ${g.archived ? 'bg-neutral-100 text-neutral-400 line-through dark:bg-neutral-800' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}
+                  >
+                    {g.name}
+                    {g.isManager && ` · ${t('access.groups.manager')}`}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {access.data.log.length > 0 && (
             <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
               <p className="mb-1 text-xs font-medium text-neutral-500 dark:text-neutral-400">{t('access.people.recentChanges')}</p>
               <ul className="flex flex-col gap-1 text-xs text-neutral-500 dark:text-neutral-400">
                 {access.data.log.slice(0, 5).map((entry) => (
                   <li key={entry.id}>
-                    {formatDate(entry.at, i18n.language)} · {entry.actorName} · {t(`access.log.${entry.action.replace('.', '_')}`)} ·{' '}
-                    {entry.target}
+                    {formatDate(entry.at, i18n.language)} · {entry.actorName} · {t(`access.log.${displayAction(entry.action, entry.meta).replace('.', '_')}`)} ·{' '}
+                    {accessLogTarget(entry)}
+                    {accessLogDetail(entry, t)}
                   </li>
                 ))}
               </ul>

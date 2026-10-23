@@ -71,7 +71,7 @@ function VersionMarkdown({ markdown, page, base }: { markdown: string; page: Pag
   const highlight = useMemo(() => (baseText === undefined ? null : highlightChanges(baseText, markdown)), [baseText, markdown]);
 
   const plain = (
-    <div className="px-4 py-3 text-[13px] [&_.folio-markdown]:max-w-none">
+    <div className="px-4 py-3 text-[13px]">
       <Markdown markdown={markdown} space={page?.space ?? ''} pagePath={page?.path ?? ''} />
     </div>
   );
@@ -87,7 +87,7 @@ function VersionMarkdown({ markdown, page, base }: { markdown: string; page: Pag
         {identical ? t('compare.highlight.identical') : t('compare.highlight.summary', { changed: highlight.changedBlocks, removed: highlight.removedGroups })}
       </HighlightNote>
       {/* Each segment is its own Markdown: drop the page padding .folio-markdown carries, or every chunk gets 40px/96px gaps. */}
-      <div className="px-6 pb-24 pt-10 text-[13px] [&_.folio-markdown]:max-w-none [&_.folio-markdown]:!p-0">
+      <div className="px-4 pb-24 pt-4 text-[13px] [&_.folio-markdown]:!p-0">
         {highlight.segments.map((segment, index) =>
           segment.kind === 'removed' ? (
             <div

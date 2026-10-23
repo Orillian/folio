@@ -23,6 +23,10 @@ interface InviteRow {
   created_by_name: string; // joined from users.name
   is_admin: boolean;
   memberships: InviteMembership[]; // jsonb column -- pg parses this back to a JS value automatically
+  /** Migration 053: the groups the invited person joins. */
+  group_ids: string[];
+  /** Joined (INVITE_SELECT only): the groups of group_ids that still exist. */
+  groups?: Array<{ id: string; name: string }>;
   email: string | null;
   expires_at: string;
   max_uses: number;
@@ -41,6 +45,7 @@ function rowToInfo(row: InviteRow, originFallback: string): InviteInfo {
     id: row.id,
     url: inviteUrl(row.token, originFallback),
     memberships: row.memberships,
+    groups: row.groups ?? [],
     isAdmin: row.is_admin,
     email: row.email,
     expiresAt: new Date(row.expires_at).toISOString(),
@@ -52,7 +57,9 @@ function rowToInfo(row: InviteRow, originFallback: string): InviteInfo {
   };
 }
 
-const INVITE_SELECT = `SELECT i.*, u.name AS created_by_name FROM invites i JOIN users u ON u.id = i.created_by`;
+const INVITE_SELECT = `SELECT i.*, u.name AS created_by_name,
+    COALESCE((SELECT json_agg(json_build_object('id', g.id, 'name', g.name) ORDER BY lower(g.name)) FROM groups g WHERE g.id = ANY(i.group_ids)), '[]'::json) AS groups
+  FROM invites i JOIN users u ON u.id = i.created_by`;
 
 export interface CreateInviteInput {
   memberships: InviteMembership[];
@@ -60,15 +67,17 @@ export interface CreateInviteInput {
   expiresInDays: number;
   maxUses: number;
   email?: string;
+  /** Migration 053; validated by the route (who may put people into which group). */
+  groupIds?: string[];
 }
 
 export async function createInvite(input: CreateInviteInput, createdBy: string, originFallback: string): Promise<InviteInfo> {
   const token = randomBytes(16).toString('hex');
   const expiresAt = new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000);
   await query(
-    `INSERT INTO invites (id, token, created_by, is_admin, memberships, email, expires_at, max_uses)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [randomUUID(), token, createdBy, input.isAdmin, JSON.stringify(input.memberships), input.email ?? null, expiresAt, input.maxUses],
+    `INSERT INTO invites (id, token, created_by, is_admin, memberships, email, expires_at, max_uses, group_ids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::uuid[])`,
+    [randomUUID(), token, createdBy, input.isAdmin, JSON.stringify(input.memberships), input.email ?? null, expiresAt, input.maxUses, input.groupIds ?? []],
   );
   const row = await queryOne<InviteRow>(`${INVITE_SELECT} WHERE i.token = $1`, [token]);
   return rowToInfo(row!, originFallback);
@@ -166,6 +175,8 @@ export interface ClaimedInvite {
   id: string;
   isAdmin: boolean;
   memberships: InviteMembership[];
+  /** Migration 053: groups to join on acceptance (the acceptor skips any deleted or archived since). */
+  groupIds: string[];
   email: string | null;
 }
 
@@ -188,5 +199,5 @@ export async function claimInviteUse(token: string): Promise<ClaimedInvite | und
     [token],
   );
   if (!row) return undefined;
-  return { id: row.id, isAdmin: row.is_admin, memberships: row.memberships, email: row.email };
+  return { id: row.id, isAdmin: row.is_admin, memberships: row.memberships, groupIds: row.group_ids ?? [], email: row.email };
 }

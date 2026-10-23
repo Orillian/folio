@@ -12,10 +12,11 @@ import { AddPersonDialog } from './AddPersonDialog';
 import { PeopleTab } from './PeopleTab';
 import { MatrixTab } from './MatrixTab';
 import { SpacesTab } from './SpacesTab';
+import { GroupsTab } from './GroupsTab';
 import '../../i18n/register';
 
-type TabKey = 'people' | 'matrix' | 'spaces';
-const TAB_KEYS: TabKey[] = ['people', 'matrix', 'spaces'];
+type TabKey = 'people' | 'groups' | 'matrix' | 'spaces';
+const TAB_KEYS: TabKey[] = ['people', 'groups', 'matrix', 'spaces'];
 
 /**
  * `/admin/access` (round 27, docs/spec-access.md §6) — instance-admin only.
@@ -109,6 +110,7 @@ function AccessAdminContent() {
           onSelect={selectTab}
           items={[
             { key: 'people', label: t('access.tabs.people') },
+            { key: 'groups', label: t('access.tabs.groups') },
             { key: 'matrix', label: t('access.tabs.matrix') },
             { key: 'spaces', label: t('access.tabs.spaces') },
           ]}
@@ -127,6 +129,7 @@ function AccessAdminContent() {
 
         <div className="min-h-0 flex-1 overflow-hidden">
           {data && tab === 'people' && <PeopleTab matrix={data} />}
+          {data && tab === 'groups' && <GroupsTab matrix={data} />}
           {data && tab === 'matrix' && <MatrixTab matrix={data} />}
           {data && tab === 'spaces' && <SpacesTab matrix={data} />}
         </div>

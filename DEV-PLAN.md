@@ -68,7 +68,7 @@ In the order it was built.
 | 31 | Presence and notifications | Who is on the page; access requests with instant notifications |
 | 32 | Notes and glossary | Callouts and checklist items collected in a side panel; glossary terms with hover cards |
 | 33 | File pages | PDF, Word, Excel and PowerPoint as pages with preview |
-| 34 | Sign in with Google | Limited to listed email domains |
+| 34 | Sign in with Google | Limited to listed email domains (since 0.4.2 an OpenID Connect provider like any other) |
 | 35 | `.agent` | Per-space instructions for the assistant, as ordinary pages |
 | 36 | Forms | Forms that write into data tables, optionally without an account |
 | 37 | Editor hardening | Caret and Enter around hidden markup, paste from spreadsheets, highlights with colors, tables that do not lose typed text |
@@ -95,6 +95,7 @@ In the order it was built.
 | 58 | Artifacts | A page kind for interactive pages made by agents (Claude artifacts, Cursor canvases, any self-contained HTML): a `<name>.artifact/` folder in the repository, a sandboxed frame without cookies or API access, `window.storage` and `localStorage` that persist per reader (migration 051), import from a link, file or pasted HTML, MCP `publish_artifact` (41 tools). No JSX or TSX runtime yet |
 | 59 | Compare pages and versions | Up to five pages, or older versions of a page, side by side at `/compare?items=…`: a tray of collected pages (also for viewers), live editor columns, read-only version columns from the history panel, "Highlight changes" against the leftmost column, synchronized scrolling, and a link that carries only ids so each reader sees it with their own access. |
 | 60 | Template tools and agent run status | MCP and the assistant get `list_templates`, `create_page_from_template`, `save_page_as_template` and `create_template` (45 tools; `create_page` refuses `_templates/`). Folio AI runs show a thinking token counter, an elapsed counter during silent generation and real tool names, keep paragraphs and links in the live reply, and log per-step timing (`ai_runs.timing`, migration 052). The page tree draws indent guides. |
+| 61 | Groups and single sign-on | Groups hold roles in spaces and grants on pages through one role resolver (migration 053); sign-in through any OpenID Connect provider and SAML 2.0, several at once, with email-first routing, "Test connection", enforced SSO and an audited emergency sign-in (migrations 054, 056; Google became an OpenID Connect provider); group sync from the identity provider's claims at every sign-in (057); SCIM 2.0 provisioning of users and groups (059); an audit log screen with CSV export, a list of signed-in devices, and deactivation that revokes sessions, tokens and connected apps (055); page restrictions inherited by child pages, with `npm run access:inherit-report` to preview an upgrade. |
 
 ## What comes next
 
@@ -120,8 +121,7 @@ picked up.
 
 **Depth**
 
-- Inherited page access for a whole subtree.
-- User groups and single sign-on.
+- Single sign-on follow-ups: Entra ID group overage through Graph, single logout, signed SAML requests, continuous group sync.
 - Forms that follow changes to their table.
 - Offline mode for data tables.
 - Space list and membership changes pushed to open sessions as the page tree already is, in place of polling.

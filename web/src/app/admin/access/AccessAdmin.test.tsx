@@ -44,6 +44,8 @@ const MATRIX: AccessMatrixResponse = {
     { slug: 'general', name: 'General', visibility: 'instance' },
   ],
   roles: { 'u-3': { eng: 'editor' } },
+  groups: [],
+  groupRoles: {},
 };
 
 function jsonResponse(body: unknown, status = 200): Response {

@@ -9,6 +9,7 @@ import { roleLabel } from '../../auth/roles';
 import { useToast } from '../../ui/Toast';
 import { Menu, MenuItem } from '../../ui/Menu';
 import { VISIBILITY_OPTIONS, copyMembershipsPlan, makeVisibilityLabelKey, matchesSpaceQuery, matchesUserQuery, matrixCellState } from './logic';
+import { matchesGroupQuery } from './groupsLogic';
 import { VisibilityConfirmDialog } from './VisibilityConfirmDialog';
 import '../../i18n/register';
 
@@ -42,11 +43,24 @@ export function MatrixTab({ matrix }: MatrixTabProps) {
 
   const users = useMemo(() => matrix.users.filter((u) => matchesUserQuery(u, userQuery)), [matrix.users, userQuery]);
   const spaces = useMemo(() => matrix.spaces.filter((s) => matchesSpaceQuery(s, spaceQuery)), [matrix.spaces, spaceQuery]);
+  const groups = useMemo(() => matrix.groups.filter((g) => matchesGroupQuery(g, userQuery)), [matrix.groups, userQuery]);
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['access', 'matrix'] });
     queryClient.invalidateQueries({ queryKey: ['admin', 'spaces'] });
   }
+
+  const groupCellChange = useMutation({
+    mutationFn: async (vars: { groupId: string; space: string; role: SpaceRole | null }) => {
+      if (vars.role) await api.setSpaceGroupRole(vars.space, vars.groupId, vars.role);
+      else await api.removeSpaceGroup(vars.space, vars.groupId);
+    },
+    onSuccess: () => {
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ['groups'] });
+    },
+    onError: (err) => showToast(errorText(err, 'access.matrix.changeFailed')),
+  });
 
   const cellChange = useMutation({
     mutationFn: (vars: { userId: string; space: string; role: SpaceRole | null }) =>
@@ -240,7 +254,10 @@ export function MatrixTab({ matrix }: MatrixTabProps) {
                   return (
                     <td key={s.slug} className="px-2 py-1">
                       {state.kind === 'implicit-viewer' ? (
-                        <span className="block rounded-md bg-neutral-100 px-2 py-1 text-center text-xs text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500">
+                        <span
+                          title={t('access.matrix.implicitViewerTitle')}
+                          className="block rounded-md bg-neutral-100 px-2 py-1 text-center text-xs text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500"
+                        >
                           {t('access.matrix.implicitViewer')}
                         </span>
                       ) : (
@@ -249,6 +266,60 @@ export function MatrixTab({ matrix }: MatrixTabProps) {
                           disabled={cellChange.isPending}
                           onChange={(e) =>
                             cellChange.mutate({ userId: u.id, space: s.slug, role: (e.target.value || null) as SpaceRole | null })
+                          }
+                          className="w-full rounded-md border border-neutral-300 bg-transparent px-1.5 py-1 text-xs text-neutral-800 dark:border-neutral-700 dark:text-neutral-200"
+                        >
+                          <option value="">—</option>
+                          {ROLE_OPTIONS.map((r) => (
+                            <option key={r} value={r}>
+                              {roleLabel(r)}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+            {groups.length > 0 && (
+              <tr className="bg-neutral-50 dark:bg-neutral-900">
+                <th
+                  colSpan={spaces.length + 1}
+                  scope="colgroup"
+                  className="sticky left-0 border-y border-neutral-200 px-3 py-1.5 text-left text-xs font-medium uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:text-neutral-400"
+                >
+                  {t('access.matrix.groupsSection')}
+                </th>
+              </tr>
+            )}
+            {groups.map((g) => (
+              <tr key={g.id} className="border-b border-neutral-100 last:border-b-0 dark:border-neutral-800/60">
+                <td className="sticky left-0 z-10 min-w-[200px] border-r border-neutral-200 bg-white px-3 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
+                  <div className="flex items-center gap-2">
+                    <span className={`min-w-0 flex-1 truncate text-sm ${g.archived ? 'text-neutral-400 line-through' : 'text-neutral-800 dark:text-neutral-200'}`}>{g.name}</span>
+                    <span className="shrink-0 text-xs text-neutral-400">{g.memberCount}</span>
+                    {g.archived && <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">{t('access.groups.archived')}</span>}
+                  </div>
+                </td>
+                {spaces.map((s) => {
+                  const state = matrixCellState(s, matrix.groupRoles[g.id]?.[s.slug]);
+                  return (
+                    <td key={s.slug} className="px-2 py-1">
+                      {state.kind === 'implicit-viewer' ? (
+                        <span
+                          title={t('access.matrix.implicitViewerTitle')}
+                          className="block rounded-md bg-neutral-100 px-2 py-1 text-center text-xs text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500"
+                        >
+                          {t('access.matrix.implicitViewer')}
+                        </span>
+                      ) : (
+                        <select
+                          value={state.kind === 'explicit' ? state.role : ''}
+                          disabled={groupCellChange.isPending}
+                          aria-label={t('access.matrix.groupCellLabel', { group: g.name, space: s.name })}
+                          onChange={(e) =>
+                            groupCellChange.mutate({ groupId: g.id, space: s.slug, role: (e.target.value || null) as SpaceRole | null })
                           }
                           className="w-full rounded-md border border-neutral-300 bg-transparent px-1.5 py-1 text-xs text-neutral-800 dark:border-neutral-700 dark:text-neutral-200"
                         >

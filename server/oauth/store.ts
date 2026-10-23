@@ -312,6 +312,18 @@ export async function revokeGrant(grantId: string): Promise<void> {
   await query('UPDATE oauth_grants SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL', [grantId]);
 }
 
+/**
+ * Deactivation of a person: revokes every grant of the user (so every access and refresh token of
+ * it stops resolving) and drops their pending consents and unredeemed codes, which could otherwise
+ * still mint a new grant. Returns how many grants were revoked.
+ */
+export async function revokeAllOAuthAccessForUser(userId: string): Promise<number> {
+  const grants = await query<{ id: string }>('UPDATE oauth_grants SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL RETURNING id', [userId]);
+  await query('DELETE FROM oauth_authz_requests WHERE user_id = $1', [userId]);
+  await query('DELETE FROM oauth_codes WHERE user_id = $1 AND used_at IS NULL', [userId]);
+  return grants.length;
+}
+
 /** RFC 7009: any token (access or refresh) of a grant revokes the whole grant. Returns whether one was found. */
 export async function revokeByToken(raw: string, clientId: string | undefined): Promise<boolean> {
   const row = await queryOne<{ grant_id: string }>(

@@ -17,7 +17,7 @@ const SECRET_QUERY_PARAM_RE = /([?&]guestToken=)[^&#]*/gi;
 export function redactRequestUrl(url: string): string {
   const q = url.indexOf('?');
   if (q === -1) return url;
-  if (REDACTED_QUERY_PATHS.has(url.slice(0, q))) return `${url.slice(0, q)}?[redacted]`;
+  if (REDACTED_QUERY_PATHS.has(url.slice(0, q)) || /^\/api\/auth\/oidc\/[^/?]+\/callback$/.test(url.slice(0, q))) return `${url.slice(0, q)}?[redacted]`;
   return url.replace(SECRET_QUERY_PARAM_RE, '$1[redacted]');
 }
 

@@ -58,7 +58,8 @@ Every page has:
   `admin`.
 - The page-level ACL can only **narrow** access to a particular page
   relative to the space (the `restricted` mode) — not widen it. A
-  restriction is not inherited automatically by child pages.
+  restriction is inherited by child pages: a page under a restricted page is
+  restricted too, and its own restriction can only narrow that further.
 - The tools of the agent inherit exactly the role and the scope of the
   current user: a refusal means that the user does not see or edit this
   page right now either — do not try to work around it with another tool.

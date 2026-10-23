@@ -48,6 +48,7 @@ import { isOverHardRowLimit, isTableParseError, parseTableFile, serializeTableFi
 import { decodeScenePayload, extractScenePayload, renderSceneSvg } from './confluenceWhiteboard.js';
 import { orderBoardElements, placeBoundTexts, withBoardIndexes } from './boardOrder.js';
 import type { ExcalidrawElement, ExcalidrawScene } from './confluenceWhiteboard.js';
+import { trackConnection } from './liveConnections.js';
 
 interface PersistenceHooks {
   bindState: (docName: string, doc: Y.Doc) => Promise<void> | void;
@@ -3138,8 +3139,11 @@ export function attachToServer(httpServer: HttpServer): void {
       // anonymous guest" already held for the token-only case below.
       const sessionRole = user ? await session.effectivePageRole(user, entry) : undefined;
 
+      /** Set only when the SESSION (not a share link / public visit) is what opened this socket: such a socket is closed when the session is revoked or the account deactivated (liveConnections.ts). */
+      let sessionAuthorized = false;
       if (user && session.roleAtLeast(sessionRole, 'viewer')) {
         role = sessionRole;
+        sessionAuthorized = true;
       } else {
         // No cookie session, OR a session with no access to this page at all
         // — round 8: a share-link token in the query string is the only
@@ -3215,7 +3219,9 @@ export function attachToServer(httpServer: HttpServer): void {
         return;
       }
 
+      const sessionToken = cookies[session.SESSION_COOKIE_NAME];
       wss.handleUpgrade(req, socket, head, (conn) => {
+        if (sessionAuthorized && user && sessionToken) trackConnection(user.id, sessionToken, conn);
         if (publicVisitor) makeSilentViewer(conn);
         else if (role === 'viewer') makeReadOnly(conn);
         setupWSConnection(conn, req, { docName });

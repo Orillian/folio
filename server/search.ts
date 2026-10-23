@@ -236,7 +236,7 @@ export async function searchPages(q: string, options: SearchOptions): Promise<Se
  * Search for the PUBLIC SITE of one space (anonymous visitors). Same matching
  * and ranking as `searchPages`, but the only access rule is the site's own:
  * the space is published, and the page is not restricted (no `page_access`
- * row), not `.agent/**` and not in `_templates/` — accessSql.ts's public
+ * row of its own or of an ancestor), not `.agent/**` and not in `_templates/` — accessSql.ts's public
  * reader, the same set as publicSites.publicReadablePageIds. No user is involved.
  */
 export async function searchPublicSpace(q: string, space: string, window: SearchWindow = {}): Promise<SearchHit[]> {

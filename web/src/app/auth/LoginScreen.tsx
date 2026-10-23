@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import type { DemoInfo } from '@shared/contracts';
+import { KeyRound } from 'lucide-react';
+import type { DemoInfo, SsoDiscoverResult, SsoProviderPublic } from '@shared/contracts';
 import { track } from '../../analytics';
-import { api } from '../api';
+import { api, ApiError } from '../api';
 import { useApiErrorText } from '../errorText';
 import { LabeledInput } from '../ui/LabeledInput';
 import '../i18n/register';
@@ -11,30 +12,52 @@ import '../i18n/register';
 export interface LoginScreenProps {
   /** Called after a successful login so the caller re-fetches auth state and swaps to the app. */
   onDone: () => void;
-  /** GET /api/auth/state's `google` flag — whether GOOGLE_CLIENT_ID/SECRET are configured server-side. Only then is the "Continue with Google" button shown at all. */
-  google: boolean;
+  /** GET /api/auth/state's `google` flag (older servers): shows the Google button when `ssoProviders` is absent. */
+  google?: boolean;
+  /** GET /api/auth/state's `ssoProviders` — one "Continue with …" button each (server/auth/oidc.ts). */
+  ssoProviders?: SsoProviderPublic[];
   /** GET /api/auth/state's `demo` — present only on a public-demo instance (FOLIO_DEMO_MODE). The "sign in as…" block renders only when it lists accounts. */
   demo?: DemoInfo;
 }
 
-/** Codes server/auth/google.ts's callback appends as `?authError=<code>` on every refusal — see that file's own doc comment for what each means. Anything unrecognized falls back to the generic message. */
-const GOOGLE_AUTH_ERROR_KEYS: Record<string, string> = {
-  domain: 'auth.login.googleError.domain',
-  unverified: 'auth.login.googleError.unverified',
-  disabled: 'auth.login.googleError.disabled',
-  state: 'auth.login.googleError.generic',
-  exchange: 'auth.login.googleError.generic',
+/** Codes the OIDC callback / SAML ACS append as `?authError=<code>` on every refusal (SsoErrorCode in server/auth/sso.ts). Anything unrecognized falls back to the generic message. */
+const SSO_ERROR_KEYS: Record<string, string> = {
+  domain: 'auth.login.ssoError.domain',
+  unverified: 'auth.login.ssoError.unverified',
+  disabled: 'auth.login.ssoError.disabled',
+  no_account: 'auth.login.ssoError.noAccount',
+  no_email: 'auth.login.ssoError.noEmail',
+  link_unverified: 'auth.login.ssoError.linkUnverified',
+  link_not_authoritative: 'auth.login.ssoError.linkNotAuthoritative',
+  link_domain: 'auth.login.ssoError.linkDomain',
+  already_linked: 'auth.login.ssoError.alreadyLinked',
+  invite: 'auth.login.ssoError.invite',
+  invite_email: 'auth.login.ssoError.inviteEmail',
+  denied: 'auth.login.ssoError.denied',
+  provider: 'auth.login.ssoError.provider',
+  replay: 'auth.login.ssoError.replay',
+  state: 'auth.login.ssoError.generic',
+  exchange: 'auth.login.ssoError.generic',
 };
 
+/** /api/auth/oidc/<slug>/start or /api/auth/saml/<slug>/start — the server redirects to the provider. SAML takes no login hint. */
+export function ssoStartUrl(slug: string, loginHint?: string, kind: SsoProviderPublic['kind'] = 'oidc'): string {
+  if (kind === 'saml') return `/api/auth/saml/${encodeURIComponent(slug)}/start`;
+  const hint = loginHint && loginHint.includes('@') ? `?login_hint=${encodeURIComponent(loginHint.trim())}` : '';
+  return `/api/auth/oidc/${encodeURIComponent(slug)}/start${hint}`;
+}
+
+const EMAIL_LIKE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /** Reads `?authError=` off the current URL once, strips it from the address bar (so a reload/share never re-shows a stale error), and returns the translation key to render — or null. */
-function useGoogleAuthError(): string | null {
+function useSsoAuthError(): string | null {
   const [key, setKey] = useState<string | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get('authError');
     if (!code) return;
-    setKey(GOOGLE_AUTH_ERROR_KEYS[code] ?? GOOGLE_AUTH_ERROR_KEYS.exchange);
+    setKey(SSO_ERROR_KEYS[code] ?? SSO_ERROR_KEYS.exchange);
     params.delete('authError');
     const query = params.toString();
     window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
@@ -56,16 +79,73 @@ function GoogleIcon() {
   );
 }
 
-/** Shown whenever GET /api/auth/state reports no user (fresh visit or a session dropped mid-use). Localized from localStorage/browser language (round 10) — there's no session yet to carry a profile preference. */
-export function LoginScreen({ onDone, google, demo }: LoginScreenProps) {
+/** Single sign-on button: Google's mark for the `google` provider, a key for any other. */
+function SsoButton({ provider, href, primary }: { provider: SsoProviderPublic; href: string; primary?: boolean }) {
+  const { t } = useTranslation('app');
+  return (
+    <a
+      href={href}
+      className={
+        primary
+          ? 'flex items-center justify-center gap-2 rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200'
+          : 'flex items-center justify-center gap-2 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800'
+      }
+    >
+      {provider.slug === 'google' ? <GoogleIcon /> : <KeyRound size={16} aria-hidden="true" />}
+      {provider.slug === 'google' ? t('auth.login.google') : t('auth.login.continueWith', { name: provider.name })}
+    </a>
+  );
+}
+
+/**
+ * Shown whenever GET /api/auth/state reports no user (fresh visit or a session dropped mid-use). Localized from
+ * localStorage/browser language (round 10) — there's no session yet to carry a profile preference.
+ *
+ * Email first (docs/AUTH.md): once the typed email's domain belongs to a single sign-on provider
+ * (POST /api/auth/sso/discover), that provider's button leads; where the provider ENFORCES single sign-on the
+ * password field disappears. `/login?local` keeps it for an instance admin's audited break-glass sign-in.
+ */
+export function LoginScreen({ onDone, google, ssoProviders, demo }: LoginScreenProps) {
   const { t } = useTranslation('app');
   const errorText = useApiErrorText();
-  const googleErrorKey = useGoogleAuthError();
+  const ssoErrorKey = useSsoAuthError();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [discovered, setDiscovered] = useState<(SsoDiscoverResult & { email: string }) | null>(null);
+  const local = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('local');
+  const providers: SsoProviderPublic[] = ssoProviders ?? (google ? [{ slug: 'google', name: 'Google' }] : []);
+  const hasProviders = providers.length > 0;
+
+  // Debounced: the domain only, once the email looks complete; never when no provider is configured.
+  useEffect(() => {
+    const value = email.trim();
+    if (!hasProviders || !EMAIL_LIKE.test(value)) {
+      setDiscovered(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api
+        .ssoDiscover(value)
+        .then((result) => {
+          if (!cancelled && result && typeof result === 'object') setDiscovered({ provider: result.provider ?? null, enforced: Boolean(result.enforced), email: value });
+        })
+        .catch(() => {});
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [email, hasProviders]);
+
+  const routed = discovered && discovered.email === email.trim() ? discovered : null;
+  const enforced = Boolean(routed?.enforced && routed.provider) && !local;
+
+  // Once the typed email's provider is enforced, its inline button below leads; the top list drops it so the same button never shows twice.
+  const topProviders = enforced && routed?.provider ? providers.filter((p) => p.slug !== routed.provider!.slug) : providers;
 
   const login = useMutation({
-    mutationFn: (credentials: { email: string; password: string }) => api.login(credentials.email, credentials.password),
+    mutationFn: (credentials: { email: string; password: string }) => api.login(credentials.email, credentials.password, local),
     onSuccess: (_data, credentials) => {
       // Only a sign-in as one of the public demo accounts is reported, and only the account's short name.
       const account = (demo?.accounts ?? []).find((a) => a.email.toLowerCase() === credentials.email.trim().toLowerCase());
@@ -81,20 +161,23 @@ export function LoginScreen({ onDone, google, demo }: LoginScreenProps) {
       <div className="m-auto w-full max-w-sm">
         <h1 className="mb-1 text-xl font-semibold text-neutral-900 dark:text-neutral-100">{t('auth.login.title')}</h1>
         <p className="mb-6 text-sm text-neutral-500 dark:text-neutral-400">{t('auth.login.subtitle')}</p>
-        {googleErrorKey && (
+        {ssoErrorKey && (
           <p role="alert" className="mb-4 text-sm text-red-600 dark:text-red-400">
-            {t(googleErrorKey)}
+            {t(ssoErrorKey)}
           </p>
         )}
-        {google && (
+        {local && (
+          <p className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+            {t('auth.login.breakGlass')}
+          </p>
+        )}
+        {topProviders.length > 0 && !local && (
           <>
-            <a
-              href="/api/auth/google/start"
-              className="mb-4 flex items-center justify-center gap-2 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800"
-            >
-              <GoogleIcon />
-              {t('auth.login.google')}
-            </a>
+            <div className="mb-4 flex flex-col gap-2">
+              {topProviders.map((p) => (
+                <SsoButton key={p.slug} provider={p} href={ssoStartUrl(p.slug, routed?.provider?.slug === p.slug ? email : undefined, p.kind)} />
+              ))}
+            </div>
             <div className="mb-4 flex items-center gap-3 text-xs text-neutral-400 dark:text-neutral-600">
               <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
               {t('auth.login.orDivider')}
@@ -106,6 +189,10 @@ export function LoginScreen({ onDone, google, demo }: LoginScreenProps) {
           className="flex flex-col gap-3"
           onSubmit={(e) => {
             e.preventDefault();
+            if (enforced && routed?.provider) {
+              window.location.assign(ssoStartUrl(routed.provider.slug, email, routed.provider.kind));
+              return;
+            }
             login.mutate({ email, password });
           }}
         >
@@ -118,15 +205,27 @@ export function LoginScreen({ onDone, google, demo }: LoginScreenProps) {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
-          <LabeledInput
-            label={t('auth.password')}
-            type="password"
-            required
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          {login.isError && (
+          {enforced && routed?.provider ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-neutral-600 dark:text-neutral-400">{t('auth.login.ssoEnforced', { name: routed.provider.name })}</p>
+              <SsoButton provider={routed.provider} href={ssoStartUrl(routed.provider.slug, email, routed.provider.kind)} primary />
+            </div>
+          ) : (
+            <>
+              {routed?.provider && !local && (
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('auth.login.ssoAvailable', { name: routed.provider.name })}</p>
+              )}
+              <LabeledInput
+                label={t('auth.password')}
+                type="password"
+                required
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </>
+          )}
+          {login.isError && !enforced && (
             <p role="alert" className="text-sm text-red-600 dark:text-red-400">
               {/* QA-3 #9: this used to be `error instanceof ApiError ?
                   error.message : t(...)` — the server's own English
@@ -136,13 +235,18 @@ export function LoginScreen({ onDone, google, demo }: LoginScreenProps) {
               {errorText(login.error, 'auth.login.failed')}
             </p>
           )}
-          <button
-            type="submit"
-            disabled={login.isPending}
-            className="mt-2 rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-          >
-            {login.isPending ? t('auth.login.loggingIn') : t('auth.login.submit')}
-          </button>
+          {login.isError && login.error instanceof ApiError && (login.error.body as { code?: string } | undefined)?.code === 'sso_required' && routed?.provider && (
+            <SsoButton provider={routed.provider} href={ssoStartUrl(routed.provider.slug, email, routed.provider.kind)} primary />
+          )}
+          {!enforced && (
+            <button
+              type="submit"
+              disabled={login.isPending}
+              className="mt-2 rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+            >
+              {login.isPending ? t('auth.login.loggingIn') : t('auth.login.submit')}
+            </button>
+          )}
         </form>
         {demoAccounts.length > 0 && (
           <section aria-labelledby="demo-accounts-heading" className="mt-8 border-t border-neutral-200 pt-6 dark:border-neutral-800">

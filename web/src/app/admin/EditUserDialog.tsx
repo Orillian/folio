@@ -7,6 +7,7 @@ import { api } from '../api';
 import { useApiErrorText } from '../errorText';
 import { Modal } from '../ui/Modal';
 import { LabeledInput } from '../ui/LabeledInput';
+import { SessionsList } from '../sessions/SessionsList';
 import '../i18n/register';
 
 const FORM_ID = 'edit-user-form';
@@ -106,6 +107,10 @@ export function EditUserDialog({ user, onClose }: EditUserDialogProps) {
           <input type="checkbox" checked={disabled} onChange={(e) => setDisabled(e.target.checked)} />
           {t('admin.editUser.disabled')}
         </label>
+        <div>
+          <div className="mb-1 text-xs font-medium text-neutral-500 dark:text-neutral-400">{t('sessions.title')}</div>
+          <SessionsList userId={user.id} />
+        </div>
         {update.isError && (
           <p role="alert" className="text-sm text-red-600 dark:text-red-400">
             {errorText(update.error, 'admin.editUser.failed')}

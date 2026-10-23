@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -11,7 +11,10 @@ import { CompareColumn } from './CompareColumn';
 import { useCompare } from './compareContext';
 import { comparePath, parseCompareParam, type CompareRef } from './compareList';
 import { useScrollSync } from './scrollSync';
+import { CompareZoomControl } from './CompareZoomControl';
+import { readStoredZoom, writeStoredZoom } from './compareZoom';
 import type { CompareBase } from './VersionBody';
+import './compare.css';
 import '../i18n/register';
 
 /**
@@ -39,6 +42,19 @@ export function ComparePage() {
   const [syncChoice, setSyncChoice] = useState<boolean | null>(null);
   const highlight = hasVersion && (highlightChoice ?? true);
   const sync = syncChoice ?? hasVersion;
+
+  // One zoom for every column, remembered by this browser.
+  const [zoom, setZoomState] = useState(readStoredZoom);
+  const setZoom = useCallback((next: number) => {
+    setZoomState(next);
+    writeStoredZoom(next);
+  }, []);
+
+  // CSS `zoom` changes the editors' scale without resizing the window: CodeMirror reads its scale (pointer mapping) on
+  // a measure, and a window `resize` is what makes it take one.
+  useEffect(() => {
+    window.dispatchEvent(new Event('resize'));
+  }, [zoom]);
 
   const columnsRef = useRef<HTMLDivElement>(null);
   useScrollSync(columnsRef, sync);
@@ -145,6 +161,7 @@ export function ComparePage() {
                 key={ref.sha ? `${ref.pageId}@${ref.sha}` : ref.pageId}
                 entry={ref}
                 isBase={index === 0}
+                zoom={zoom}
                 showBaseMarker={highlight && refs.length > 1}
                 base={highlight && index > 0 ? base : null}
                 onRemove={() => {
@@ -154,6 +171,7 @@ export function ComparePage() {
               />
             ))}
           </div>
+          <CompareZoomControl zoom={zoom} onChange={setZoom} />
         </>
       )}
     </div>

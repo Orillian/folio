@@ -30,6 +30,9 @@ import type {
   AccessMatrixResponse,
   AccessRequestSummary,
   ApiTokenInfo,
+  AuditLogPage,
+  AuditLogQuery,
+  SessionInfo,
   OAuthConnectionInfo,
   AdminChatLinkInfo,
   ChatIntegrationsAdminInfo,
@@ -50,6 +53,12 @@ import type {
   AssistantSettings,
   SharedAssistantKeyInfo,
   AuthState,
+  AuthProviderBody,
+  AuthProviderInfo,
+  AuthProviderPatch,
+  ScimStatusInfo,
+  ScimTokenCreated,
+  SsoDiscoverResult,
   ConfluenceCredentialInfo,
   ConfluenceImportRequest,
   FolioConfig,
@@ -111,6 +120,12 @@ import type {
   SpaceAppearanceResponse,
   SiteAssetInfo,
   SpaceMemberInfo,
+  SpaceMembersResponse,
+  SpaceGroupMemberInfo,
+  GroupInfo,
+  GroupDetail,
+  CreateGroupBody,
+  UpdateGroupBody,
   SpaceRole,
   SpaceVisibility,
   SpaceAssetMode,
@@ -824,8 +839,25 @@ export const api = {
   setupInstance: (body: SetupBody) =>
     request<unknown>('/api/auth/setup', { method: 'POST', body: JSON.stringify(body) }),
 
-  login: (email: string, password: string) =>
-    request<unknown>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }), headers: visitorHeaders() }),
+  /** `local`: from /login?local — an instance admin's break-glass password sign-in where single sign-on is enforced. */
+  login: (email: string, password: string, local?: boolean) =>
+    request<unknown>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password, ...(local ? { local: true } : {}) }), headers: visitorHeaders() }),
+
+  /** Public: which single sign-on provider an email's domain goes to (email-first login). */
+  ssoDiscover: (email: string) => request<SsoDiscoverResult>('/api/auth/sso/discover', { method: 'POST', body: JSON.stringify({ email }) }),
+
+  // ---------- single sign-on providers (instance admin, /admin/auth) ----------
+
+  listAuthProviders: () => request<{ providers: AuthProviderInfo[]; secretConfigured: boolean }>('/api/admin/auth/providers'),
+  createAuthProvider: (body: AuthProviderBody) => request<AuthProviderInfo>('/api/admin/auth/providers', { method: 'POST', body: JSON.stringify(body) }),
+  updateAuthProvider: (id: string, body: AuthProviderPatch) =>
+    request<AuthProviderInfo>(`/api/admin/auth/providers/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteAuthProvider: (id: string) => request<{ ok: true }>(`/api/admin/auth/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getScimStatus: (providerId: string) => request<ScimStatusInfo>(`/api/admin/auth/providers/${encodeURIComponent(providerId)}/scim`),
+  createScimToken: (providerId: string) =>
+    request<ScimTokenCreated>(`/api/admin/auth/providers/${encodeURIComponent(providerId)}/scim/token`, { method: 'POST' }),
+  revokeScimToken: (providerId: string) =>
+    request<ScimStatusInfo>(`/api/admin/auth/providers/${encodeURIComponent(providerId)}/scim/token`, { method: 'DELETE' }),
 
   logout: () => request<unknown>('/api/auth/logout', { method: 'POST' }),
 
@@ -861,7 +893,47 @@ export const api = {
   // ---------- space members (space admin+) ----------
 
   listMembers: (space: string) =>
-    request<{ members: SpaceMemberInfo[] }>(`/api/spaces/${encodeURIComponent(space)}/members`),
+    request<SpaceMembersResponse>(`/api/spaces/${encodeURIComponent(space)}/members`),
+
+  /** PUT /api/spaces/:space/groups/:groupId (space admin+) — grant a group a role in the space (or change it). */
+  setSpaceGroupRole: (space: string, groupId: string, role: SpaceRole) =>
+    request<SpaceGroupMemberInfo>(`/api/spaces/${encodeURIComponent(space)}/groups/${encodeURIComponent(groupId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ role }),
+    }),
+
+  removeSpaceGroup: (space: string, groupId: string) =>
+    request<{ ok: true }>(`/api/spaces/${encodeURIComponent(space)}/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' }),
+
+  // ---------- groups (053, docs/spec-access.md section 15) ----------
+
+  /** Instance admin: every group incl. archived; space admin / group manager: active groups only. */
+  listGroups: () => request<{ groups: GroupInfo[] }>('/api/groups'),
+
+  createGroup: (body: Pick<CreateGroupBody, 'slug' | 'name'> & { description?: string }) =>
+    request<GroupInfo>('/api/groups', { method: 'POST', body: JSON.stringify(body) }),
+
+  getGroup: (id: string) => request<GroupDetail>(`/api/groups/${encodeURIComponent(id)}`),
+
+  updateGroup: (id: string, body: UpdateGroupBody) =>
+    request<GroupInfo>(`/api/groups/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  deleteGroup: (id: string) => request<{ ok: true }>(`/api/groups/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  addGroupMembers: (id: string, userIds: string[], isManager?: boolean) =>
+    request<GroupDetail>(`/api/groups/${encodeURIComponent(id)}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ userIds, ...(isManager === undefined ? {} : { isManager }) }),
+    }),
+
+  setGroupManager: (id: string, userId: string, isManager: boolean) =>
+    request<GroupDetail>(`/api/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ isManager }),
+    }),
+
+  removeGroupMember: (id: string, userId: string) =>
+    request<GroupDetail>(`/api/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
 
   /** `identifier` is a userId when picked from the instance-admin user list, or a raw email when a plain-email add (server resolves either). */
   setMember: (space: string, identifier: string, role: SpaceRole) =>
@@ -997,6 +1069,24 @@ export const api = {
 
   /** Soft revoke. */
   revokeApiToken: (id: string) => request<{ ok: true }>(`/api/me/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ---------- sign-in sessions and the instance audit log (stage 4) ----------
+
+  /** The signed-in person's own sessions; `current` marks this device. */
+  listMySessions: () => request<{ sessions: SessionInfo[] }>('/api/me/sessions'),
+  revokeMySession: (id: string) => request<{ ok: true }>(`/api/me/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** "Sign out other devices". */
+  revokeOtherSessions: () => request<{ revoked: number }>('/api/me/sessions/revoke-others', { method: 'POST' }),
+  /** Instance admin: another person's sessions. */
+  listUserSessions: (userId: string) => request<{ sessions: SessionInfo[] }>(`/api/users/${encodeURIComponent(userId)}/sessions`),
+  revokeUserSession: (userId: string, sessionId: string) =>
+    request<{ ok: true }>(`/api/users/${encodeURIComponent(userId)}/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+  revokeAllUserSessions: (userId: string) => request<{ revoked: number }>(`/api/users/${encodeURIComponent(userId)}/sessions`, { method: 'DELETE' }),
+
+  /** Instance admin: one page of the audit log, newest first. */
+  listAuditEvents: (filters: AuditLogQuery) => request<AuditLogPage>(`/api/admin/audit${queryString(filters)}`),
+  /** URL of the CSV export of a filter (a plain link: the browser downloads the stream; no cursor / limit). */
+  auditExportUrl: (filters: AuditLogQuery) => `/api/admin/audit/export.csv${queryString({ ...filters, cursor: undefined, limit: undefined })}`,
 
   /** OAuth connections (claude.ai, ChatGPT, …) the user approved — "Connected apps". */
   listOAuthConnections: () => request<{ connections: OAuthConnectionInfo[] }>('/api/me/oauth-connections'),

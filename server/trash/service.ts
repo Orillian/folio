@@ -28,6 +28,7 @@ import { officeFormat } from '../../shared/contracts.js';
 import * as storage from '../storage.js';
 import type { TrashPagePayload, TrashSpaceSnapshot } from '../storage.js';
 import * as store from '../auth/store.js';
+import * as roles from '../access/roles.js';
 import * as git from '../git.js';
 import * as gitSync from '../gitSync.js';
 import * as collab from '../collab.js';
@@ -89,7 +90,8 @@ type TrashScope = 'all' | Set<string>;
 
 async function trashScopeFor(user: User): Promise<TrashScope> {
   if (user.isAdmin) return 'all';
-  const memberships = await store.spacesForUser(user.id);
+  // The space admin of access/roles.ts (direct or, since 053, via a group); a system user never administers.
+  const memberships = await roles.spaceRolesForUser(roles.roleSubject(user, user.isSystem === true));
   return new Set(
     Object.entries(memberships)
       .filter(([, role]) => role === 'admin')
@@ -567,6 +569,15 @@ async function restoreSpaceItem(actor: User, row: TrashRow): Promise<TrashRestor
     await restorePublicSettings(slug, snapshot?.publicSettings);
     // Light footprint: page ids that lived only in the dropped index rows (paths are unchanged).
     claimTrashedIds(row, contentRootAbsFor(slug), (oldRel) => oldRel);
+    for (const groupRole of snapshot?.groupRoles ?? []) {
+      await query('INSERT INTO space_group_roles (space_slug, group_id, role) VALUES ($1,$2,$3) ON CONFLICT (space_slug, group_id) DO NOTHING', [
+        slug,
+        groupRole.groupId,
+        validRole(groupRole.role),
+      ]).catch(() => {
+        // the group no longer exists (FK) — skip it, restore the rest
+      });
+    }
     for (const member of snapshot?.members ?? []) {
       await query('INSERT INTO space_members (space_slug, user_id, role) VALUES ($1,$2,$3) ON CONFLICT (space_slug, user_id) DO UPDATE SET role = EXCLUDED.role', [
         slug,

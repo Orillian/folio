@@ -1,6 +1,6 @@
 {
   "name": "folio",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Collaborative wiki backed by Git: documents, tables, whiteboards, forms, and MCP access for AI agents.",
   "license": "MIT",
   "private": true,
@@ -13,7 +13,8 @@
     "build": "vite build --config web/vite.config.ts",
     "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "access:inherit-report": "tsx server/tools/access-inherit-report.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1115.0",
@@ -26,6 +27,7 @@
     "@fastify/multipart": "^9.0.0",
     "@fastify/static": "^10.1.5",
     "@modelcontextprotocol/sdk": "^1.31.0",
+    "@node-saml/node-saml": "5.1.0",
     "@sentry/node": "^11.8.0",
     "bcryptjs": "^3.0.3",
     "docx": "^9.7.1",
@@ -37,6 +39,7 @@
     "jsdom": "^29.1.1",
     "jszip": "^3.10.1",
     "lib0": "^0.2.99",
+    "openid-client": "6.8.7",
     "pg": "^8.23.0",
     "puppeteer-core": "^25.12.0",
     "rehype-raw": "^7.0.0",
@@ -94,6 +97,7 @@
     "katex": "^0.18.2",
     "lucide-react": "^1.31.0",
     "mermaid": "^11.4.0",
+    "modern-screenshot": "4.7.0",
     "posthog-js": "^1.436.1",
     "react": "^19.2.0",
     "react-datasheet-grid": "^4.11.6",

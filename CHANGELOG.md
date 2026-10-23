@@ -4,6 +4,122 @@ Notable changes to Folio. Versions follow [Semantic Versioning](https://semver.o
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-23
+
+Groups and single sign-on. People can be put in groups that hold roles in
+spaces and on restricted pages, sign in through your identity provider with
+OpenID Connect or SAML 2.0, and be created, updated and deactivated by SCIM.
+Instance administrators get an audit log screen and session management.
+**Page restrictions are now inherited by child pages** (see Changed: read it
+before upgrading). Adds migrations 053 to 057 and 059.
+
+### Added
+
+- **Groups.** A named set of people that holds a role (viewer, editor, admin) in a
+  space and a grant on a restricted page. A person's role is the highest of
+  their own, their active groups' and the implicit viewer role of an
+  instance-visible space. Instance administrators create, rename, archive and
+  delete groups; members marked as managers edit the membership; a space
+  administrator grants or revokes a group's role in their own space. Groups show
+  up in a new Groups tab of the Access page, in the access matrix, the space
+  members dialog, the page access dialog and invitations, and their changes in
+  the access log. A space keeps at least one administrator, counting admins
+  through groups. No nested groups; "All members" stays the `instance`
+  visibility (migration 053).
+- **Single sign-on through OpenID Connect.** Keycloak, Authentik, Microsoft Entra
+  ID, Okta, Google and any other provider; several at once. Providers are
+  configured by an administrator at `/admin/auth` (with "Test connection", which
+  shows what the provider sends) or with `FOLIO_OIDC_<SLUG>_*` environment
+  variables. The login page asks for an email first and routes an address of
+  your domain to its provider. Accounts can be created at first sign-in with
+  preset spaces; an existing account is linked only when the provider has
+  verified the email in an allowed domain. Invitations to such a domain are
+  accepted through the provider (migration 054).
+- **Enforced single sign-on.** Password sign-in can be switched off for your
+  domains, with an audited emergency password sign-in for instance
+  administrators at `/login?local`.
+- **Single sign-on through SAML 2.0.** Microsoft Entra ID, Okta, Keycloak, Google
+  Workspace, ADFS and others, configured at `/admin/auth` (from the IdP's
+  metadata URL or XML) or with `FOLIO_SAML_<SLUG>_*` environment variables, with
+  the same account rules, "Test connection" and login-page routing as OpenID
+  Connect. Folio accepts only signed assertions that answer the sign-in the
+  browser started, checks issuer, audience and validity (120 s clock skew),
+  refuses replayed assertions and XML with a `DOCTYPE`, and publishes its SP
+  metadata at `/api/auth/saml/<slug>/metadata` (migration 056).
+- **Group sync from the identity provider** (OpenID Connect and SAML). Per
+  provider, at every sign-in Folio adds people to the Folio groups the groups
+  claim or attribute names and removes them from the ones the provider no longer
+  reports. Matching by name or slug, or by an explicit table; optionally creates
+  missing groups; an allowlist (prefixes or a regular expression) narrows the IdP
+  groups considered. Memberships added by hand and manager flags are never
+  touched, archived groups are skipped, and the last administrator of a space is
+  never removed this way. Entra ID "overage" (too many groups for the token)
+  changes nothing and is audited. Set in the provider dialog or with
+  `FOLIO_OIDC_<SLUG>_GROUP_SYNC` / `FOLIO_SAML_<SLUG>_GROUP_SYNC`, `_GROUP_SYNC_MODE`,
+  `_GROUP_MAP`, `_GROUP_CREATE`, `_GROUP_ALLOW`. The Groups tab marks groups and
+  members that come from a provider (migration 057).
+- **SCIM 2.0 provisioning** at `/scim/v2` (users and groups; Okta, Microsoft Entra
+  ID, Keycloak plugins, OneLogin, JumpCloud). A bearer token per sign-in
+  provider, generated, rotated and revoked at `/admin/auth` and stored hashed;
+  filters on `userName`, `externalId`, emails, `displayName` and members;
+  create, replace, patch (including Entra ID's forms) and delete. DELETE
+  deactivates rather than deletes, and archives groups. A provisioned person is
+  recognized at first sign-in by the `externalId` (SAML: also the `userName`)
+  equal to the sign-in subject, otherwise by the SCIM email equal to the
+  sign-in email in an allowed domain (so Entra ID over OpenID Connect works
+  without `email_verified`), otherwise by the verified-email rule. While SCIM is
+  on, accounts are not created at first sign-in (migration 059).
+- **Audit log screen** for instance administrators (`/admin/audit`): filter by
+  actor, action prefix, target and dates, load page by page, readable names for
+  known actions, and a streamed CSV export of the current filter (up to 100,000
+  rows). New audited actions: `auth.*` for sign-ins and group sync, `scim.*`,
+  `group.*`, `user.disable`, `user.enable`, `session.revoke`, `session.revoke_all`
+  and `audit.export`.
+- **Sign-in sessions.** Everyone can see their sessions (device, address, last
+  activity) in Settings and sign out their other devices; an administrator can
+  end one or all sessions of a person. Sessions record when and from where they
+  were last used (migration 055). New setting `FOLIO_SESSION_TTL_DAYS` (default
+  30).
+
+### Changed
+
+- **Behaviour change: page restrictions are now inherited by child pages**
+  (like Confluence view restrictions). A page is readable only by whoever
+  passes its own restriction and those of all its restricted ancestors; the
+  role on it is the lowest of the roles they give, so a child can narrow its
+  parent's audience but never widen it. On upgrade, the children of restricted
+  pages become restricted. Run `npm run access:inherit-report` (read-only, uses
+  `DATABASE_URL`) before upgrading to see which pages lose which readers.
+  Moves follow the new place of a page; copies, duplicates and templates of a
+  page restricted through its parent stay restricted; a page restored from the
+  trash never comes back more open than it was. Share links keep their
+  meaning, and public sites no longer show anything below a restricted page.
+  The page access dialog shows "Restricted by parent page …" and who can open
+  the page, and the sidebar marks restricted pages with a lock.
+- "Sign in with Google" is now an OpenID Connect provider and checks the ID
+  token's signature. Existing Google accounts keep signing in; the redirect URL
+  does not change.
+- The compare feature is now called "side-by-side comparison" in the interface:
+  "Compare side by side" in the sidebar menu and the page header, a "Side by side
+  · N" chip at the bottom of the window, "Compare side by side with current" and
+  "Add to side by side" in the history panel.
+- Side-by-side columns are compact: they no longer use the full-page reading
+  width, and tables and code scroll inside their own box instead of being
+  clipped. A zoom control at the bottom (and Ctrl/Cmd with `-`, `=`, `0`) scales
+  every column's content together, from 50 to 125%, and is remembered in the
+  browser.
+
+### Security
+
+- Deactivating a person now also revokes their personal API tokens and MCP OAuth
+  connections and closes their open editor and notification connections, not
+  just their browser sessions.
+
+### Fixed
+
+- Board, canvas, artifact and PDF/Office columns no longer get the shared zoom: a
+  board was clipped and pointer positions were off when the zoom was not 100%.
+
 ## [0.4.1] - 2026-10-22
 
 Compare pages and versions side by side, custom page templates, artifacts for

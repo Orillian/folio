@@ -20,6 +20,7 @@ import { registerTableRoutes } from './tables/routes.js';
 import { registerFormRoutes, registerPublicFormRoutes } from './forms/routes.js';
 import { registerExportRoutes, registerPublicExportRoutes } from './export/routes.js';
 import { registerAccessRoutes } from './access/routes.js';
+import { registerGroupRoutes } from './groups/routes.js';
 import { registerPublicSiteRoutes, registerPublicSiteAdminRoutes } from './publicSiteRoutes.js';
 import { publicSiteForShell } from './publicSites.js';
 import { resolvePublicSiteHead } from './publicSiteMeta.js';
@@ -45,7 +46,13 @@ import { registerOAuthRoutes } from './oauth/routes.js';
 import { registerChatIntegrationProtectedRoutes, registerChatIntegrationRoutes } from './integrations/chat/routes.js';
 import * as session from './auth/session.js';
 import { registerPublicAuthRoutes, registerProtectedAuthRoutes } from './auth/routes.js';
-import { registerGoogleAuthRoutes } from './auth/google.js';
+import { registerSessionRoutes } from './auth/sessionRoutes.js';
+import { registerAuditRoutes } from './auditRoutes.js';
+import { registerOidcRoutes } from './auth/oidc.js';
+import { registerSamlRoutes } from './auth/saml.js';
+import { registerAuthProviderRoutes } from './auth/providerRoutes.js';
+import { registerScimAdminRoutes, registerScimRoutes } from './scim/routes.js';
+import { syncEnvProviders } from './auth/providers.js';
 import { registerGitHubConnectRoutes } from './auth/githubConnect.js';
 import { requestLogSerializers } from './logRedaction.js';
 import { importJsonIfNeeded } from './auth/importJson.js';
@@ -158,6 +165,8 @@ async function main(): Promise<void> {
   // a run this process died mid-turn — mark it `error` so it doesn't sit
   // "running" forever after a restart (05.09.2026, continuous runs).
   await assistantRuns.recoverAfterRestart();
+  // Single sign-on providers defined in the environment (FOLIO_OIDC_<SLUG>_*, FOLIO_SAML_<SLUG>_*, GOOGLE_*) -> auth_providers rows.
+  await syncEnvProviders().catch((err) => app.log.error({ err: err instanceof Error ? err.message : err }, 'sso: syncing providers from the environment failed'));
 
   // Redis is best-effort (transient-only: rate limiting, advisory locks) — instantiate it but
   // never block boot on it; server/db/redis.ts degrades every caller gracefully if it's down.
@@ -174,9 +183,11 @@ async function main(): Promise<void> {
   // --- Public: health + the auth gate's own three routes ------------------
   app.get('/api/health', async () => ({ ok: true }));
   registerPublicAuthRoutes(app);
-  // Round 32: GET /api/auth/google/start, GET /api/auth/google/callback —
-  // "Sign in with Google", same public trust boundary as login above.
-  registerGoogleAuthRoutes(app);
+  // Single sign-on (OpenID Connect, docs/AUTH.md): GET /api/auth/oidc/:slug/start|callback, the old
+  // GET /api/auth/google/start|callback, POST /api/auth/sso/discover — same public trust boundary as login above.
+  registerOidcRoutes(app);
+  // SAML 2.0: GET /api/auth/saml/:slug/start|metadata, POST /api/auth/saml/:slug/acs (the IdP's form POST) — same boundary.
+  registerSamlRoutes(app);
   // GET /api/auth/github-connect/start|callback — "Connect with GitHub" (links a
   // github.com token to the signed-in user; does its own cookie-session check).
   registerGitHubConnectRoutes(app);
@@ -238,6 +249,9 @@ async function main(): Promise<void> {
   // (server/artifact/token.ts) — outside the session scope below, like /files.
   registerArtifactServeRoutes(app);
 
+  // SCIM 2.0 provisioning (/scim/v2): its own bearer token per sign-in provider, outside the session scope.
+  await registerScimRoutes(app);
+
   // --- MCP (round 7): PAT Bearer ONLY, cookie sessions rejected ------------
   // Registered outside the protected scope below (which accepts cookie OR
   // PAT) — this mount does its own auth check instead of session.requireSession,
@@ -273,6 +287,9 @@ async function main(): Promise<void> {
     // scope specifically.
 
     registerProtectedAuthRoutes(protectedScope);
+    // Stage 4 (groups + SSO): sign-in sessions (own / admin) and the instance audit log screen's API.
+    registerSessionRoutes(protectedScope);
+    registerAuditRoutes(protectedScope);
     registerRoutes(protectedScope);
     // R26/R23/R27: each round owns its own route module (server/tables,
     // server/export, server/access) instead of growing server/routes.ts —
@@ -283,6 +300,7 @@ async function main(): Promise<void> {
     registerFormRoutes(protectedScope);
     registerExportRoutes(protectedScope);
     registerAccessRoutes(protectedScope);
+    registerGroupRoutes(protectedScope);
     registerPublicSiteAdminRoutes(protectedScope);
     // 14.10.2026: GET/PUT /api/spaces/:space/appearance and its assets — the space's `.folio/` folder.
     registerSpaceAppearanceRoutes(protectedScope);
@@ -298,6 +316,9 @@ async function main(): Promise<void> {
     registerPageChangeRoutes(protectedScope);
     registerAssistantRoutes(protectedScope);
     registerAssistantAdminRoutes(protectedScope);
+    // /admin/auth: single sign-on providers (instance admin, cookie only).
+    registerAuthProviderRoutes(protectedScope);
+    registerScimAdminRoutes(protectedScope);
     registerNotificationRoutes(protectedScope);
     // 14.10.2026 (Obsidian wave 3): tag pages + rename, and the person's saved searches.
     registerTagRoutes(protectedScope);

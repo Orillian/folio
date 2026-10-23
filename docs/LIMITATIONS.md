@@ -9,8 +9,24 @@ what is not there.
   index, access rights and collaborative-editing state live in PostgreSQL.
 - **No serverless hosting.** Folio needs a long-running process, a persistent
   disk and WebSocket connections.
-- **No user groups, no SSO/SCIM, no end-to-end encryption of content.**
-  Sign-in is by email and password, optionally with Google.
+- **No end-to-end encryption of content, and no LDAP.** Sign-in is by email and
+  password, or single sign-on through any OpenID Connect provider (Keycloak,
+  Authentik, Entra ID, Okta, Google) or SAML 2.0 IdP. User groups can be
+  managed by hand, synced from the identity provider's groups claim / attribute
+  at sign-in (not continuously: a change reaches Folio at the person's next
+  sign-in, and Entra ID's "too many groups" overage is not resolved through
+  Graph), or provisioned over SCIM. No nested groups and no group @mentions.
+- **SCIM 2.0: the subset identity providers use.** Users and groups with
+  `eq` / `and` filters and paging; no bulk operations, sorting, ETags or
+  passwords. DELETE deactivates an account and archives a group, never deletes.
+  A provisioned person is recognized at first sign-in by the provider's id or by
+  the SCIM email, never by other means; accounts are not created at first
+  sign-in while SCIM is on.
+- **SAML: SP-initiated sign-in with signed assertions only.** Encrypted
+  assertions, signed sign-in requests and single logout are not supported;
+  IdP-initiated sign-in is off unless an administrator turns it on. SAML has no
+  "email verified" flag, so existing accounts are linked only when the IdP is
+  marked authoritative for the allowed domains.
 - **The built-in AI assistant needs a Cursor subscription** and sends the
   pages it works with to that service. The key can be a person's own, or one an
   administrator provides for a space or for the whole instance. Other providers
@@ -55,9 +71,11 @@ what is not there.
    images over 1.5 MB (4 MB in all) and audio/video (linked cards), web page
    previews, group background images, nested groups (each becomes its own
    frame) and the curve of connections (right-angled arrows).
-4. **Page rights are not inherited by child pages**: restricting a parent
-   leaves its children open. There is no "close the whole subtree" mode. On a
-   public site this matters most: lock every page that must stay closed.
+4. **A child page cannot be opened wider than its parent**: page restrictions
+   are inherited and a child's own restriction can only narrow them. A page
+   moved out from under a restricted page is open to the space again. The
+   restriction of a space's root page applies to that page only (space
+   membership closes a whole space).
    An image or attachment stored in the repository is protected through the
    pages that link to it: it is hidden from a member only while every page
    linking to it is closed to them, and a file no page links to is open to
@@ -292,14 +310,26 @@ An artifact is an interactive page made by an agent
     not by what a script draws later. A bundle is limited to 500 files and 50 MB,
     a download from a link to 20 MB, and an MCP request to 25 MB.
 
-## Comparison
+## Side-by-side comparison
 
 Side by side view of pages and versions ([how it works](FEATURES.md)).
 
-32. **Comparison holds five columns, and highlights text only.** Highlighting is
+32. **Side-by-side comparison holds five columns, and highlights text only.** Highlighting is
     block by block: a paragraph that moved shows as changed, and a very large
     page is not highlighted (the column says so). Only version columns are marked,
     never the live ones. A table or base version shows its file text with changed
     lines marked; a whiteboard or a file version is a preview without marks, and
     version columns are read-only. The list of columns lives in the browser, and
     the link carries only ids, so each reader sees it with their own access.
+
+## Sessions and audit log
+
+33. **Sessions have a fixed lifetime and the log has limits.** A session ends
+    `FOLIO_SESSION_TTL_DAYS` after sign-in (it is not extended while you work),
+    and "last active" is updated at most every 5 minutes. The address shown for a
+    session is the client's real one only with `TRUST_PROXY` set; otherwise it is
+    the proxy's. Audit entries are written fire-and-forget (a database failure
+    does not stop the action), are never pruned or signed, and only instance
+    administrators can read them. The CSV export stops at 100,000 rows (the file
+    ends with a line saying so). Actions that are not audited today, such as
+    ordinary page edits in the editor, do not appear in the log.

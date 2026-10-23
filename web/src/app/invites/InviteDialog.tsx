@@ -11,6 +11,7 @@ import { useToast } from '../ui/Toast';
 import { Modal } from '../ui/Modal';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { LabeledInput } from '../ui/LabeledInput';
+import { InviteGroupsPicker } from './InviteGroupsPicker';
 import { AccessBlockEditor, nextAccessRowId } from '../admin/access/AccessBlockEditor';
 import type { AccessBlockRow } from '../admin/access/AccessBlockEditor';
 import '../i18n/register';
@@ -193,7 +194,9 @@ function InviteRow({ invite, onRevoke }: { invite: InviteInfo; onRevoke: () => v
     <li className="flex items-center gap-2 rounded-md border border-neutral-200 px-3 py-2 dark:border-neutral-800">
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm text-neutral-900 dark:text-neutral-100">
-          {[membershipText, invite.isAdmin ? t('invites.instanceAdmin') : null].filter(Boolean).join(' + ')}
+          {[membershipText, invite.isAdmin ? t('invites.instanceAdmin') : null, ...(invite.groups ?? []).map((g) => t('invites.groupNamed', { name: g.name }))]
+            .filter(Boolean)
+            .join(' + ')}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
           <span>{t('invites.usesOf', { uses: invite.uses, max: invite.maxUses === 0 ? '∞' : invite.maxUses })}</span>
@@ -235,6 +238,7 @@ function CreateInviteForm({
   const [unlimited, setUnlimited] = useState(false);
   const [maxUses, setMaxUses] = useState(1);
   const [email, setEmail] = useState('');
+  const [groupIds, setGroupIds] = useState<string[]>([]);
 
   const create = useMutation({
     mutationFn: () =>
@@ -244,6 +248,7 @@ function CreateInviteForm({
         expiresInDays,
         maxUses: unlimited ? 0 : maxUses,
         email: email.trim() || undefined,
+        ...(groupIds.length > 0 ? { groupIds } : {}),
       }),
     onSuccess: onCreated,
     onError: (err) => showToast(errorText(err, 'invites.createFailed')),
@@ -322,6 +327,7 @@ function CreateInviteForm({
           </div>
         </label>
       </div>
+      <InviteGroupsPicker value={groupIds} onChange={setGroupIds} />
       <LabeledInput
         label={t('invites.emailOptional')}
         type="email"

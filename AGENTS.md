@@ -44,9 +44,13 @@ Breaking one of these is a bug, whatever the task was.
   editing. Do not delete it to "reset" something, and do not drop sockets to
   force a reload: a client with the old document would duplicate the content.
 - **An instance administrator has no automatic access to private spaces.**
-- **Page access narrows space access** and is not inherited by child pages.
-  Tree, search, quick switcher, backlinks, collaborative editing, MCP and
+- **Page access narrows space access** and is inherited by child pages: a
+  page is readable only by whoever passes its own restriction and those of all
+  its restricted ancestors (the role is the lowest of them). Tree, search, quick switcher, backlinks, collaborative editing, MCP and
   export must all filter what the user may not see.
+- **One role resolver.** A person's role in a space or on a page (own grants,
+  groups, inheritance) is decided only in `server/access/roles.ts` and its SQL
+  twin `roleSql.ts`. Do not write a third check next to them.
 - **MCP accepts personal access tokens and OAuth access tokens, never a
   session cookie.** Administrative and access operations are cookie-only. A
   token never has more rights than its owner.

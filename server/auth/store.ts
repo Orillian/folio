@@ -15,15 +15,33 @@ import type {
   SpaceMemberInfo,
   SpaceRole,
   SpaceVisibility,
+  SessionInfo,
   Stars,
   UiLanguage,
   User,
 } from '../../shared/contracts.js';
 import { conflict, forbidden, notFound } from '../errors.js';
 import { query, queryOne } from '../db/pool.js';
+import { recordAudit } from '../audit.js';
+import { disconnectSessions, disconnectUser } from '../liveConnections.js';
+import { revokeAllOAuthAccessForUser } from '../oauth/store.js';
 import { serverText } from '../serverText.js';
+import { effectiveRolesSql } from '../access/roleSql.js';
+import { SPACE_ADMINS_COUNT_SQL } from '../groups/store.js';
 
-export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const DEFAULT_SESSION_TTL_DAYS = 30;
+
+/**
+ * Absolute lifetime of a login session (no sliding expiry): FOLIO_SESSION_TTL_DAYS, default 30.
+ * A missing, non-numeric or non-positive value falls back to the default. Read at call time, so
+ * the cookie's Max-Age and the stored expires_at always agree.
+ */
+export function sessionTtlMs(): number {
+  const raw = process.env.FOLIO_SESSION_TTL_DAYS?.trim();
+  const days = raw ? Number(raw) : DEFAULT_SESSION_TTL_DAYS;
+  const valid = Number.isFinite(days) && days > 0 ? Math.min(days, 3650) : DEFAULT_SESSION_TTL_DAYS;
+  return Math.round(valid * 24 * 60 * 60 * 1000);
+}
 
 /**
  * The built-in "Public visitor" system user (db/migrations/039_public_assistant.sql):
@@ -35,10 +53,8 @@ export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 export const PUBLIC_VISITOR_USER_ID = '00000000-0000-4000-8000-0000000f0110';
 
 export interface StoredUser extends User {
-  /** Round 32 (Google OAuth): NULL for a Google-only account that has never set a password — see passwords.ts's verifyPassword, which treats NULL as "no password can ever match", never comparing against it. */
+  /** NULL for a single-sign-on-only account that has never set a password — see passwords.ts's verifyPassword, which treats NULL as "no password can ever match", never comparing against it. */
   passwordHash: string | null;
-  /** Round 32: Google's stable account id (JWT `sub`), or undefined for a password-only user. Never the email — that can change on Google's side. */
-  googleSub?: string;
 }
 
 interface UserRow {
@@ -53,8 +69,6 @@ interface UserRow {
   lang: string | null;
   /** Round 15: NULL = no @mention handle chosen yet. Always already lower-case (see updateUsername). */
   username: string | null;
-  /** Round 32: NULL = account not linked to Google. */
-  google_sub: string | null;
   /** 039: a built-in system account (the public visitor), never a person. */
   is_system: boolean;
 }
@@ -72,21 +86,25 @@ function rowToStoredUser(row: UserRow): StoredUser {
     // cast just tells TS what the CHECK already enforces at the DB layer.
     lang: (row.lang as UiLanguage | null) ?? undefined,
     username: row.username ?? undefined,
-    googleSub: row.google_sub ?? undefined,
     // Only ever present (true) on a system account: a real person's user JSON stays exactly as before.
     ...(row.is_system ? { isSystem: true } : {}),
   };
 }
 function toPublicUser(u: StoredUser): User {
-  // googleSub is an account identifier, not a secret, but it's still internal
-  // bookkeeping (google.ts's own lookup key) — never returned over the API,
-  // same as passwordHash.
-  const { passwordHash: _passwordHash, googleSub: _googleSub, ...rest } = u;
+  const { passwordHash: _passwordHash, ...rest } = u;
   return rest;
 }
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+/** What was cut off when an account was deactivated (counts only; they go into the user.disable audit event). */
+export interface RevokedAccess {
+  sessions: number;
+  apiTokens: number;
+  oauthGrants: number;
+  sockets: number;
 }
 
 
@@ -108,12 +126,6 @@ export async function findStoredUserByEmail(email: string): Promise<StoredUser |
 
 export async function findStoredUserById(id: string): Promise<StoredUser | undefined> {
   const row = await queryOne<UserRow>('SELECT * FROM users WHERE id = $1', [id]);
-  return row ? rowToStoredUser(row) : undefined;
-}
-
-/** Round 32: the Google sign-in callback's first lookup — an account already linked to this Google subject id. */
-export async function findStoredUserByGoogleSub(googleSub: string): Promise<StoredUser | undefined> {
-  const row = await queryOne<UserRow>('SELECT * FROM users WHERE google_sub = $1', [googleSub]);
   return row ? rowToStoredUser(row) : undefined;
 }
 
@@ -151,20 +163,17 @@ export async function listUsers(): Promise<User[]> {
  * active user when the space's `visibility` is `'instance'` or `'public'` (spec §3 — an
  * implicit viewer can still be @mentioned, same as any other viewer).
  * Restricted to users who have actually chosen a username, name-sorted (no
- * limit/pagination: per DEV-PLAN round 15, "teams are small"). Same as the
- * existing /members listing, this does not exclude disabled users; nothing
- * in round 15 (or round 27) asks for that extra filter and the sibling
- * endpoint doesn't apply one either.
+ * limit/pagination: per DEV-PLAN round 15, "teams are small"). The rule is
+ * access/roleSql.ts's (22.10.2026: one resolver), so a disabled user — who has
+ * no role anywhere — is no longer offered.
  */
 export async function listMentionableUsers(space: string): Promise<MentionableUser[]> {
   return query<MentionableUser>(
     `SELECT u.username, u.name
        FROM users u
-       LEFT JOIN space_members sm ON sm.user_id = u.id AND sm.space_slug = $1
-       LEFT JOIN spaces sp ON sp.slug = $1
+       JOIN (${effectiveRolesSql({ space: '$1' })}) r ON r.user_id = u.id
       WHERE u.username IS NOT NULL
         AND NOT u.is_system
-        AND (sm.user_id IS NOT NULL OR sp.visibility IN ('instance', 'public'))
       ORDER BY u.name`,
     [space],
   );
@@ -173,19 +182,17 @@ export async function listMentionableUsers(space: string): Promise<MentionableUs
 export interface CreateUserInput {
   email: string;
   name: string;
-  /** Round 32: optional — a Google-only account (google.ts) is created with no password at all. */
+  /** Optional — an account created by single sign-on (oidc.ts) has no password at all. */
   passwordHash?: string | null;
   isAdmin: boolean;
   username?: string;
-  /** Round 32: set only when creating an account straight from a Google sign-in. */
-  googleSub?: string;
 }
 
 export async function createUser(input: CreateUserInput): Promise<User> {
   try {
     const row = await queryOne<UserRow>(
-      `INSERT INTO users (id, email, name, password_hash, is_admin, username, google_sub)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO users (id, email, name, password_hash, is_admin, username)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
       [
         randomUUID(),
@@ -194,7 +201,6 @@ export async function createUser(input: CreateUserInput): Promise<User> {
         input.passwordHash ?? null,
         input.isAdmin,
         input.username?.toLowerCase() ?? null,
-        input.googleSub ?? null,
       ],
     );
     return toPublicUser(rowToStoredUser(row!));
@@ -202,24 +208,10 @@ export async function createUser(input: CreateUserInput): Promise<User> {
     if (isUniqueViolation(err)) {
       const constraint = String((err as { constraint?: string }).constraint ?? '');
       if (constraint.includes('username')) throw conflict('this username is already taken');
-      if (constraint.includes('google_sub')) throw conflict('this Google account is already linked to another user');
       throw conflict('a user with this email already exists');
     }
     throw err;
   }
-}
-
-/** Round 32: links an existing (password) account to a Google subject id, the first time that email signs in with Google. */
-export async function linkGoogleAccount(userId: string, googleSub: string): Promise<StoredUser> {
-  let row: UserRow | undefined;
-  try {
-    row = await queryOne<UserRow>('UPDATE users SET google_sub = $1 WHERE id = $2 RETURNING *', [googleSub, userId]);
-  } catch (err) {
-    if (isUniqueViolation(err)) throw conflict('this Google account is already linked to another user');
-    throw err;
-  }
-  if (!row) throw notFound('user');
-  return rowToStoredUser(row);
 }
 
 /** Round 10: PATCH /api/me/preferences {lang}. Set-only — the schema has no way to clear back to "no preference" (matches DEV-PLAN's PATCH .../preferences {lang} shape). */
@@ -270,8 +262,31 @@ export async function wouldRemoveLastActiveAdmin(id: string, patch: UpdateUserIn
   return Number(row?.count ?? '0') === 0;
 }
 
-/** Caller (routes) is responsible for calling wouldRemoveLastActiveAdmin first and rejecting if true. */
-export async function updateUser(id: string, patch: UpdateUserInput): Promise<User> {
+export interface UpdateUserOptions {
+  /** Who made the change, for the audit event; null/undefined = no signed-in actor (a sync job, a future SCIM call). */
+  actorId?: string | null;
+}
+
+/**
+ * Everything a deactivated account could still use, cut off in one place so no path forgets one:
+ * browser sessions, personal API tokens, MCP OAuth grants (access + refresh tokens, pending
+ * consents and unredeemed codes) and the live collab / notification sockets. Idempotent.
+ */
+export async function revokeAllAccessForUser(userId: string): Promise<RevokedAccess> {
+  const sessions = await query<{ token_hash: string }>('DELETE FROM sessions WHERE user_id = $1 RETURNING token_hash', [userId]);
+  const apiTokens = await query<{ id: string }>('UPDATE api_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL RETURNING id', [userId]);
+  const oauthGrants = await revokeAllOAuthAccessForUser(userId);
+  const sockets = disconnectUser(userId);
+  return { sessions: sessions.length, apiTokens: apiTokens.length, oauthGrants, sockets };
+}
+
+/**
+ * Caller (routes) is responsible for calling wouldRemoveLastActiveAdmin first and rejecting if true.
+ * Disabling an account (any caller: the admin edit dialog, a future SCIM deactivation) revokes all of
+ * its access (revokeAllAccessForUser) and writes `user.disable` with the counts; re-enabling writes
+ * `user.enable`. Only a real change of state is audited.
+ */
+export async function updateUser(id: string, patch: UpdateUserInput, options: UpdateUserOptions = {}): Promise<User> {
   const current = await findStoredUserById(id);
   if (!current) throw conflict('user not found');
   let row: UserRow | undefined;
@@ -291,7 +306,13 @@ export async function updateUser(id: string, patch: UpdateUserInput): Promise<Us
     if (isUniqueViolation(err)) throw conflict('this username is already taken');
     throw err;
   }
-  if (patch.disabled === true) await destroyAllSessionsForUser(id);
+  if (patch.disabled === true) {
+    // Even when it was already disabled: a leftover credential must not survive a repeated "disable".
+    const revoked = await revokeAllAccessForUser(id);
+    if (!current.disabled) recordAudit(options.actorId ?? null, 'user.disable', id, { email: current.email, name: current.name, ...revoked });
+  } else if (patch.disabled === false && current.disabled) {
+    recordAudit(options.actorId ?? null, 'user.enable', id, { email: current.email, name: current.name });
+  }
   return toPublicUser(rowToStoredUser(row!));
 }
 
@@ -304,19 +325,109 @@ export interface CreatedSession {
   expiresAt: string;
 }
 
-/** Refuses (403) a system account: whatever path asked for it (login, Google, invite), a system user never gets a session. */
-export async function createSession(userId: string): Promise<CreatedSession> {
+/** Where a session was opened from — shown in the session list so a person can tell their devices apart. */
+export interface SessionClientInfo {
+  userAgent?: string | null;
+  ip?: string | null;
+}
+
+const MAX_USER_AGENT_LENGTH = 300;
+const MAX_IP_LENGTH = 64;
+
+function cleanClientText(value: string | null | undefined, max: number): string | null {
+  if (typeof value !== 'string') return null;
+  // eslint-disable-next-line no-control-regex
+  const trimmed = value.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, max);
+  return trimmed || null;
+}
+
+/** Refuses (403) a system account: whatever path asked for it (login, Google, invite), a system user never gets a session. `client` (user agent, ip) is optional bookkeeping; the first authenticated request fills it in if the creator did not know it. */
+export async function createSession(userId: string, client: SessionClientInfo = {}): Promise<CreatedSession> {
   const token = randomBytes(32).toString('hex');
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  const expiresAt = new Date(Date.now() + sessionTtlMs());
   const rows = await query<{ token_hash: string }>(
-    `INSERT INTO sessions (token_hash, user_id, expires_at)
-     SELECT $1::text, $2::uuid, $3::timestamptz
+    `INSERT INTO sessions (token_hash, user_id, expires_at, user_agent, ip, last_seen_at)
+     SELECT $1::text, $2::uuid, $3::timestamptz, $4::text, $5::text, now()
       WHERE NOT EXISTS (SELECT 1 FROM users WHERE id = $2::uuid AND is_system)
      RETURNING token_hash`,
-    [hashToken(token), userId, expiresAt],
+    [hashToken(token), userId, expiresAt, cleanClientText(client.userAgent, MAX_USER_AGENT_LENGTH), cleanClientText(client.ip, MAX_IP_LENGTH)],
   );
   if (rows.length === 0) throw forbidden('a system account cannot sign in');
   return { token, expiresAt: expiresAt.toISOString() };
+}
+
+/** A session is "seen" at most this often (in-memory first, then the same rule in SQL so several instances agree). */
+export const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+const sessionTouchedAt = new Map<string, number>();
+
+/** Fire-and-forget bookkeeping: last_seen_at (throttled), and the client info when the row has none yet. Never blocks or fails the request. */
+export function touchSession(token: string, client: SessionClientInfo = {}): void {
+  const tokenHash = hashToken(token);
+  const now = Date.now();
+  const last = sessionTouchedAt.get(tokenHash);
+  if (last !== undefined && now - last < SESSION_TOUCH_INTERVAL_MS) return;
+  if (sessionTouchedAt.size > 5000) sessionTouchedAt.clear(); // a bound, not a cache: the SQL condition is the real throttle
+  sessionTouchedAt.set(tokenHash, now);
+  void query(
+    `UPDATE sessions SET last_seen_at = now(),
+            user_agent = COALESCE(user_agent, $2), ip = COALESCE(ip, $3)
+      WHERE token_hash = $1
+        AND (last_seen_at IS NULL OR last_seen_at < now() - ($4::int * interval '1 millisecond') OR user_agent IS NULL OR ip IS NULL)`,
+    [tokenHash, cleanClientText(client.userAgent, MAX_USER_AGENT_LENGTH), cleanClientText(client.ip, MAX_IP_LENGTH), SESSION_TOUCH_INTERVAL_MS],
+  ).catch(() => {});
+}
+
+/** Test-only: the touch throttle map is a module-level singleton. */
+export function __resetSessionTouchThrottleForTests(): void {
+  sessionTouchedAt.clear();
+}
+
+interface SessionRow {
+  id: string;
+  token_hash: string;
+  created_at: string;
+  last_seen_at: string | null;
+  expires_at: string;
+  user_agent: string | null;
+  ip: string | null;
+}
+
+/** Unexpired sessions of a user, most recently active first. `currentToken` (the caller's own cookie) marks the row that is "this device". */
+export async function listActiveSessions(userId: string, currentToken?: string): Promise<SessionInfo[]> {
+  const rows = await query<SessionRow>(
+    `SELECT id, token_hash, created_at, last_seen_at, expires_at, user_agent, ip
+       FROM sessions WHERE user_id = $1 AND expires_at > now()
+      ORDER BY COALESCE(last_seen_at, created_at) DESC, created_at DESC`,
+    [userId],
+  );
+  const currentHash = currentToken ? hashToken(currentToken) : undefined;
+  return rows.map((r) => ({
+    id: r.id,
+    createdAt: new Date(r.created_at).toISOString(),
+    lastSeenAt: r.last_seen_at ? new Date(r.last_seen_at).toISOString() : null,
+    expiresAt: new Date(r.expires_at).toISOString(),
+    userAgent: r.user_agent,
+    ip: r.ip,
+    current: currentHash !== undefined && r.token_hash === currentHash,
+  }));
+}
+
+/** Ends one session of this user (and closes its live sockets). False when the id is not an active session of that user. */
+export async function revokeSessionById(userId: string, sessionId: string): Promise<boolean> {
+  if (!/^[0-9a-f-]{36}$/i.test(sessionId)) return false;
+  const rows = await query<{ token_hash: string }>('DELETE FROM sessions WHERE id = $1 AND user_id = $2 RETURNING token_hash', [sessionId, userId]);
+  disconnectSessions(new Set(rows.map((r) => r.token_hash)));
+  return rows.length > 0;
+}
+
+/** Ends every session of the user except `exceptToken` (omit it to end all of them). Returns how many were ended. */
+export async function revokeSessionsForUser(userId: string, exceptToken?: string): Promise<number> {
+  const rows = await query<{ token_hash: string }>('DELETE FROM sessions WHERE user_id = $1 AND ($2::text IS NULL OR token_hash <> $2) RETURNING token_hash', [
+    userId,
+    exceptToken ? hashToken(exceptToken) : null,
+  ]);
+  disconnectSessions(new Set(rows.map((r) => r.token_hash)));
+  return rows.length;
 }
 
 /** Returns the session's userId, or undefined if the token is missing/expired (lazily pruning it). */
@@ -333,11 +444,14 @@ export async function resolveSessionUserId(token: string): Promise<string | unde
 }
 
 export async function destroySession(token: string): Promise<void> {
-  await query('DELETE FROM sessions WHERE token_hash = $1', [hashToken(token)]);
+  const tokenHash = hashToken(token);
+  await query('DELETE FROM sessions WHERE token_hash = $1', [tokenHash]);
+  disconnectSessions(new Set([tokenHash]));
 }
 
 export async function destroyAllSessionsForUser(userId: string): Promise<void> {
   await query('DELETE FROM sessions WHERE user_id = $1', [userId]);
+  disconnectUser(userId);
 }
 
 /**
@@ -362,10 +476,7 @@ export async function sessionsThatCanReadSpace(space: string, tokens: readonly s
       WHERE s.token_hash = ANY($2::text[])
         AND s.expires_at > now()
         AND NOT u.disabled
-        AND (
-          EXISTS (SELECT 1 FROM space_members m WHERE m.space_slug = $1 AND m.user_id = u.id)
-          OR EXISTS (SELECT 1 FROM spaces sp WHERE sp.slug = $1 AND sp.visibility IN ('instance', 'public'))
-        )`,
+        AND EXISTS (SELECT 1 FROM (${effectiveRolesSql({ user: 'u.id', space: '$1' })}) r)`,
     [space, [...byHash.keys()]],
   );
   const allowed = new Set<string>();
@@ -490,7 +601,7 @@ export async function listMembersWithDetails(space: string): Promise<SpaceMember
   for (const [userId, role] of Object.entries(roles)) {
     const stored = await findStoredUserById(userId);
     if (!stored) continue;
-    const { passwordHash: _passwordHash, googleSub: _googleSub, ...user } = stored;
+    const { passwordHash: _passwordHash, ...user } = stored;
     members.push({ user, role });
   }
   return members;
@@ -502,15 +613,15 @@ export async function spacesForUser(userId: string): Promise<Record<string, Spac
 }
 
 /**
- * Slugs of the spaces where `userId` is an EXPLICIT `admin` member (sorted, byte order) — the
- * "space admin" of canAdministerSpace without the instance-admin bypass. The join on `spaces`
- * drops a membership whose space no longer exists (a trashed space is deleted from `spaces`
- * and its memberships cascade away, so it never counts until restored).
+ * Slugs of the spaces where `userId`'s effective role is `admin` (sorted, byte order) — the
+ * "space admin" of canAdministerSpace without the instance-admin bypass (access/roleSql.ts; an
+ * implicit grant is never `admin`). A trashed space is deleted from `spaces` and its memberships
+ * cascade away, so it never counts until restored.
  */
 export async function listAdminSpaceSlugs(userId: string): Promise<string[]> {
   const rows = await query<{ space_slug: string }>(
-    `SELECT m.space_slug FROM space_members m JOIN spaces s ON s.slug = m.space_slug
-      WHERE m.user_id = $1 AND m.role = 'admin' ORDER BY m.space_slug COLLATE "C"`,
+    `SELECT r.space_slug FROM (${effectiveRolesSql({ user: '$1' })}) r
+      WHERE r.role = 'admin' ORDER BY r.space_slug COLLATE "C"`,
     [userId],
   );
   return rows.map((r) => r.space_slug);
@@ -549,10 +660,21 @@ export async function setSpaceVisibility(space: string, visibility: SpaceVisibil
 // read back for the space's "Access changes" feed and a user's own access panel).
 // ---------------------------------------------------------------------------
 
-const ACCESS_LOG_ACTIONS = ['access.grant', 'access.revoke', 'access.self_grant', 'space.visibility', 'space.public_settings'];
+const ACCESS_LOG_ACTIONS = [
+  'access.grant',
+  'access.revoke',
+  'access.self_grant',
+  'access.group_grant',
+  'access.group_revoke',
+  'space.visibility',
+  'space.public_settings',
+];
+
+/** Group events (053): target = the group id. A space's feed shows those of the groups that hold a role in it now; a user's panel those naming them (meta.targetUserId). */
+const GROUP_LOG_ACTIONS = ['group.create', 'group.update', 'group.archive', 'group.restore', 'group.delete', 'group.member_add', 'group.member_remove', 'group.manager_set'];
 
 /** Space-level events: they have no target user, so they only belong to the space's own feed (never a single user's access panel). */
-const SPACE_LEVEL_ACCESS_LOG_ACTIONS = ['space.visibility', 'space.public_settings'];
+const SPACE_LEVEL_ACCESS_LOG_ACTIONS = ['space.visibility', 'space.public_settings', 'access.group_grant', 'access.group_revoke'];
 
 interface AuditLogRow {
   id: string;
@@ -583,10 +705,11 @@ export async function listAccessLogForSpace(space: string, limit = 50, language?
     `SELECT al.id, al.action, al.actor_id, al.target, al.meta, al.at, u.name AS actor_name
        FROM audit_log al
        LEFT JOIN users u ON u.id = al.actor_id
-      WHERE al.action = ANY($1) AND al.target = $2
+      WHERE (al.action = ANY($1) AND al.target = $2)
+         OR (al.action = ANY($4) AND al.target IN (SELECT r.group_id::text FROM space_group_roles r WHERE r.space_slug = $2))
       ORDER BY al.at DESC
       LIMIT $3`,
-    [ACCESS_LOG_ACTIONS, space, limit],
+    [ACCESS_LOG_ACTIONS, space, limit, GROUP_LOG_ACTIONS],
   );
   return rows.map((row) => rowToAccessLogEntry(row, language));
 }
@@ -600,16 +723,19 @@ export async function listAccessLogForUser(userId: string, limit = 50, language?
       WHERE al.action = ANY($1) AND al.meta ->> 'targetUserId' = $2
       ORDER BY al.at DESC
       LIMIT $3`,
-    [ACCESS_LOG_ACTIONS.filter((a) => !SPACE_LEVEL_ACCESS_LOG_ACTIONS.includes(a)), userId, limit],
+    [[...ACCESS_LOG_ACTIONS.filter((a) => !SPACE_LEVEL_ACCESS_LOG_ACTIONS.includes(a)), ...GROUP_LOG_ACTIONS], userId, limit],
   );
   return rows.map((row) => rowToAccessLogEntry(row, language));
 }
 
+/**
+ * The last-admin guard's count (spec-access.md §5, §15): direct admins other
+ * than `excludingUserId` (whose DIRECT row is about to change), plus active
+ * members of active groups holding `admin` in the space — distinct people, so
+ * someone who stays admin through a group keeps the space administered.
+ */
 export async function countSpaceAdmins(space: string, excludingUserId?: string): Promise<number> {
-  const row = await queryOne<{ count: string }>(
-    "SELECT COUNT(*) FROM space_members WHERE space_slug = $1 AND role = 'admin' AND ($2::uuid IS NULL OR user_id <> $2::uuid)",
-    [space, excludingUserId ?? null],
-  );
+  const row = await queryOne<{ count: string }>(SPACE_ADMINS_COUNT_SQL, [space, excludingUserId ?? null]);
   return Number(row?.count ?? '0');
 }
 

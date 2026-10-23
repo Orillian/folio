@@ -17,11 +17,15 @@
  * via `shareGrantsPage`) and the raw-file route (server/fileAccess.ts, which
  * serves a guest only these pages' files and what they reference).
  *
- * The policy: a subtree share never includes a page that is not open to the
- * whole space (pageAccess.restrictedPageIds — a `page_access` row, or a
+ * The policy: a subtree share never includes a page that has a restriction
+ * of its own (pageAccess.ownRuleOrAgentPageIds — a `page_access` row, or a
  * `.agent/**` page), nor anything below such a page. A restricted page can
  * be shared only by its own explicit link: the token's root is always in the
- * set (creating the link already required editor rights on it). Nothing is
+ * set (creating the link already required editor rights on it), and so is
+ * what lies below the root and is restricted only through the root or the
+ * root's own parents (stage 7, inherited restrictions: the creator, who can
+ * open the root, chose that subtree explicitly — the same set as before
+ * inheritance existed). Nothing is
  * stored with the token, so the set follows the page-access state at every
  * request — restricting a page after the link was created removes it, and
  * its subtree, at the next request.
@@ -51,7 +55,7 @@ export async function resolveShareScope(token: string): Promise<ShareScope | und
   if (!share) return undefined;
   const root = await storage.getEntry(share.pageId);
   if (!root) return undefined;
-  const pruned = share.includeChildren ? await pageAccess.restrictedPageIds(root.space) : undefined;
+  const pruned = share.includeChildren ? await pageAccess.ownRuleOrAgentPageIds(root.space) : undefined;
   return { share, root, collected: await collectForExport(root, share.includeChildren, undefined, undefined, pruned) };
 }
 

@@ -44,6 +44,9 @@ export function Modal({ title, onClose, children, footer, size = 'md' }: ModalPr
   // doesn't cap height on a short viewport by itself.
   return createPortal(
     <div
+      // Marks an app dialog as open: the editor's floating UI (selection bar, popups) hides behind it, see editor.css.
+      data-app-modal=""
+      data-report-exclude=""
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();

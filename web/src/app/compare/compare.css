@@ -1,0 +1,105 @@
+/*
+ * The compare view puts the page body into a column a third of the window wide. The page layout is built for a whole
+ * window: a centred reading measure (72ch), 1.5rem side padding, a breakout for wide tables, a properties row aligned
+ * to the measure. Squeezed into a column that left 110-130px of nothing on each side and, for a table that breaks out
+ * of the measure (`left: 50%` + `translateX(-50%)`), cut its far edge off with no way to scroll.
+ *
+ * Everything here is scoped to `[data-compare-body]` (CompareColumn's scroll area) and re-sets the page layout for
+ * a column: full width, ~1rem edges, no breakout. The `html` prefix and the doubled class names are there to win over
+ * `html[data-width='wide'] ...` and the phone media queries without `!important`.
+ */
+
+/* One measure for every consumer of the variable: the reading prose, the CodeMirror column, the properties body and
+   the properties toggle's offset (which computes its slack from it, and so collapses to zero). */
+html [data-compare-body] .folio-editor.folio-editor {
+  --folio-ed-measure: 100%;
+}
+
+/* ----------------------------------------------------------------- chrome -- */
+
+/* Should the row ever overflow in a very narrow column, the overflow goes to the right (reachable), not to the left
+   (`justify-content: flex-end` would push the properties toggle out past the column's edge). */
+html [data-compare-body] .folio-editor.folio-editor .folio-editor__chrome {
+  justify-content: flex-start;
+}
+
+/* The properties toggle: its left edge on the text's. Text starts 1rem in (reading: 1rem of the reading area; live and
+   source: 1rem of the line), the chrome row pads 0.75rem. */
+html [data-compare-body] .folio-editor.folio-editor[data-mode] .folio-editor__chrome-lead {
+  margin-left: 0.25rem;
+}
+
+html [data-compare-body] .folio-editor.folio-editor[data-mode] .folio-props-body {
+  max-width: none;
+  margin-inline: 0;
+  padding-inline: 1rem;
+}
+
+/* ---------------------------------------------------------------- reading -- */
+
+html [data-compare-body] .folio-editor.folio-editor .folio-editor__reading {
+  padding: 0.5rem 1rem 40vh;
+}
+
+html [data-compare-body] .folio-markdown.folio-markdown {
+  max-width: none;
+  margin: 0;
+  padding: 0.5rem 0 3rem;
+}
+
+/* Tables and code blocks scroll inside their own box (`.folio-table-wrap` and `pre` already have overflow-x: auto);
+   the "medium" / "full" width modes would centre a box wider than the column around its middle, where the overflow
+   on the left can never be scrolled to. */
+html [data-compare-body] .folio-markdown .folio-table-wrap:has(> table.folio-table-display-medium),
+html [data-compare-body] .folio-markdown .folio-table-wrap:has(> table.folio-table-display-full) {
+  left: 0;
+  width: auto;
+  max-width: 100%;
+  transform: none;
+}
+
+html [data-compare-body] .folio-markdown img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ------------------------------------------------- live edit and source -- */
+
+html [data-compare-body] .folio-editor.folio-editor .cm-content .cm-line {
+  padding-inline: 1rem;
+}
+
+html [data-compare-body] .folio-editor.folio-editor .cm-content .cm-line.cm-md-li,
+html [data-compare-body] .folio-editor.folio-editor .cm-content .cm-line.cm-md-li-cont {
+  padding-left: calc(1rem + var(--cm-li-depth, 1) * 1.5em);
+}
+
+html [data-compare-body] .folio-editor.folio-editor .cm-content .cm-md-quote {
+  padding-left: calc(1rem - 3px);
+}
+
+html [data-compare-body] .folio-editor.folio-editor .cm-content .cm-md-callout {
+  padding-left: calc(1rem - 4px);
+}
+
+html [data-compare-body] .folio-editor.folio-editor .cm-md-block,
+html [data-compare-body] .folio-editor.folio-editor .cm-md-emptyhint {
+  margin-inline: 1rem;
+}
+
+/* The table keeps its 19px handle gutter (the row handles live there), taken out of the 1rem edge like everywhere
+   else, and never breaks out of the column: a wide grid scrolls in `.cm-md-table-scroll`. */
+html [data-compare-body] .folio-editor.folio-editor .cm-md-table-widget,
+html [data-compare-body] .folio-editor.folio-editor .cm-md-table-widget:hover,
+html [data-compare-body] .folio-editor.folio-editor .cm-md-table-widget[data-display='medium'],
+html [data-compare-body] .folio-editor.folio-editor .cm-md-table-widget[data-display='full'] {
+  left: 0;
+  width: auto;
+  max-width: none;
+  transform: none;
+  margin-inline: max(0px, calc(1rem - var(--folio-tbl-gutter))) 1rem;
+}
+
+html [data-compare-body] .folio-editor.folio-editor .cm-md-table-scroll {
+  max-width: 100%;
+}

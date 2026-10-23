@@ -50,6 +50,7 @@ const RULES: { test: RegExp; key: string; values?: (m: RegExpMatchArray) => Reco
   { test: /^authentication required$/i, key: 'errors.authRequired' },
   { test: /^too many attempts/i, key: 'errors.tooManyAttempts' },
   { test: /^setup has already been completed$/i, key: 'errors.setupDone' },
+  { test: /signs? in with single sign-on/i, key: 'errors.ssoRequired' },
 
   // --- roles / scopes -----------------------------------------------------
   { test: /^requires (\w+)\+ role in this space$/i, key: 'errors.requiresRole', values: (m) => ({ role: m[1] }) },
@@ -86,6 +87,7 @@ const RULES: { test: RegExp; key: string; values?: (m: RegExpMatchArray) => Reco
   { test: /^a user with this email already exists$/i, key: 'errors.emailTaken' },
   { test: /^this username is already taken$/i, key: 'errors.usernameTaken' },
   { test: /^a space with this slug already exists/i, key: 'errors.spaceSlugTaken' },
+  { test: /^a group with this slug already exists$/i, key: 'errors.groupSlugTaken' },
   // --- public sites -------------------------------------------------------
   { test: /^subdomain is already taken$/i, key: 'errors.subdomainTaken' },
   { test: /^domain is already in use$/i, key: 'errors.domainInUse' },

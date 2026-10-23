@@ -3,8 +3,8 @@ import type { FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
-import { Earth, Globe, Link2, Lock, ShieldCheck, Trash2 } from 'lucide-react';
-import type { SpaceRole, SpaceVisibility, User } from '@shared/contracts';
+import { Earth, Globe, Link2, Lock, ShieldCheck, Trash2, Users } from 'lucide-react';
+import type { GroupInfo, SpaceGroupMemberInfo, SpaceRole, SpaceVisibility, User } from '@shared/contracts';
 import { api } from '../api';
 import { formatDate, formatDateTime } from '../formatDate';
 import { useApiErrorText } from '../errorText';
@@ -39,6 +39,7 @@ export function MembersDialog({ space, onClose }: MembersDialogProps) {
   const queryClient = useQueryClient();
   const showToast = useToast();
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
+  const [removingGroup, setRemovingGroup] = useState<SpaceGroupMemberInfo | null>(null);
   const [inviting, setInviting] = useState(false);
 
   const { data: spacesData } = useQuery({ queryKey: ['spaces'], queryFn: api.listSpaces });
@@ -117,6 +118,39 @@ export function MembersDialog({ space, onClose }: MembersDialogProps) {
     onError: (err) => showToast(errorText(err, 'members.removeFailed')),
   });
 
+  // Groups (053): every instance admin / space admin may list the active groups to pick from; a 403 (plain
+  // editor) or an older server just hides the picker, same degrade-silently pattern as the access log above.
+  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: api.listGroups, retry: false });
+  const spaceGroupIds = useMemo(() => new Set((data?.groups ?? []).map((g) => g.group.id)), [data]);
+  const groupCandidates = useMemo(
+    () => (groupsQuery.data?.groups ?? []).filter((g) => g.archivedAt === null && !spaceGroupIds.has(g.id)),
+    [groupsQuery.data, spaceGroupIds],
+  );
+
+  const setGroupRole = useMutation({
+    mutationFn: ({ groupId, role }: { groupId: string; role: SpaceRole }) => api.setSpaceGroupRole(space, groupId, role),
+    onSuccess: () => {
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ['groups'] });
+      queryClient.invalidateQueries({ queryKey: ['access'] });
+    },
+    onError: (err) => showToast(errorText(err, 'members.groups.setRoleFailed')),
+  });
+
+  const removeGroup = useMutation({
+    mutationFn: (groupId: string) => api.removeSpaceGroup(space, groupId),
+    onSuccess: () => {
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ['groups'] });
+      queryClient.invalidateQueries({ queryKey: ['access'] });
+      setRemovingGroup(null);
+    },
+    onError: (err) => {
+      setRemovingGroup(null);
+      showToast(errorText(err, 'members.groups.removeFailed'));
+    },
+  });
+
   const removingMember = data?.members.find((m) => m.user.id === removingUserId);
 
   return (
@@ -157,7 +191,7 @@ export function MembersDialog({ space, onClose }: MembersDialogProps) {
           </p>
         )}
 
-        {data && data.members.length === 0 && <p className="text-neutral-400">{t('members.empty')}</p>}
+        {data && data.members.length === 0 && (data.groups ?? []).length === 0 && <p className="text-neutral-400">{t('members.empty')}</p>}
 
         {data && data.members.length > 0 && (
           <ul className="flex flex-col gap-1.5">
@@ -211,6 +245,17 @@ export function MembersDialog({ space, onClose }: MembersDialogProps) {
           </ul>
         )}
 
+        {data && (
+          <GroupsSection
+            groups={data.groups ?? []}
+            candidates={groupCandidates}
+            implicitViewer={visibility !== 'private'}
+            pending={setGroupRole.isPending}
+            onSetRole={(groupId, role) => setGroupRole.mutate({ groupId, role })}
+            onRemove={setRemovingGroup}
+          />
+        )}
+
         <AddMemberForm
           isInstanceAdmin={user.isAdmin}
           candidates={candidateUsers}
@@ -259,6 +304,19 @@ export function MembersDialog({ space, onClose }: MembersDialogProps) {
           onConfirm={() => removeMember.mutate(removingMember.user.id)}
         >
           {t('members.removeConfirmBody', { name: removingMember.user.name, space: spaceName })}
+        </ConfirmDialog>
+      )}
+
+      {removingGroup && (
+        <ConfirmDialog
+          title={t('members.groups.removeConfirmTitle')}
+          destructive
+          confirmLabel={t('ui.delete')}
+          busy={removeGroup.isPending}
+          onCancel={() => setRemovingGroup(null)}
+          onConfirm={() => removeGroup.mutate(removingGroup.group.id)}
+        >
+          {t('members.groups.removeConfirmBody', { name: removingGroup.group.name, space: spaceName })}
         </ConfirmDialog>
       )}
 
@@ -345,5 +403,119 @@ function AddMemberForm({ isInstanceAdmin, candidates, pending, onAdd }: AddMembe
         {t('members.add')}
       </button>
     </form>
+  );
+}
+
+interface GroupsSectionProps {
+  groups: SpaceGroupMemberInfo[];
+  candidates: GroupInfo[];
+  /** The space is open to the whole instance (visibility instance/public): everyone is an implicit viewer. */
+  implicitViewer: boolean;
+  pending: boolean;
+  onSetRole: (groupId: string, role: SpaceRole) => void;
+  onRemove: (group: SpaceGroupMemberInfo) => void;
+}
+
+/** Groups (053) holding a role in the space, a non-removable "All members" hint for open spaces, and an "Add group" picker. */
+function GroupsSection({ groups, candidates, implicitViewer, pending, onSetRole, onRemove }: GroupsSectionProps) {
+  const { t } = useTranslation('app');
+  const [groupId, setGroupId] = useState('');
+  const [role, setRole] = useState<SpaceRole>('viewer');
+
+  if (groups.length === 0 && candidates.length === 0 && !implicitViewer) return null;
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+      <p className="text-xs font-medium text-neutral-500 dark:text-neutral-400">{t('members.groups.title')}</p>
+      <ul className="flex flex-col gap-1.5">
+        {implicitViewer && (
+          <li className="flex items-center gap-2 text-sm text-neutral-500 dark:text-neutral-400">
+            <Users size={14} className="shrink-0 opacity-70" />
+            <span className="min-w-0 flex-1 truncate">{t('members.groups.allMembers')}</span>
+            <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-xs dark:bg-neutral-800">{t('members.groups.implicit')}</span>
+          </li>
+        )}
+        {groups.map((g) => (
+          <li key={g.group.id} className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <div className={`truncate text-sm font-medium ${g.group.archived ? 'text-neutral-400 line-through' : 'text-neutral-900 dark:text-neutral-100'}`}>
+                {g.group.name}
+                {g.group.archived && <span className="ml-1.5 text-xs font-normal no-underline">{t('access.groups.archived')}</span>}
+              </div>
+              <div className="truncate text-xs text-neutral-500 dark:text-neutral-400">{t('members.groups.memberCount', { count: g.memberCount })}</div>
+            </div>
+            <select
+              value={g.role}
+              disabled={pending}
+              aria-label={t('members.groups.roleFor', { name: g.group.name })}
+              onChange={(e) => onSetRole(g.group.id, e.target.value as SpaceRole)}
+              className="shrink-0 rounded-md border border-neutral-300 bg-transparent px-2 py-1 text-xs text-neutral-800 dark:border-neutral-700 dark:text-neutral-200"
+            >
+              {ROLE_OPTIONS.map((r) => (
+                <option key={r} value={r}>
+                  {roleLabel(r)}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              aria-label={t('members.groups.removeNamed', { name: g.group.name })}
+              onClick={() => onRemove(g)}
+              className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-red-600 dark:hover:bg-neutral-800"
+            >
+              <Trash2 size={14} />
+            </button>
+          </li>
+        ))}
+      </ul>
+      {candidates.length > 0 && (
+        <form
+          className="flex flex-wrap items-end gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!groupId) return;
+            onSetRole(groupId, role);
+            setGroupId('');
+          }}
+        >
+          <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-neutral-500 dark:text-neutral-400">
+            {t('members.groups.group')}
+            <select
+              value={groupId}
+              onChange={(e) => setGroupId(e.target.value)}
+              className="rounded-md border border-neutral-300 bg-transparent px-2 py-1.5 text-sm text-neutral-800 dark:border-neutral-700 dark:text-neutral-200"
+            >
+              <option value="">{t('members.groups.select')}</option>
+              {candidates.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name} ({g.memberCount})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-neutral-500 dark:text-neutral-400">
+            {t('admin.role')}
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value as SpaceRole)}
+              className="rounded-md border border-neutral-300 bg-transparent px-2 py-1.5 text-sm text-neutral-800 dark:border-neutral-700 dark:text-neutral-200"
+            >
+              {ROLE_OPTIONS.map((r) => (
+                <option key={r} value={r}>
+                  {roleLabel(r)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="submit"
+            disabled={pending || !groupId}
+            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+          >
+            {t('members.groups.add')}
+          </button>
+        </form>
+      )}
+    </div>
   );
 }

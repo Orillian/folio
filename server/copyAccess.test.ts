@@ -403,7 +403,9 @@ describe('copy and duplicate leave out what page access and .agent hide from the
         expect(await accessRow(bonusCopy.id)).toBeUndefined(); // the original had no restriction
         expect(await session.effectivePageRole(owner, salariesCopy)).toBe('editor');
         for (const other of [editor, viewer, grantee]) expect(await session.effectivePageRole(other, salariesCopy)).toBeUndefined();
-        expect(await session.effectivePageRole(editor, bonusCopy)).toBeDefined();
+        // No rule of its own, but below the restricted copy of Salaries: inherited (stage 7).
+        expect(await session.effectivePageRole(editor, bonusCopy)).toBeUndefined();
+        expect(await session.effectivePageRole(owner, bonusCopy)).toBe('editor');
       });
 
       it(`copies everything of the index shape (${how}); the copy of the restricted folder page stays restricted`, async () => {

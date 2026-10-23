@@ -46,6 +46,8 @@ Not ready to install? [Try the live demo](https://demo.foliowiki.online/?utm_sou
 - **See how your pages connect.** A graph of the space and a local graph beside
   every page, built from the links your team already writes, and showing only
   what the reader may open.
+- **Built for teams.** Groups, single sign-on with OpenID Connect and SAML 2.0,
+  SCIM provisioning, an audit log and page restrictions that child pages inherit.
 - **Publish what should be public.** Turn a space into a read-only website,
   with search and an optional "Ask AI" for visitors, at a path of your
   instance, on a subdomain or on your own domain.
@@ -217,7 +219,7 @@ them, the header says **Not saved** and closing the tab asks first.
 
 ---
 
-## Compare pages and versions
+## Side-by-side comparison
 
 Two translations of one page, this quarter's plan next to last quarter's, a spec
 next to the draft that should follow it: put up to five pages, or older versions
@@ -225,12 +227,12 @@ of a page, side by side.
 
 ![Two pages side by side, the left one as a reader sees it and the right one open for editing](docs/images/compare-live.png)
 
-- **Collect, then open.** "Add to comparison" is in the sidebar menu (also for
+- **Collect, then open.** "Compare side by side" is in the sidebar menu (also for
   people who can only read), in the page header and in the history panel. A chip
   at the bottom of the window holds the list, from any spaces you can open.
 - **Live columns.** A current page is the page itself, with the same editor and
   live collaboration: type in a column and everyone on the page sees it.
-- **Versions next to the page.** In a page's history, "Compare with current" puts
+- **Versions next to the page.** In a page's history, "Compare side by side with current" puts
   a read-only version beside the live page. "Highlight changes" marks what is new
   or changed in green and what was removed in red against the leftmost column,
   and synchronized scrolling keeps the columns together.
@@ -683,10 +685,15 @@ Who sees what is decided in one place, and it is visible at a glance.
   not a member of. They can grant access to themselves — and that is written
   to the audit log and marked for everyone to see.
 - **Audit log.** Every grant, revoke and visibility change is recorded with
-  who did it and when.
+  who did it and when. Instance administrators get a screen with filters and a
+  CSV export, see [Groups and single sign-on](#groups-and-single-sign-on).
 
 **Page-level access.** Any page can be narrower than its space: open to all
-members, to you only, or to selected people with view or edit rights.
+members, to you only, or to selected people or groups with view or edit rights.
+A restriction is **inherited by child pages**: restricting a parent closes
+everything below it, and a child can only narrow that further. The page access
+dialog says who restricts a page and who can open it, and the sidebar marks
+restricted pages with a lock.
 
 ![Access to a single page](docs/images/page-access.png)
 
@@ -696,9 +703,11 @@ members, to you only, or to selected people with view or edit rights.
   usage limit.
 - **Access requests.** Someone who opens a space they cannot see can ask for
   access; administrators are notified at once and choose the role.
-- **Sign in with Google**, limited to the email domains you list. A new
-  person gets an account and no access until someone grants it.
-- **Deactivate** an account without deleting what the person wrote.
+- **Sign-in** with email and password, or through your identity provider (see
+  below). A new person gets an account and no access until someone grants it,
+  unless you preset spaces for them.
+- **Deactivate** an account without deleting what the person wrote: sessions,
+  personal tokens and connected apps are cut off at once.
 
 **Sharing outside**
 
@@ -722,6 +731,48 @@ members, to you only, or to selected people with view or edit rights.
 - A pasted Folio link unfurls into a card with the page's title, place, opening
   text and headings, built with the access of the person who shared it; a page
   they cannot open shows no title at all. [Setup](docs/CHAT-PREVIEWS.md).
+
+---
+
+## Groups and single sign-on
+
+Put people in groups, let your identity provider sign them in, and keep both in
+sync without anyone doing it by hand.
+
+![The Folio sign-in page with "Continue with Keycloak" and "Continue with Keycloak (SAML)" buttons above the email and password form](docs/images/sso-login.png)
+
+![A group's member list in the Access page, with each person marked as coming from OIDC or SAML, a manager checkbox and the group's role in a space](docs/images/groups.png)
+
+![A page restricted by its parent page: the access dialog says only people who can open the parent can open this one](docs/images/inherited-access.png)
+
+- **Groups.** A named set of people (Engineering, Support, Contractors) that
+  holds a role in a space or a grant on a restricted page. Give the group a role
+  once; moving someone in or out changes their access everywhere. A person's
+  role is the highest of their own and their groups'. Instance administrators
+  create groups, managers edit the membership, space administrators grant a
+  group a role in their own space. There is a Groups tab on the Access page, and
+  groups appear in the matrix, the members dialog, page access and invitations.
+- **Single sign-on with OpenID Connect or SAML 2.0.** Keycloak, Authentik,
+  Microsoft Entra ID, Okta, Google Workspace and any other provider, several at
+  once, set up at `/admin/auth` or with environment variables, with a "Test
+  connection" that shows what the provider sends. The sign-in page asks for an
+  email first and sends your domain to its provider. People can get an account
+  at first sign-in with preset spaces, or only invited people get in.
+- **Make it mandatory.** Switch off password sign-in for your domains; instance
+  administrators keep an audited emergency sign-in.
+- **Groups from the provider.** At every sign-in Folio adds a person to the
+  Folio groups their provider reports and removes them from the ones it no
+  longer does. Memberships added by hand are never touched.
+- **SCIM 2.0.** Okta, Microsoft Entra ID, Keycloak (with a plugin), OneLogin and
+  JumpCloud create, update and deactivate people and groups. Deactivating
+  someone ends all their sessions and tokens at once.
+- **Audit log and sessions.** An audit log screen for instance administrators
+  with filters and a CSV export; everyone sees their signed-in devices and can
+  sign out the others, and administrators can end a person's sessions.
+
+Setup for each provider is in [docs/INSTALL.md](docs/INSTALL.md#single-sign-on-openid-connect);
+what is not covered (LDAP, single logout, encrypted SAML assertions) is in
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ---
 
@@ -765,8 +816,8 @@ and a primary address are in the publishing dialog.
   on the key of the space or the instance. It cannot change anything, and
   questions are rate limited per address and per site.
 - **What is never published.** Pages with their own access restrictions, the
-  `.agent` folder and templates. A restriction is not inherited by child pages,
-  so check the tree before you publish and lock every page that must stay closed.
+  `.agent` folder and templates. A restriction is inherited by child pages, so
+  locking a page keeps everything below it off the site too.
 - **Who can publish.** Space and instance administrators, from the browser. The
   decisions (who sees the site, where, downloads, Folio AI, indexing) live in
   the database, not in Git; the look of the site lives in `.folio/` in the

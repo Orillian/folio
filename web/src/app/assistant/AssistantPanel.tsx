@@ -325,6 +325,7 @@ export function AssistantPanel({ open, onClose }: AssistantPanelProps) {
     <section
       role="dialog"
       aria-label={t('assistant.chat.title')}
+      data-report-exclude=""
       hidden={!open}
       // Owner (17.09): the panel is on the right and can be minimized.
       // Minimizing is a crop to the height of the header, NOT unmounting: the

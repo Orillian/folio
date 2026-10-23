@@ -23,6 +23,7 @@ import { folderDisplay, folderTitleMap } from '../../shared/folderTitles.js';
 import { basenameOf, parseWikilinkText, type BaseRowData } from '../../shared/bases/values.js';
 import { query } from '../db/pool.js';
 import { sqlParam, visiblePagesSql, type PageViewer } from '../accessSql.js';
+import { notClosedSql } from '../access/roleSql.js';
 import { buildPagePathIndex, resolveWikilinkPath } from '../wikilinks.js';
 import { readDeclaredTypes } from '../propertyTypes.js';
 import * as storage from '../storage.js';
@@ -77,15 +78,11 @@ function toRowData(r: PageRowSql): BaseRowData {
   };
 }
 
-/** The SQL for "may this reader edit this page's properties" (pageAccess.effectivePageRole, editor+), per row. */
+/** The SQL for "may this reader edit this page's properties" (pageAccess.effectivePageRole, editor+: owner or editor grant on every restriction of the chain), per row. */
 function canEditSql(viewer: PageViewer, params: unknown[], spaceEditor: boolean): string {
   if (viewer.kind !== 'user' || !spaceEditor) return 'false';
   const user = sqlParam(params, viewer.userId);
-  return `(p.kind <> 'folder' AND (
-      NOT EXISTS (SELECT 1 FROM page_access ea WHERE ea.page_id = p.id)
-      OR EXISTS (SELECT 1 FROM page_access ea WHERE ea.page_id = p.id AND ea.owner_id = ${user})
-      OR EXISTS (SELECT 1 FROM page_access_grants eg WHERE eg.page_id = p.id AND eg.user_id = ${user} AND eg.role = 'editor')
-    ))`;
+  return `(p.kind <> 'folder' AND ${notClosedSql('p.id', { user, minRole: 'editor' })})`;
 }
 
 const ROW_COLUMNS = 'p.id, p.path, p.title, p.kind, p.file_size, p.file_mtime, p.updated_at, p.frontmatter';

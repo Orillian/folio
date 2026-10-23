@@ -9,6 +9,7 @@ import { useApiErrorText } from '../../errorText';
 import { useToast } from '../../ui/Toast';
 import { MembersDialog } from '../../sidebar/MembersDialog';
 import { VisibilityConfirmDialog } from './VisibilityConfirmDialog';
+import { displayAction } from '../audit/logic';
 import { VISIBILITY_OPTIONS, accessLogDetail, makeVisibilityLabelKey, nextVisibilityOnToggle, visibilityBadgeClass, visibilityLabelKey } from './logic';
 import { SyncStatusChip } from '../../git/SyncStatusChip';
 import { normalizeRepoUrlForDisplay } from '../../sidebar/gitRepos';
@@ -362,7 +363,7 @@ function SpaceAccessLog({ space }: { space: string }) {
       <ul className="flex flex-col gap-1 text-xs text-neutral-600 dark:text-neutral-400">
         {data.entries.map((entry) => (
           <li key={entry.id}>
-            {formatDateTime(entry.at, i18n.language)} · {entry.actorName} · {t(`access.log.${entry.action.replace('.', '_')}`)}
+            {formatDateTime(entry.at, i18n.language)} · {entry.actorName} · {t(`access.log.${displayAction(entry.action, entry.meta).replace('.', '_')}`)}
             {accessLogDetail(entry, t)}
           </li>
         ))}

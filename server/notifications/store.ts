@@ -10,6 +10,7 @@
  * requester, and fetching them with separate requests per row is N+1 for nothing.
  */
 import { query, queryOne } from '../db/pool.js';
+import { spaceRoleSql } from '../access/roleSql.js';
 import type { AccessRequestStatus, AccessRequestSummary, NotificationItem, NotificationKind, SpaceRole } from '../../shared/contracts.js';
 
 /** How many feed rows are returned at a time: a feed is "what happened recently", not an archive. */
@@ -155,7 +156,7 @@ export async function listAccessRequestRecipients(space: string, requesterId: st
       WHERE u.disabled = false
         AND u.id <> $2
         AND (u.is_admin = true
-             OR EXISTS (SELECT 1 FROM space_members m WHERE m.space_slug = $1 AND m.user_id = u.id AND m.role = 'admin'))`,
+             OR ${spaceRoleSql('u.id', '$1')} = 'admin')`,
     [space, requesterId],
   );
   return rows.map((r) => r.user_id);

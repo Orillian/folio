@@ -153,7 +153,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }
 
   if (!data.user) {
-    return <GuestGate onDone={() => refetch()} google={data.google} demo={data.demo} />;
+    return <GuestGate onDone={() => refetch()} google={data.google} ssoProviders={data.ssoProviders} demo={data.demo} />;
   }
 
   const value: AuthContextValue = {

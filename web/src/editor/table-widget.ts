@@ -740,6 +740,20 @@ interface Geometry {
   bottom: number;
   left: number;
   right: number;
+  /** Screen pixels per CSS pixel (see `screenScale`); every number above is in CSS pixels. */
+  scale: number;
+}
+
+/**
+ * How many screen pixels one CSS pixel of `el` takes: 1, unless an ancestor is scaled (the compare view's zoom is CSS
+ * `zoom` on the column). `getBoundingClientRect` and pointer events speak screen pixels; `left` / `width` written into
+ * the overlay speak CSS pixels of the zoomed box — so every measurement is divided by this, or the handles of a
+ * table at 150% sit 1.5 times too far from where the grid is.
+ */
+function screenScale(el: HTMLElement): number {
+  const css = el.offsetWidth;
+  const screen = el.getBoundingClientRect().width;
+  return css > 0 && screen > 0 ? screen / css : 1;
 }
 
 /**
@@ -791,7 +805,7 @@ function boxesFromEdges(edges: (number | null)[], count: number): Box[] | null {
  * the last resort for a grid with nothing measurable on screen (and for jsdom,
  * where everything is zero anyway).
  */
-function columnBoxes(frame: HTMLElement, left: number, count: number): Box[] {
+function columnBoxes(frame: HTMLElement, left: number, count: number, scale: number): Box[] {
   const edges = new Array<number | null>(count + 1).fill(null);
 
   for (const cell of frame.querySelectorAll<HTMLTableCellElement>('.cm-md-grid th, .cm-md-grid td')) {
@@ -800,16 +814,16 @@ function columnBoxes(frame: HTMLElement, left: number, count: number): Box[] {
     if (!Number.isFinite(col) || col < 0 || col > count) continue;
     const rect = cell.getBoundingClientRect();
     if (rect.width <= 0) continue;
-    if (edges[col] === null) edges[col] = rect.left - left;
+    if (edges[col] === null) edges[col] = (rect.left - left) / scale;
     const right = Math.min(col + span, count);
-    if (edges[right] === null) edges[right] = rect.right - left;
+    if (edges[right] === null) edges[right] = (rect.right - left) / scale;
   }
 
   return (
     boxesFromEdges(edges, count) ??
     [...frame.querySelectorAll<HTMLTableColElement>('colgroup col')].map((col) => {
       const rect = col.getBoundingClientRect();
-      return { start: rect.left - left, size: rect.width };
+      return { start: (rect.left - left) / scale, size: rect.width / scale };
     })
   );
 }
@@ -819,29 +833,31 @@ function measure(frame: HTMLElement): Geometry | null {
   if (!grid) return null;
   const base = frame.getBoundingClientRect();
   const box = grid.getBoundingClientRect();
+  const scale = screenScale(frame);
 
   // The `<colgroup>` is the one place that always has exactly one entry per
   // column, merges or not — it counts them even when it cannot measure them.
-  const cols = columnBoxes(frame, base.left, frame.querySelectorAll('colgroup col').length);
+  const cols = columnBoxes(frame, base.left, frame.querySelectorAll('colgroup col').length, scale);
   const rows = [...frame.querySelectorAll<HTMLTableRowElement>('tbody tr')].map((tr) => {
     const rect = tr.getBoundingClientRect();
-    return { start: rect.top - base.top, size: rect.height };
+    return { start: (rect.top - base.top) / scale, size: rect.height / scale };
   });
   if (cols.length === 0) return null;
 
   const head = frame.querySelector<HTMLTableSectionElement>('thead');
   const headRect = head?.getBoundingClientRect();
-  const bodyTop = rows.length > 0 ? rows[0].start : (headRect?.bottom ?? box.bottom) - base.top;
+  const bodyTop = rows.length > 0 ? rows[0].start : ((headRect?.bottom ?? box.bottom) - base.top) / scale;
 
   return {
     cols,
     rows,
     colEdges: [cols[0].start, ...cols.map((col) => col.start + col.size)],
     rowEdges: [bodyTop, ...rows.map((row) => row.start + row.size)],
-    top: box.top - base.top,
-    bottom: box.bottom - base.top,
-    left: box.left - base.left,
-    right: box.right - base.left,
+    top: (box.top - base.top) / scale,
+    bottom: (box.bottom - base.top) / scale,
+    left: (box.left - base.left) / scale,
+    right: (box.right - base.left) / scale,
+    scale,
   };
 }
 
@@ -963,8 +979,8 @@ function mountControls(
   const activate = (clientX: number, clientY: number) => {
     if (!geometry) return;
     const base = frame.getBoundingClientRect();
-    const x = clientX - base.left;
-    const y = clientY - base.top;
+    const x = (clientX - base.left) / geometry.scale;
+    const y = (clientY - base.top) / geometry.scale;
     clearActive();
 
     // A border is only a candidate while the pointer is beside the grid on the
@@ -1345,7 +1361,7 @@ function mountControls(
   /** Which column the pointer is over, clamped to the grid. */
   const columnAt = (clientX: number): number => {
     if (!geometry) return 0;
-    const x = clientX - frame.getBoundingClientRect().left;
+    const x = (clientX - frame.getBoundingClientRect().left) / geometry.scale;
     for (let index = 0; index < geometry.cols.length; index++) {
       const col = geometry.cols[index];
       if (x < col.start + col.size) return index;
@@ -1429,18 +1445,19 @@ function mountControls(
     const columns = [...frame.querySelectorAll<HTMLElement>('colgroup col')];
     const grid = frame.querySelector<HTMLElement>('.cm-md-grid');
     const startX = event.clientX;
+    const { scale } = geometry;
     const pair = outer ? 0 : sizes[leftCol] + sizes[leftCol + 1];
     const MIN = 40;
     const display = table.attrs?.display ?? 'narrow';
     const outerMax =
       outer && display === 'narrow'
-        ? Math.max(MIN * sizes.length, frame.getBoundingClientRect().width - geometry.left - 2)
+        ? Math.max(MIN * sizes.length, frame.getBoundingClientRect().width / scale - geometry.left - 2)
         : Number.POSITIVE_INFINITY;
     let next = sizes.slice();
     let moved = false;
 
     const move = (moveEvent: MouseEvent) => {
-      const delta = moveEvent.clientX - startX;
+      const delta = (moveEvent.clientX - startX) / scale;
       if (!moved && Math.abs(delta) < 2) return;
       moved = true;
       frame.dataset.resizing = 'true';

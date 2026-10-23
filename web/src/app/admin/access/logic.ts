@@ -172,5 +172,25 @@ export function accessLogDetail(entry: Pick<AccessLogEntry, 'action' | 'meta'>, 
     if (typeof meta.domain === 'string' && meta.domain) parts.push(t('access.log.settingDomain', { value: meta.domain }));
     return parts.length > 0 ? ` (${parts.join(', ')})` : null;
   }
+  if (entry.action === 'access.group_grant' || entry.action === 'access.group_revoke') {
+    const parts: string[] = [];
+    if (typeof meta.groupName === 'string' && meta.groupName) parts.push(` · ${meta.groupName}`);
+    if (entry.action === 'access.group_grant' && typeof meta.role === 'string') parts.push(` → ${meta.role}`);
+    if (typeof meta.pageId === 'string' && meta.pageId) parts.push(` (${t('access.log.pageLevel')})`);
+    return parts.length > 0 ? parts.join('') : null;
+  }
+  if (entry.action === 'group.member_add' || entry.action === 'group.member_remove') {
+    return typeof meta.targetUserName === 'string' && meta.targetUserName ? ` · ${meta.targetUserName}` : null;
+  }
+  if (entry.action === 'group.manager_set') {
+    if (typeof meta.targetUserName !== 'string' || !meta.targetUserName) return null;
+    return ` · ${meta.targetUserName} (${t(meta.isManager === true ? 'access.log.managerOn' : 'access.log.managerOff')})`;
+  }
   return typeof meta.role === 'string' ? ` → ${meta.role}` : null;
+}
+
+/** What a log row names as its subject: the group's name for `group.*` events (their `target` is a bare id), otherwise `target` (a space slug). */
+export function accessLogTarget(entry: Pick<AccessLogEntry, 'action' | 'target' | 'meta'>): string {
+  if (entry.action.startsWith('group.') && typeof entry.meta.groupName === 'string' && entry.meta.groupName) return entry.meta.groupName;
+  return entry.target;
 }

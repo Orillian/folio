@@ -8,6 +8,7 @@ import { useApiErrorText } from '../../errorText';
 import { Modal } from '../../ui/Modal';
 import { LabeledInput } from '../../ui/LabeledInput';
 import { useToast } from '../../ui/Toast';
+import { InviteGroupsPicker } from '../../invites/InviteGroupsPicker';
 import { AccessBlockEditor } from './AccessBlockEditor';
 import type { AccessBlockRow } from './AccessBlockEditor';
 import '../../i18n/register';
@@ -38,6 +39,7 @@ export function AddPersonDialog({ onClose }: AddPersonDialogProps) {
   const [password, setPassword] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [rows, setRows] = useState<AccessBlockRow[]>([]);
+  const [groupIds, setGroupIds] = useState<string[]>([]);
   const [createdInvite, setCreatedInvite] = useState<InviteInfo | null>(null);
 
   // Degrades silently: an empty spaceOptions/copyFrom list just means the
@@ -62,7 +64,7 @@ export function AddPersonDialog({ onClose }: AddPersonDialogProps) {
   });
 
   const createInvite = useMutation({
-    mutationFn: () => api.createInvite({ memberships: membershipRows, isAdmin, expiresInDays: 7, maxUses: 1, email: email.trim() || undefined }),
+    mutationFn: () => api.createInvite({ memberships: membershipRows, isAdmin, expiresInDays: 7, maxUses: 1, email: email.trim() || undefined, ...(groupIds.length > 0 ? { groupIds } : {}) }),
     onSuccess: (invite) => {
       invalidate();
       setCreatedInvite(invite);
@@ -174,6 +176,9 @@ export function AddPersonDialog({ onClose }: AddPersonDialogProps) {
           spaceOptions={(matrix.data?.spaces ?? []).map((s) => ({ slug: s.slug, name: s.name }))}
           copyFrom={matrix.data ? { users: matrix.data.users, roles: matrix.data.roles } : undefined}
         />
+
+        {/* Groups join on accepting the invite; POST /api/users has no groupIds, so only the invite path offers them. */}
+        {mode === 'invite' && <InviteGroupsPicker value={groupIds} onChange={setGroupIds} />}
 
         {error && (
           <p role="alert" className="text-sm text-red-600 dark:text-red-400">

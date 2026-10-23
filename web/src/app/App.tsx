@@ -19,6 +19,8 @@ import { FolderView } from './routes/FolderView';
 import { AccessAdmin } from './admin/access/AccessAdmin';
 import { AssistantAnalytics } from './admin/assistant/AssistantAnalytics';
 import { ChatIntegrationsAdmin } from './admin/integrations/ChatIntegrationsAdmin';
+import { AuditLogAdmin } from './admin/audit/AuditLogAdmin';
+import { AuthProvidersAdmin } from './admin/auth/AuthProvidersAdmin';
 import { TrashPage } from './trash/TrashPage';
 import { NotFound } from './routes/NotFound';
 import { OAuthResume } from './routes/OAuthResume';
@@ -177,6 +179,9 @@ function AppRoutes() {
         <Route path="/admin/access" element={<AccessAdmin />} />
         <Route path="/admin/assistant" element={<AssistantAnalytics />} />
         <Route path="/admin/integrations" element={<ChatIntegrationsAdmin />} />
+        <Route path="/admin/audit" element={<AuditLogAdmin />} />
+        {/* Single sign-on providers (OpenID Connect), docs/AUTH.md. */}
+        <Route path="/admin/auth" element={<AuthProvidersAdmin />} />
         {/* Trash round: the trash list — server-scoped (space admins see their spaces, instance admin everything), so no client role guard here. */}
         <Route path="/trash" element={<TrashPage />} />
         {/* QA-3: `/login` is not a route — AuthProvider swaps the login screen in

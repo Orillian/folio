@@ -7,12 +7,14 @@
  * reveal a closed page either.
  *
  * A signed-in caller (or PAT) reads a page when ALL hold:
- *  - the space: an explicit `space_members` row, or the space's `visibility`
- *    is 'instance' or 'public' (auth/session.ts effectiveRole; no instance-admin
- *    bypass);
- *  - page access: the page has no `page_access` row, or the caller owns it, or
- *    holds a grant (pageAccess.ts effectivePageRole);
- *  - `.agent/**` only for an instance admin or an admin member of the space
+ *  - the space: the caller has a role there (access/roleSql.ts — the one SQL
+ *    form of auth/session.ts effectiveRole; no instance-admin bypass);
+ *  - page access: no restriction on the page's chain closes it to the caller —
+ *    the page's own `page_access` row and those of its restricted ancestors
+ *    (a child of a restricted page is restricted too), each passed by owning
+ *    it or holding a grant (roleSql.ts closedPagesSql; pageAccess.ts
+ *    effectivePageRole is the TypeScript twin);
+ *  - `.agent/**` only for an instance admin or an admin of the space
  *    (session.ts canAdministerSpace; agentPath.ts isAgentPath);
  *  - with `excludeTemplates`, nothing under `_templates/` (storage.ts
  *    isUnderTemplates) — the index reads hide templates; search keeps them.
@@ -20,9 +22,12 @@
  * bare user (MCP) check `disabled` themselves.
  *
  * The public-site reader (an anonymous visitor, McpActor.publicSpace) reads the
- * public page set of ONE published space: no restricted page, no `.agent/**`,
+ * public page set of ONE published space: no restricted page (nor any page
+ * below one), no `.agent/**`,
  * no `_templates/` (publicSites.ts publicReadablePageIds / isPublicPage).
  */
+
+import { notClosedSql, spacesWithRoleSql } from './access/roleSql.js';
 
 export type PageViewer =
   | { kind: 'user'; userId: string; isInstanceAdmin: boolean }
@@ -58,28 +63,23 @@ export function visiblePagesSql(alias: string, viewer: PageViewer, params: unkno
     const space = sqlParam(params, viewer.space);
     return `(${p}.space_slug = ${space}
         AND EXISTS (SELECT 1 FROM spaces acl_sp WHERE acl_sp.slug = ${p}.space_slug AND acl_sp.visibility = 'public')
-        AND NOT EXISTS (SELECT 1 FROM page_access acl_a WHERE acl_a.page_id = ${p}.id)
+        AND ${notClosedSql(`${p}.id`, { space })}
         -- Mirrors agentPath.ts's isAgentPath (can't call it from SQL) — keep in sync.
         AND NOT (${p}.path = '.agent' OR substr(${p}.path, 1, 7) = '.agent/')
         AND ${notTemplate})`;
   }
   const user = sqlParam(params, viewer.userId);
   const admin = sqlParam(params, viewer.isInstanceAdmin);
+  // The space gate and the space-admin test are access/roleSql.ts's rule. `= ANY (ARRAY(...))` makes each an InitPlan:
+  // evaluated once per query, never turned into a join that would reorder the caller's plan.
   return `(
-        (
-          EXISTS (SELECT 1 FROM space_members acl_m WHERE acl_m.space_slug = ${p}.space_slug AND acl_m.user_id = ${user})
-          OR EXISTS (SELECT 1 FROM spaces acl_sp WHERE acl_sp.slug = ${p}.space_slug AND acl_sp.visibility IN ('instance', 'public'))
-        )
-        AND (
-          NOT EXISTS (SELECT 1 FROM page_access acl_a WHERE acl_a.page_id = ${p}.id)
-          OR EXISTS (SELECT 1 FROM page_access acl_a WHERE acl_a.page_id = ${p}.id AND acl_a.owner_id = ${user})
-          OR EXISTS (SELECT 1 FROM page_access_grants acl_g WHERE acl_g.page_id = ${p}.id AND acl_g.user_id = ${user})
-        )
+        ${p}.space_slug = ANY (ARRAY(${spacesWithRoleSql(user)}))
+        AND ${notClosedSql(`${p}.id`, { user })}
         AND (
           -- Mirrors agentPath.ts's isAgentPath (can't call it from SQL) — keep both in sync.
           NOT (${p}.path = '.agent' OR ${p}.path LIKE '.agent/%')
           OR ${admin}::boolean
-          OR EXISTS (SELECT 1 FROM space_members acl_m2 WHERE acl_m2.space_slug = ${p}.space_slug AND acl_m2.user_id = ${user} AND acl_m2.role = 'admin')
+          OR ${p}.space_slug = ANY (ARRAY(${spacesWithRoleSql(user, 'admin')}))
         )${options.excludeTemplates ? `\n        AND ${notTemplate}` : ''}
       )`;
 }

@@ -3,6 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
+import { KeyRound } from 'lucide-react';
 import { normalizeUsername, usernameSchema } from '@shared/contracts';
 import { api } from '../api';
 import { useApiErrorText } from '../errorText';
@@ -156,76 +157,105 @@ export function AcceptInviteView() {
           ))}
         </p>
       )}
-      <p className="mb-6 text-sm text-neutral-500 dark:text-neutral-400">{t('invites.accept.subtitle')}</p>
+      <p className="mb-6 text-sm text-neutral-500 dark:text-neutral-400">
+        {info.sso?.enforced ? t('invites.accept.ssoSubtitle', { name: info.sso.name }) : t('invites.accept.subtitle')}
+      </p>
 
-      <form className="flex flex-col gap-3" onSubmit={handleSubmit}>
-        <LabeledInput label={t('auth.name')} required autoFocus autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
-        <div className="flex flex-col gap-1">
+      {/* The invite's email belongs to a single sign-on provider: accept through it (the account is created and
+          linked on that first sign-in). Enforced: that is the only way — no password account. */}
+      {info.sso && (
+        <>
+          <a
+            href={
+              info.sso.kind === 'saml'
+                ? `/api/auth/saml/${encodeURIComponent(info.sso.slug)}/start?invite=${encodeURIComponent(token!)}`
+                : `/api/auth/oidc/${encodeURIComponent(info.sso.slug)}/start?invite=${encodeURIComponent(token!)}${info.email ? `&login_hint=${encodeURIComponent(info.email)}` : ''}`
+            }
+            className="flex items-center justify-center gap-2 rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
+          >
+            <KeyRound size={16} aria-hidden="true" />
+            {t('invites.accept.withSso', { name: info.sso.name })}
+          </a>
+          {!info.sso.enforced && (
+            <div className="my-4 flex items-center gap-3 text-xs text-neutral-400 dark:text-neutral-600">
+              <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
+              {t('auth.login.orDivider')}
+              <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
+            </div>
+          )}
+        </>
+      )}
+
+      {!info.sso?.enforced && (
+        <form className="flex flex-col gap-3" onSubmit={handleSubmit}>
+          <LabeledInput label={t('auth.name')} required autoFocus autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
+          <div className="flex flex-col gap-1">
+            <LabeledInput
+              label={t('settings.username.label')}
+              required
+              maxLength={40} // a few chars of slack over the server's 32 so a pasted "@@…" prefix isn't cut before normalizing
+              placeholder={t('settings.username.placeholder')}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+            {username.trim() !== '' && normalizedUsername !== username.trim() && (
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                {t('settings.username.willBeSaved', { username: normalizedUsername })}
+              </p>
+            )}
+          </div>
           <LabeledInput
-            label={t('settings.username.label')}
+            label="Email"
+            type="email"
             required
-            maxLength={40} // a few chars of slack over the server's 32 so a pasted "@@…" prefix isn't cut before normalizing
-            placeholder={t('settings.username.placeholder')}
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="email"
+            value={effectiveEmail}
+            disabled={!!pinnedEmail}
+            title={pinnedEmail ? t('invites.accept.emailPinnedHint') : undefined}
+            onChange={(e) => setEmail(e.target.value)}
           />
-          {username.trim() !== '' && normalizedUsername !== username.trim() && (
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
-              {t('settings.username.willBeSaved', { username: normalizedUsername })}
+          <LabeledInput
+            label={t('auth.setup.passwordLabel')}
+            type="password"
+            required
+            minLength={8}
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <div>
+            <div className="mb-1 text-sm font-medium text-neutral-700 dark:text-neutral-300">{t('invites.accept.chooseTheme')}</div>
+            <div role="group" aria-label={t('invites.accept.chooseTheme')} className="grid grid-cols-3 gap-1 rounded-md bg-neutral-100 p-1 dark:bg-neutral-800">
+              {(['light', 'dark', 'system'] as ThemeMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={selectedTheme === mode}
+                  onClick={() => {
+                    setSelectedTheme(mode);
+                    setTheme(mode);
+                  }}
+                  className={`rounded px-2 py-1.5 text-sm ${selectedTheme === mode ? 'bg-white font-medium text-neutral-900 shadow-sm dark:bg-neutral-600 dark:text-white' : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'}`}
+                >
+                  {t(`settings.theme.${mode}`)}
+                </button>
+              ))}
+            </div>
+          </div>
+          {accept.isError && (
+            <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+              {errorText(accept.error, 'invites.accept.failed')}
             </p>
           )}
-        </div>
-        <LabeledInput
-          label="Email"
-          type="email"
-          required
-          autoComplete="email"
-          value={effectiveEmail}
-          disabled={!!pinnedEmail}
-          title={pinnedEmail ? t('invites.accept.emailPinnedHint') : undefined}
-          onChange={(e) => setEmail(e.target.value)}
-        />
-        <LabeledInput
-          label={t('auth.setup.passwordLabel')}
-          type="password"
-          required
-          minLength={8}
-          autoComplete="new-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        <div>
-          <div className="mb-1 text-sm font-medium text-neutral-700 dark:text-neutral-300">{t('invites.accept.chooseTheme')}</div>
-          <div role="group" aria-label={t('invites.accept.chooseTheme')} className="grid grid-cols-3 gap-1 rounded-md bg-neutral-100 p-1 dark:bg-neutral-800">
-            {(['light', 'dark', 'system'] as ThemeMode[]).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                aria-pressed={selectedTheme === mode}
-                onClick={() => {
-                  setSelectedTheme(mode);
-                  setTheme(mode);
-                }}
-                className={`rounded px-2 py-1.5 text-sm ${selectedTheme === mode ? 'bg-white font-medium text-neutral-900 shadow-sm dark:bg-neutral-600 dark:text-white' : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'}`}
-              >
-                {t(`settings.theme.${mode}`)}
-              </button>
-            ))}
-          </div>
-        </div>
-        {accept.isError && (
-          <p role="alert" className="text-sm text-red-600 dark:text-red-400">
-            {errorText(accept.error, 'invites.accept.failed')}
-          </p>
-        )}
-        <button
-          type="submit"
-          disabled={accept.isPending || !canSubmit}
-          className="mt-2 rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-        >
-          {accept.isPending ? t('invites.accept.accepting') : t('invites.accept.submit')}
-        </button>
-      </form>
+          <button
+            type="submit"
+            disabled={accept.isPending || !canSubmit}
+            className="mt-2 rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+          >
+            {accept.isPending ? t('invites.accept.accepting') : t('invites.accept.submit')}
+          </button>
+        </form>
+      )}
     </CenteredCard>
   );
 }

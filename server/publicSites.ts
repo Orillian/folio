@@ -23,6 +23,7 @@ import {
   type SpacePublicSettings,
   type SpaceVisibility,
 } from '../shared/contracts.js';
+import { restrictionChainSql } from './access/roleSql.js';
 import { isAgentPath } from './agentPath.js';
 import { query, queryOne } from './db/pool.js';
 import { isDemoMode } from './demo.js';
@@ -107,8 +108,9 @@ export async function getPublicSpace(slug: string): Promise<PublicSpace | undefi
  * Ids of the pages of `slug` an anonymous visitor may read: every page except
  * restricted ones (a `page_access` row), `.agent/**` (both from
  * pageAccess.restrictedPageIds) and `_templates/`. Does NOT check that the
- * space is public — callers do (getPublicSpace). Like the signed-in tree, the
- * restriction is per page and does not hide the children of a restricted page.
+ * space is public — callers do (getPublicSpace). Like the signed-in tree, a
+ * restriction is inherited: the children of a restricted page are not public
+ * either (docs/spec-access.md §13).
  */
 export async function publicReadablePageIds(slug: string): Promise<Set<string>> {
   const [rows, restricted] = await Promise.all([
@@ -121,14 +123,15 @@ export async function publicReadablePageIds(slug: string): Promise<Set<string>> 
 /**
  * Single-page form of `publicReadablePageIds` for the hot paths (the collab
  * socket, the page route, a site's home page): true only when the page's space
- * is published AND the page is neither restricted, `.agent/**` nor in
+ * is published AND the page is neither restricted (by its own rule or an
+ * ancestor's), `.agent/**` nor in
  * `_templates/`. One query, no space-wide scan.
  */
 export async function isPublicPage(page: { id: string; space: string; relPath: string }): Promise<boolean> {
   if (isAgentPath(page.relPath) || storage.isUnderTemplates(page.relPath)) return false;
   const row = await queryOne<{ is_public: boolean; restricted: boolean }>(
     `SELECT (sp.visibility = 'public') AS is_public,
-            EXISTS (SELECT 1 FROM page_access a WHERE a.page_id = $1) AS restricted
+            EXISTS (SELECT 1 FROM (${restrictionChainSql('$1')}) r) AS restricted
        FROM spaces sp
       WHERE sp.slug = $2`,
     [page.id, page.space],

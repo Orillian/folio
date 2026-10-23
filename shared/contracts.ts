@@ -51,9 +51,16 @@ export type PageAccessVisibility = z.infer<typeof pageAccessVisibilitySchema>;
 export const pageAccessGrantRoleSchema = z.enum(['viewer', 'editor']);
 export type PageAccessGrantRole = z.infer<typeof pageAccessGrantRoleSchema>;
 
+/** One grant of a restricted page: to a person (`userId`) or, since 053, to a group (`groupId`) — exactly one of the two. */
+export const pageAccessGrantSchema = z.union([
+  z.object({ userId: z.string().uuid(), role: pageAccessGrantRoleSchema }).strict(),
+  z.object({ groupId: z.string().uuid(), role: pageAccessGrantRoleSchema }).strict(),
+]);
+export type PageAccessGrant = z.infer<typeof pageAccessGrantSchema>;
+
 export const updatePageAccessBodySchema = z.object({
   visibility: pageAccessVisibilitySchema,
-  grants: z.array(z.object({ userId: z.string().uuid(), role: pageAccessGrantRoleSchema })).default([]),
+  grants: z.array(pageAccessGrantSchema).default([]),
 });
 export type UpdatePageAccessBody = z.infer<typeof updatePageAccessBodySchema>;
 
@@ -66,11 +73,39 @@ export interface PageAccessMember {
   owner: boolean;
 }
 
+/** A group that can be (or is) granted a restricted page: it is in the page's space — holds a role there, or the space is open to the instance. */
+export interface PageAccessGroup {
+  groupId: string;
+  slug: string;
+  name: string;
+  /** Active (not disabled) people in the group. */
+  memberCount: number;
+  /** The group's own role in the space; absent when it is in the space only through visibility `instance` / `public`. */
+  spaceRole?: SpaceRole;
+  grant?: PageAccessGrantRole;
+}
+
 export interface PageAccessInfo {
   visibility: PageAccessVisibility;
   ownerId?: string;
   canManage: boolean;
   members: PageAccessMember[];
+  /** Groups (053): every candidate for someone who can manage the page, otherwise only the granted ones. */
+  groups: PageAccessGroup[];
+  /**
+   * Stage 7: the restricted ANCESTORS this page inherits restrictions from,
+   * root-most first (its own rule is `visibility`). The page is readable only
+   * by who passes all of them and its own rule. Empty when none.
+   */
+  inheritedFrom: Array<{ pageId: string; title: string }>;
+  /**
+   * Who can open the page now, with their effective page role — present when
+   * the page is restricted (own rule or inherited) and the caller can manage
+   * it; `audienceCount` alone otherwise.
+   */
+  audience?: Array<{ userId: string; name: string; role: SpaceRole }>;
+  /** Number of people who can open the page; present when the page is restricted (own rule or inherited). */
+  audienceCount?: number;
 }
 
 /**
@@ -99,6 +134,12 @@ export type PageMeta = z.infer<typeof pageMetaSchema>;
 
 export interface TreeNode extends PageMeta {
   children: TreeNode[];
+  /**
+   * GET /api/spaces/:space/tree only (stage 7): `restricted` = the page has a
+   * page-access rule of its own, `inherited` = it is restricted through a
+   * restricted ancestor. Absent = open to the whole space.
+   */
+  access?: 'restricted' | 'inherited';
 }
 
 /** Full page payload: markdown body (frontmatter stripped) for docs, svg source for boards. */
@@ -1124,11 +1165,23 @@ export interface AccessMatrixSpace {
   name: string;
   visibility: SpaceVisibility;
 }
+/** A group row of the matrix (053). */
+export interface AccessMatrixGroup {
+  id: string;
+  slug: string;
+  name: string;
+  memberCount: number;
+  archived: boolean;
+}
 export interface AccessMatrixResponse {
   users: AccessMatrixUser[];
   spaces: AccessMatrixSpace[];
-  /** roles[userId][spaceSlug] — undefined = no access; a role from an `instance`-visibility space's implicit viewer grant is NOT included here (UI derives it from spaces[].visibility instead, so it can render the grey "viewer (all)" cell distinctly from an explicit membership). */
+  /** roles[userId][spaceSlug] — undefined = no access; a role from an `instance`-visibility space's implicit viewer grant is NOT included here (UI derives it from spaces[].visibility instead, so it can render the grey "viewer (all)" cell distinctly from an explicit membership). Direct memberships only: a role a user has through a group is in `groupRoles` + the group's members, not here. */
   roles: Record<string, Record<string, SpaceRole>>;
+  /** Groups (053): every group, archived ones included (they grant nothing while archived). */
+  groups: AccessMatrixGroup[];
+  /** groupRoles[groupId][spaceSlug] — the group's own role in that space. */
+  groupRoles: Record<string, Record<string, SpaceRole>>;
 }
 
 /** POST /api/access/bulk request/body schemas defined further below, after `spaceRoleSchema` (avoids a TDZ reference — see there). */
@@ -1140,7 +1193,22 @@ export interface AccessBulkResult {
 /** GET /api/spaces/:space/access-log and GET /api/users/:id/access share this shape's event rows (round 27 §2.4/§7). */
 export interface AccessLogEntry {
   id: string;
-  action: 'access.grant' | 'access.revoke' | 'access.self_grant' | 'space.visibility' | 'space.public_settings';
+  action:
+    | 'access.grant'
+    | 'access.revoke'
+    | 'access.self_grant'
+    | 'access.group_grant'
+    | 'access.group_revoke'
+    | 'space.visibility'
+    | 'space.public_settings'
+    | 'group.create'
+    | 'group.update'
+    | 'group.archive'
+    | 'group.restore'
+    | 'group.delete'
+    | 'group.member_add'
+    | 'group.member_remove'
+    | 'group.manager_set';
   actorId: string | null;
   actorName: string;
   target: string;
@@ -1152,6 +1220,8 @@ export interface AccessLogEntry {
 export interface UserAccessResponse {
   memberships: Record<string, SpaceRole>;
   log: AccessLogEntry[];
+  /** Groups (053) the user belongs to. */
+  groups: Array<{ id: string; slug: string; name: string; isManager: boolean; archived: boolean }>;
 }
 
 export const createPageBodySchema = z.object({
@@ -1548,8 +1618,10 @@ export interface AuthState {
   user: User | null;
   /** space slug -> my role: explicit space_members rows, plus (round 27) an implicit 'viewer' for every `visibility: 'instance'` space. Instance-admin grants NOTHING extra here — see docs/spec-access.md §1/§2. */
   memberships: Record<string, SpaceRole>;
-  /** "Sign in with Google" (server/auth/google.ts) is configured (GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET both set) — drives whether the login screen shows the button at all. */
+  /** "Sign in with Google" is configured and enabled (the `google` single sign-on provider, server/auth/providers.ts). Kept for older clients; the login screen reads `ssoProviders`. */
   google: boolean;
+  /** Enabled single sign-on providers (server/auth/oidc.ts) — one "Continue with …" button each. Absent when there are none. */
+  ssoProviders?: SsoProviderPublic[];
   /**
    * Public-demo mode (server/demo.ts, FOLIO_DEMO_MODE=1): present ONLY then — absent on every ordinary instance. On the login screen it lists the demo accounts to sign in as; for an authenticated session `accounts` is empty (the header banner needs only the reset interval).
    */
@@ -1618,7 +1690,8 @@ export const setupBodySchema = z.object({
   name: z.string().min(1),
   password: z.string().min(8),
 });
-export const loginBodySchema = z.object({ email: z.email(), password: z.string().min(1) });
+/** `local`: sent from /login?local — an instance admin's audited password sign-in for a domain that must use single sign-on (break-glass). */
+export const loginBodySchema = z.object({ email: z.email(), password: z.string().min(1), local: z.boolean().optional() });
 /** Round 27 §6.4: the "Add a person" dialog saves the user AND its space memberships in one atomic call — `memberships` is optional (omitted/empty = a user with zero space access yet, same as before this round). */
 export const createUserBodySchema = setupBodySchema.extend({
   isAdmin: z.boolean().default(false),
@@ -1648,6 +1721,100 @@ export const setStarBodySchema = z.object({ starred: z.boolean() });
 export interface SpaceMemberInfo {
   user: User;
   role: SpaceRole;
+}
+
+// ---------- groups (053, docs/spec-access.md §15) ----------
+// A named set of people that holds roles in spaces and grants on restricted
+// pages. No nesting. Created / renamed / archived / deleted by instance admins;
+// members flagged `isManager` may edit the membership; a space admin grants or
+// revokes a group's role in their own space only. All routes are cookie-only.
+
+export const groupSlugSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase letters, digits and dashes');
+export const groupSourceSchema = z.enum(['local', 'oidc', 'saml', 'scim']);
+export type GroupSource = z.infer<typeof groupSourceSchema>;
+
+/** GET /api/groups row. */
+export interface GroupInfo {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  source: GroupSource;
+  archivedAt: string | null;
+  createdAt: string;
+  /** Active (not disabled) members. */
+  memberCount: number;
+  /** The caller may edit the membership (instance admin, or a manager of this group). */
+  canManage: boolean;
+}
+
+export interface GroupMemberInfo {
+  userId: string;
+  name: string;
+  email: string;
+  username?: string;
+  disabled: boolean;
+  isManager: boolean;
+  source: GroupSource;
+  addedAt: string;
+}
+
+/** A space where the group holds a role. */
+export interface GroupSpaceRoleInfo {
+  space: string;
+  spaceName: string;
+  role: SpaceRole;
+}
+
+/** GET /api/groups/:id */
+export interface GroupDetail extends GroupInfo {
+  members: GroupMemberInfo[];
+  spaces: GroupSpaceRoleInfo[];
+}
+
+/** POST /api/groups (instance admin). */
+export const createGroupBodySchema = z.object({
+  slug: groupSlugSchema,
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(1000).default(''),
+});
+export type CreateGroupBody = z.infer<typeof createGroupBodySchema>;
+
+/** PATCH /api/groups/:id (instance admin). `archived: true` archives (the group then grants nothing), `false` brings it back. */
+export const updateGroupBodySchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().max(1000).optional(),
+    archived: z.boolean().optional(),
+  })
+  .refine((v) => v.name !== undefined || v.description !== undefined || v.archived !== undefined, { message: 'nothing to change' });
+export type UpdateGroupBody = z.infer<typeof updateGroupBodySchema>;
+
+/** POST /api/groups/:id/members (instance admin or a manager of the group). Already-present members keep their manager flag unless `isManager` is given. */
+export const addGroupMembersBodySchema = z.object({
+  userIds: z.array(z.string().uuid()).min(1).max(500),
+  isManager: z.boolean().optional(),
+});
+export type AddGroupMembersBody = z.infer<typeof addGroupMembersBodySchema>;
+
+/** PUT /api/groups/:id/members/:userId (instance admin or a manager of the group). */
+export const setGroupManagerBodySchema = z.object({ isManager: z.boolean() });
+
+/** PUT /api/spaces/:space/groups/:groupId (space admin or instance admin). */
+export const setSpaceGroupRoleBodySchema = z.object({ role: spaceRoleSchema });
+
+/** A group's row in a space's members list. */
+export interface SpaceGroupMemberInfo {
+  group: { id: string; slug: string; name: string; archived: boolean };
+  role: SpaceRole;
+  memberCount: number;
+}
+
+/** GET /api/spaces/:space/members */
+export interface SpaceMembersResponse {
+  members: SpaceMemberInfo[];
+  /** Groups (053) holding a role in the space. */
+  groups: SpaceGroupMemberInfo[];
 }
 
 // ---------- git-native spaces (round 3) ----------
@@ -1849,6 +2016,61 @@ export interface ChatIntegrationsAdminInfo {
   teams: ChatPlatformStatus;
 }
 
+// ---------- login sessions and the instance audit log (stage 4 of groups + SSO) ----------
+
+/** One signed-in browser session — GET /api/me/sessions (own) and GET /api/users/:id/sessions (instance admin). The cookie token and its hash never leave the server. */
+export interface SessionInfo {
+  /** Opaque handle for revoking this session. */
+  id: string;
+  createdAt: string;
+  /** Throttled (about every 5 minutes); null for a session never seen since it was opened. */
+  lastSeenAt: string | null;
+  expiresAt: string;
+  /** Truncated User-Agent header of the request that opened the session. */
+  userAgent: string | null;
+  /** Client address (the real one only with TRUST_PROXY set). */
+  ip: string | null;
+  /** True for the session of the request itself ("this device"). Always false in the admin's view of another user. */
+  current: boolean;
+}
+
+/** One row of the instance audit log (/admin/audit). */
+export interface AuditLogEvent {
+  id: string;
+  at: string;
+  actorId: string | null;
+  /** Current name of the actor; null for a guest / system action or a user deleted since. */
+  actorName: string | null;
+  actorEmail: string | null;
+  action: string;
+  target: string | null;
+  /** Readable name of the target (user name and email, group, provider, token, page title, space name); null when it cannot be resolved (the screen shows `target`). */
+  targetName: string | null;
+  meta: Record<string, unknown> | null;
+}
+
+/** GET /api/admin/audit — newest first; `nextCursor` is passed back as `cursor` for the next page (null on the last one). */
+export interface AuditLogPage {
+  events: AuditLogEvent[];
+  nextCursor: string | null;
+}
+
+/** Filters of GET /api/admin/audit and GET /api/admin/audit/export.csv (query string). */
+export const auditLogQuerySchema = z.object({
+  /** Exact actor user id. */
+  actor: z.string().uuid().optional(),
+  /** Action prefix, e.g. `access.` or `user.disable`; matches actions that start with it. */
+  action: z.string().trim().min(1).max(80).optional(),
+  /** Exact target (a space slug, page id, user id, token id, ...). */
+  target: z.string().trim().min(1).max(200).optional(),
+  /** Inclusive day range, yyyy-mm-dd (UTC). */
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  cursor: z.string().regex(/^\d{1,18}$/).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+export type AuditLogQuery = z.infer<typeof auditLogQuerySchema>;
+
 /** The response of creation — the token is shown exactly once. */
 export interface CreatedApiToken extends ApiTokenInfo {
   token: string; // folio_pat_<random>; only the sha256 is stored
@@ -1942,12 +2164,16 @@ export const createInviteBodySchema = z.object({
   maxUses: z.number().int().min(0).default(1),
   /** Optional: bind to a particular email. */
   email: z.email().optional(),
+  /** Groups (053) the invited person joins: an instance admin may pick any active group, a group manager only their own groups. */
+  groupIds: z.array(z.string().uuid()).max(50).optional(),
 });
 
 export interface InviteInfo {
   id: string;
   url: string; // <PUBLIC_URL>/invite/<token>
   memberships: { space: string; role: SpaceRole }[];
+  /** Groups (053) the invited person joins; a group deleted since is left out. */
+  groups: { id: string; name: string }[];
   isAdmin: boolean;
   email: string | null;
   expiresAt: string;
@@ -1965,6 +2191,12 @@ export interface InvitePublicInfo {
   email: string | null;
   spaces: { space: string; name: string; role: SpaceRole }[];
   invitedBy: string;
+  /**
+   * The invite is pinned to an email whose domain a single sign-on provider serves: accept through that provider
+   * (/api/auth/oidc/<slug>/start?invite=<token>). `enforced`: the domain must use single sign-on, so a password
+   * account cannot be created from this invite at all.
+   */
+  sso?: SsoProviderPublic & { enforced: boolean };
 }
 
 export const acceptInviteBodySchema = z.object({
@@ -3059,3 +3291,203 @@ export type ArtifactBridgeRequest =
 export type ArtifactBridgeResponse =
   | { folio: 'artifact'; id: number; ok: true; state?: ArtifactState; value?: string | null; keys?: string[] }
   | { folio: 'artifact'; id: number; ok: false; error: string };
+
+// ---------- single sign-on (OpenID Connect, SAML 2.0), docs/AUTH.md ----------
+
+export type SsoProviderKind = 'oidc' | 'saml';
+
+/** A provider as the login screen sees it: no configuration, just the button. */
+export interface SsoProviderPublic {
+  slug: string;
+  name: string;
+  /** Which start URL the button leads to: /api/auth/oidc/<slug>/start or /api/auth/saml/<slug>/start. Absent (older servers) = 'oidc'. */
+  kind?: SsoProviderKind;
+}
+
+/** POST /api/auth/sso/discover {email} — which provider the login screen should route this email to, if any. */
+export interface SsoDiscoverResult {
+  provider: SsoProviderPublic | null;
+  /** The email's domain must sign in through `provider`: the password form is hidden (break-glass: /login?local). */
+  enforced: boolean;
+}
+export const ssoDiscoverBodySchema = z.object({ email: z.string().min(1).max(320) });
+
+export const ssoClaimMappingSchema = z.object({
+  email: z.string().trim().min(1).max(200).optional(),
+  name: z.string().trim().min(1).max(200).optional(),
+  groups: z.string().trim().min(1).max(200).optional(),
+});
+export type SsoClaimMapping = z.infer<typeof ssoClaimMappingSchema>;
+
+/**
+ * Group sync (migration 057, server/auth/groupSync.ts): at each sign-in the groups the provider asserts (the claim
+ * named by `claimMapping.groups`) become Folio group memberships. `mode` 'name' matches an IdP value to a Folio
+ * group by slug or name; 'mapping' only looks at `mapping` (IdP value -> Folio group slug). `allow` filters the IdP
+ * values first: empty = all, `a, b` = values starting with `a` or `b`, `/regex/` = a regular expression.
+ */
+export const ssoGroupSyncSchema = z.object({
+  enabled: z.boolean().default(false),
+  mode: z.enum(['name', 'mapping']).default('name'),
+  mapping: z.record(z.string().trim().min(1).max(300), z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase letters, digits and dashes')).default({}),
+  createMissing: z.boolean().default(false),
+  allow: z
+    .string()
+    .trim()
+    .max(300)
+    .default('')
+    .refine((v) => {
+      const m = /^\/(.+)\/$/.exec(v);
+      if (!m) return true;
+      try {
+        new RegExp(m[1]);
+        return true;
+      } catch {
+        return false;
+      }
+    }, 'not a valid regular expression'),
+});
+export type SsoGroupSync = z.infer<typeof ssoGroupSyncSchema>;
+
+/** How a SAML provider asks for and reads the person's NameID. */
+export const samlNameIdFormatSchema = z.enum(['email', 'persistent', 'unspecified']);
+export type SamlNameIdFormat = z.infer<typeof samlNameIdFormatSchema>;
+
+const optionalUrl = z.union([z.url().max(1000), z.literal('')]).optional();
+
+/**
+ * A SAML provider's settings (server/auth/saml.ts). The IdP is described by its metadata (a URL, re-read hourly, or
+ * the pasted XML) and/or the explicit fields, which win over the metadata. Nothing here is secret.
+ * In a PATCH, a field set to '' is cleared; an omitted one is kept.
+ */
+export const samlConfigSchema = z.object({
+  metadataUrl: optionalUrl,
+  metadataXml: z.string().max(500_000).optional(),
+  /** The IdP's entity ID: the Issuer every assertion must carry, and half of the identity key. */
+  idpEntityId: z.string().trim().max(500).optional(),
+  /** The IdP's single sign-on URL (HTTP-Redirect binding). */
+  ssoUrl: optionalUrl,
+  /** The IdP's signing certificate(s), PEM (several blocks for a rollover) or bare base64. */
+  idpCert: z.string().max(100_000).optional(),
+  /** Folio's (the SP's) entity ID; '' = the default, <PUBLIC_URL>/api/auth/saml/<slug>/metadata. */
+  spEntityId: z.string().trim().max(500).optional(),
+  nameIdFormat: samlNameIdFormatSchema.optional(),
+  /** The IdP is authoritative for the emails of the allowed domains: such an email counts as verified (SAML carries no email_verified), so an existing account with it can be linked. */
+  emailAuthoritative: z.boolean().optional(),
+  /** Accept IdP-initiated (unsolicited) responses — no InResponseTo to check, so off by default. */
+  allowIdpInitiated: z.boolean().optional(),
+});
+export type SamlConfigInput = z.infer<typeof samlConfigSchema>;
+
+/** A SAML provider's stored settings, as the admin screen shows them. */
+export interface SamlProviderConfig {
+  metadataUrl: string;
+  metadataXml: string;
+  idpEntityId: string;
+  ssoUrl: string;
+  idpCert: string;
+  spEntityId: string;
+  nameIdFormat: SamlNameIdFormat;
+  emailAuthoritative: boolean;
+  allowIdpInitiated: boolean;
+}
+
+/** GET /api/admin/auth/providers — one configured provider. The client secret never leaves the server: only whether one is set. */
+export interface AuthProviderInfo {
+  id: string;
+  slug: string;
+  kind: SsoProviderKind;
+  /** 'env': defined by environment variables — read-only here. */
+  source: 'db' | 'env';
+  displayName: string;
+  issuer: string;
+  clientId: string;
+  hasClientSecret: boolean;
+  scopes: string;
+  claimMapping: SsoClaimMapping;
+  groupSync: SsoGroupSync;
+  allowedDomains: string[];
+  jitEnabled: boolean;
+  jitDefaultSpaces: Record<string, SpaceRole>;
+  enforceSso: boolean;
+  enabled: boolean;
+  /** The redirect (callback) URL to register at the identity provider — for SAML, the ACS URL. */
+  redirectUri: string;
+  /** SAML only: the provider's settings and what to register at the IdP. */
+  saml?: SamlProviderConfig;
+  samlSp?: { entityId: string; acsUrl: string; metadataUrl: string };
+  /** How many accounts are linked to this provider. */
+  identities: number;
+  /** SCIM provisioning is on (the provider has an active SCIM token): JIT account creation at sign-in is then off. */
+  scimEnabled?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /api/admin/auth/providers/:id/scim — the provider's "SCIM provisioning" panel (server/scim/routes.ts). */
+export interface ScimStatusInfo {
+  /** An active SCIM token exists. */
+  enabled: boolean;
+  /** What to paste at the identity provider as the SCIM base URL / tenant URL: <public URL>/scim/v2. */
+  baseUrl: string;
+  /** The active token (never its value: that is shown once, at generation). */
+  token: { prefix: string; createdAt: string; lastUsedAt: string | null } | null;
+  /** The last authenticated SCIM request from this provider (any of its tokens). */
+  lastSyncAt: string | null;
+  /** Accounts the provider manages over SCIM (deleted ones excluded). */
+  users: number;
+  /** Active groups the provider created over SCIM. */
+  groups: number;
+  /** An environment-defined provider has JIT on: while SCIM is on, sign-in ignores it. */
+  jitIgnored: boolean;
+}
+
+/** POST /api/admin/auth/providers/:id/scim/token — the raw token, shown once. */
+export interface ScimTokenCreated {
+  token: string;
+  /** JIT account creation was on for this (admin-defined) provider and has been turned off. */
+  jitDisabled: boolean;
+  status: ScimStatusInfo;
+}
+
+const ssoDomainSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^(?=.{1,253}$)[a-z0-9-]+(\.[a-z0-9-]+)+$/, 'not a domain name');
+
+/**
+ * POST /api/admin/auth/providers. `clientSecret`: omitted = none (create) / keep (patch), '' = clear.
+ * `kind` (default 'oidc') is fixed at creation. OIDC needs `issuer` and `clientId` (checked by the server);
+ * SAML needs `saml` (metadata, or SSO URL + certificate + IdP entity ID) and ignores issuer/clientId/secret/scopes.
+ */
+export const authProviderBodySchema = z.object({
+  kind: z.enum(['oidc', 'saml']).optional(),
+  slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/, 'lower-case letters, digits and dashes'),
+  displayName: z.string().trim().min(1).max(80),
+  issuer: z.url().max(500).optional(),
+  clientId: z.string().trim().min(1).max(500).optional(),
+  clientSecret: z.string().max(2000).optional(),
+  scopes: z.string().trim().min(1).max(500).optional(),
+  claimMapping: ssoClaimMappingSchema.optional(),
+  groupSync: ssoGroupSyncSchema.optional(),
+  allowedDomains: z.array(ssoDomainSchema).max(100).optional(),
+  jitEnabled: z.boolean().optional(),
+  jitDefaultSpaces: z.record(z.string().min(1), spaceRoleSchema).optional(),
+  enforceSso: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+  saml: samlConfigSchema.optional(),
+});
+export type AuthProviderBody = z.infer<typeof authProviderBodySchema>;
+/** PATCH /api/admin/auth/providers/:id — every field optional. */
+export const authProviderPatchSchema = authProviderBodySchema.partial();
+export type AuthProviderPatch = z.infer<typeof authProviderPatchSchema>;
+
+/** What "Test connection" got back from the provider — shown to the admin; nothing is created or linked. */
+export interface SsoTestResult {
+  ok: boolean;
+  /** OIDC: the validated ID token claims (merged with userinfo, when the provider has that endpoint). SAML: the assertion's attributes plus nameID / nameIDFormat / issuer. */
+  claims?: Record<string, unknown>;
+  /** The values Folio would use, after the claim mapping. */
+  mapped?: { subject: string; email: string | null; emailVerified: boolean; name: string | null; groups: unknown };
+  error?: string;
+}

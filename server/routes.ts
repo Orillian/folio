@@ -79,6 +79,7 @@ import { buildEmbed, parseEmbedDepth } from './embed.js';
 import * as indexRead from './indexV2/read.js';
 import * as graph from './graph.js';
 import { userViewer } from './accessSql.js';
+import * as groupRoutes from './groups/routes.js';
 import * as assets from './assets.js';
 import * as git from './git.js';
 import * as gitSync from './gitSync.js';
@@ -100,7 +101,9 @@ import * as session from './auth/session.js';
 import { assertDemoAgentRootIntact, assertNotDemo, assertNotDemoAccount } from './demo.js';
 import * as authStore from './auth/store.js';
 import { hashPassword } from './auth/passwords.js';
-import { isGoogleEnabled } from './auth/google.js';
+import { ssoState } from './auth/routes.js';
+import { ssoRequired, toPublicProvider } from './auth/oidc.js';
+import * as authProviders from './auth/providers.js';
 import * as userGitCredentials from './userGitCredentials.js';
 import * as gitProviders from './gitProviders.js';
 import { buildSpaceZip } from './export/spaceZip.js';
@@ -274,13 +277,14 @@ export function registerRoutes(app: FastifyInstance): void {
         await authStore.setMembership(membership.space, user.id, membership.role);
       }
     }
+    await groupRoutes.joinInviteGroups(user.id, claimed.groupIds);
 
     recordAudit(user.id, 'invite.accepted', claimed.id, { email: user.email, existingUser: true });
     return {
       needsSetup: false,
       user,
       memberships: await session.membershipsFor(user),
-      google: isGoogleEnabled(),
+      ...(await ssoState()),
     };
   });
 
@@ -579,6 +583,18 @@ export function registerRoutes(app: FastifyInstance): void {
     const role = await session.requireSpaceRole(request, space, 'viewer');
     const allowed = await session.readablePageIds(request.authUser!, space, role);
     const tree: TreeNode[] = await storage.getTree(space, allowed);
+    // Lock marks (stage 7: restrictions are inherited) — only on pages already in the caller's tree.
+    const marks = await pageAccess.accessMarks(space);
+    if (marks.size > 0) {
+      const mark = (nodes: TreeNode[]): void => {
+        for (const node of nodes) {
+          const access = marks.get(node.id);
+          if (access) node.access = access;
+          mark(node.children);
+        }
+      };
+      mark(tree);
+    }
     return { tree };
   });
 
@@ -1641,26 +1657,29 @@ export function registerRoutes(app: FastifyInstance): void {
     const user = request.authUser!;
     const body = parseBody(createInviteBodySchema, request.body);
 
+    const groupIds = [...new Set(body.groupIds ?? [])];
     if (!user.isAdmin) {
       // Space admin: can only grant memberships in spaces THEY currently admin,
       // and can never grant instance-admin — enforced here, not just hidden in
       // the UI, since a stolen/forged request must not be able to self-escalate.
+      // A group manager (053) may invite into the groups they manage.
       if (body.isAdmin) throw forbidden('only an instance admin can grant instance-admin via an invite');
       const myMemberships = await session.membershipsFor(user);
-      if (!Object.values(myMemberships).some((role) => role === 'admin')) {
+      if (!Object.values(myMemberships).some((role) => role === 'admin') && !(await groupRoutes.managesAnyActiveGroup(user))) {
         throw forbidden('requires instance admin, or admin role in at least one space, to create invites');
       }
       for (const m of body.memberships) {
         if (myMemberships[m.space] !== 'admin') throw forbidden(`requires admin role in space "${m.space}" to invite into it`);
       }
     }
+    await groupRoutes.assertMayInviteIntoGroups(user, groupIds);
 
     const created = await invites.createInvite(
-      { memberships: body.memberships, isAdmin: body.isAdmin, expiresInDays: body.expiresInDays, maxUses: body.maxUses, email: body.email },
+      { memberships: body.memberships, isAdmin: body.isAdmin, expiresInDays: body.expiresInDays, maxUses: body.maxUses, email: body.email, groupIds },
       user.id,
       requestOrigin(request),
     );
-    recordAudit(user.id, 'invite.created', created.id, { memberships: body.memberships, isAdmin: body.isAdmin, maxUses: body.maxUses });
+    recordAudit(user.id, 'invite.created', created.id, { memberships: body.memberships, isAdmin: body.isAdmin, maxUses: body.maxUses, ...(groupIds.length ? { groupIds } : {}) });
     reply.status(201);
     return created;
   });
@@ -1935,7 +1954,15 @@ export function registerPublicInviteRoutes(app: FastifyInstance): void {
         return { space: m.space, name: info?.name ?? m.space, role: m.role };
       }),
     );
-    return { valid: true, email: invite.email, spaces, invitedBy: invite.createdByName };
+    // A pinned email that a single sign-on provider serves: offer (or, when enforced, require) accepting through it.
+    const provider = invite.email ? await authProviders.providerForEmail(invite.email) : undefined;
+    return {
+      valid: true,
+      email: invite.email,
+      spaces,
+      invitedBy: invite.createdByName,
+      ...(provider ? { sso: { ...toPublicProvider(provider), enforced: provider.enforceSso } } : {}),
+    };
   });
 
   app.post('/api/invite/:token/accept', async (request, reply): Promise<AuthState> => {
@@ -1966,6 +1993,10 @@ export function registerPublicInviteRoutes(app: FastifyInstance): void {
     if (reason) throw gone(`this invite is no longer valid (${reason})`);
 
     if (await authStore.findStoredUserByEmail(email)) throw conflict('a user with this email already exists');
+    // A domain that must use single sign-on never gets a password account from an invite: the invite is accepted
+    // through the provider instead (/api/auth/oidc/<slug>/start?invite=<token>), which links on that first sign-in.
+    const enforced = await authProviders.enforcedProviderForEmail(email);
+    if (enforced) throw ssoRequired(enforced, 'this email domain signs in with single sign-on: accept the invite through it');
     if (invite!.email && invite!.email.trim().toLowerCase() !== email.toLowerCase()) {
       throw badRequest('this invite is pinned to a different email address');
     }
@@ -1982,12 +2013,13 @@ export function registerPublicInviteRoutes(app: FastifyInstance): void {
     for (const m of claimed.memberships) {
       await authStore.setMembership(m.space, user.id, m.role);
     }
+    await groupRoutes.joinInviteGroups(user.id, claimed.groupIds);
 
     const { token: sessionToken } = await authStore.createSession(user.id);
     session.setSessionCookie(reply, sessionToken);
     recordAudit(user.id, 'invite.accepted', claimed.id, { email });
 
     reply.status(201);
-    return { needsSetup: false, user, memberships: await session.membershipsFor(user), google: isGoogleEnabled() };
+    return { needsSetup: false, user, memberships: await session.membershipsFor(user), ...(await ssoState()) };
   });
 }

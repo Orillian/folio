@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   createApiTokenBodySchema,
   createUserBodySchema,
@@ -11,13 +11,16 @@ import {
   updateUserBodySchema,
   normalizeUsername,
 } from '../../shared/contracts.js';
-import type { ApiTokenInfo, AuthState, CreatedApiToken, GitCredentialInfo, MentionableUser, SpaceMemberInfo, User } from '../../shared/contracts.js';
+import type { ApiTokenInfo, AuthState, CreatedApiToken, GitCredentialInfo, MentionableUser, SpaceMemberInfo, SpaceMembersResponse, User } from '../../shared/contracts.js';
+import * as groupStore from '../groups/store.js';
 import { parseBody } from '../validate.js';
 import { badRequest, conflict, unauthorized, HttpError } from '../errors.js';
 import { hashPassword, verifyPassword } from './passwords.js';
 import * as store from './store.js';
+import type { SessionClientInfo } from './store.js';
 import * as session from './session.js';
-import { isGoogleEnabled } from './google.js';
+import * as providers from './providers.js';
+import { publicProviders, ssoRequired } from './oidc.js';
 import * as userGitCredentials from '../userGitCredentials.js';
 import * as userConfluenceCredentials from '../userConfluenceCredentials.js';
 import { saveConfluenceCredentialBodySchema } from '../userConfluenceCredentials.js';
@@ -28,8 +31,18 @@ import { VISITOR_HEADER, analyticsConfig, rememberVisitor } from '../analytics.j
 import { sentryWebConfig } from '../sentry.js';
 
 
+function clientInfo(request: FastifyRequest): SessionClientInfo {
+  return { userAgent: request.headers['user-agent'], ip: request.ip };
+}
+
 async function toAuthState(user: User): Promise<AuthState> {
-  return { needsSetup: false, user, memberships: await session.membershipsFor(user), google: isGoogleEnabled(), demo: demoInfoFor(true) };
+  return { needsSetup: false, user, memberships: await session.membershipsFor(user), ...(await ssoState()), demo: demoInfoFor(true) };
+}
+
+/** AuthState's sign-in buttons: `google` (kept for older clients) and every enabled single sign-on provider. */
+export async function ssoState(): Promise<Pick<AuthState, 'google' | 'ssoProviders'>> {
+  const list = await publicProviders();
+  return { google: list.some((p) => p.slug === 'google'), ...(list.length > 0 ? { ssoProviders: list } : {}) };
 }
 
 /** Space-member endpoints accept either a user id or an email as the :identifier segment. */
@@ -48,7 +61,7 @@ export function registerPublicAuthRoutes(app: FastifyInstance): void {
       needsSetup: !(await store.hasAnyUsers()),
       user,
       memberships: user ? await session.membershipsFor(user) : {},
-      google: isGoogleEnabled(),
+      ...(await ssoState()),
       // Public-demo mode only (server/demo.ts); undefined — and so absent from the JSON — everywhere else.
       demo: demoInfoFor(Boolean(user)),
       // Optional analytics (server/analytics.ts); undefined — and so absent from the JSON — unless the operator switched it on.
@@ -65,7 +78,7 @@ export function registerPublicAuthRoutes(app: FastifyInstance): void {
     const body = parseBody(setupBodySchema, request.body);
     const passwordHash = await hashPassword(body.password);
     const user = await store.createUser({ email: body.email, name: body.name, passwordHash, isAdmin: true });
-    const { token } = await store.createSession(user.id);
+    const { token } = await store.createSession(user.id, clientInfo(request));
     session.setSessionCookie(reply, token);
     reply.status(201);
     return toAuthState(user);
@@ -84,13 +97,23 @@ export function registerPublicAuthRoutes(app: FastifyInstance): void {
     // bcrypt comparison always runs — see passwords.ts's DUMMY_HASH.
     const stored = await store.findStoredUserByEmail(email);
     const passwordOk = await verifyPassword(body.password, stored?.passwordHash ?? null);
+
+    // Single sign-on enforced for this domain (docs/AUTH.md): no password sign-in, whoever asks and whatever the
+    // password — except an instance admin's break-glass sign-in from /login?local, which is audited.
+    const enforced = await providers.enforcedProviderForEmail(email);
+    if (enforced && !(body.local && stored?.isAdmin)) {
+      if (body.local && stored && passwordOk) recordAudit(stored.id, 'auth.sso_refused', enforced.slug, { reason: 'password_login_enforced', email });
+      throw ssoRequired(enforced);
+    }
+
     // A system account (the public visitor, migration 039) has no password and never signs in — refused like a wrong password.
     if (!stored || stored.disabled || stored.isSystem || !passwordOk) throw unauthorized('invalid email or password');
+    if (enforced) recordAudit(stored.id, 'auth.break_glass_login', enforced.slug, { email });
 
-    const { token } = await store.createSession(stored.id);
+    const { token } = await store.createSession(stored.id, clientInfo(request));
     session.setSessionCookie(reply, token);
     rememberVisitor(token, request.headers[VISITOR_HEADER]);
-    const { passwordHash: _passwordHash, googleSub: _googleSub, ...user } = stored;
+    const { passwordHash: _passwordHash, ...user } = stored;
     return toAuthState(user);
   });
 }
@@ -126,6 +149,9 @@ export function registerProtectedAuthRoutes(app: FastifyInstance): void {
     session.requireCookieAuth(request);
     session.requireInstanceAdmin(request);
     const body = parseBody(createUserBodySchema, request.body);
+    // A domain that must use single sign-on gets no password accounts (instance admins keep one for break-glass).
+    const enforced = body.isAdmin ? undefined : await providers.enforcedProviderForEmail(body.email);
+    if (enforced) throw ssoRequired(enforced, 'this email domain signs in with single sign-on: invite the person, or let them sign in through it');
     const passwordHash = await hashPassword(body.password);
     const user = await store.createUser({ email: body.email, name: body.name, passwordHash, isAdmin: body.isAdmin });
     for (const m of body.memberships ?? []) {
@@ -156,25 +182,30 @@ export function registerProtectedAuthRoutes(app: FastifyInstance): void {
       throw conflict('cannot demote or disable the last active instance admin');
     }
 
+    if (body.password !== undefined && !(body.isAdmin ?? target.isAdmin)) {
+      const enforced = await providers.enforcedProviderForEmail(target.email);
+      if (enforced) throw ssoRequired(enforced, 'this account signs in with single sign-on: a password cannot be set');
+    }
     const passwordHash = body.password !== undefined ? await hashPassword(body.password) : undefined;
-    return store.updateUser(id, { name: body.name, username: body.username, isAdmin: body.isAdmin, passwordHash, disabled: body.disabled });
+    return store.updateUser(id, { name: body.name, username: body.username, isAdmin: body.isAdmin, passwordHash, disabled: body.disabled }, { actorId: caller.id });
   });
 
-  // --- Space membership (space admin+) --------------------------------
+  // --- Space membership (instance admin or space admin: canAdministerSpace, no content access) --------------------------------
 
   app.get('/api/spaces/:space/members', async (request) => {
     session.requireCookieAuth(request);
     const { space } = request.params as { space: string };
-    await session.requireSpaceRole(request, space, 'admin');
-    const members = await store.listMembersWithDetails(space);
-    return { members };
+    await session.requireSpaceAdministrator(request, space);
+    const [members, groups] = await Promise.all([store.listMembersWithDetails(space), groupStore.listSpaceGroups(space)]);
+    const response: SpaceMembersResponse = { members, groups };
+    return response;
   });
 
   app.put('/api/spaces/:space/members/:identifier', async (request) => {
     assertNotDemoAccount(request.authUser!, 'Changing space members and roles');
     session.requireCookieAuth(request);
     const { space, identifier } = request.params as { space: string; identifier: string };
-    await session.requireSpaceRole(request, space, 'admin');
+    await session.requireSpaceAdministrator(request, space);
     const body = parseBody(setMemberBodySchema, request.body);
     const stored = await resolveUserIdentifier(identifier);
     const userId = stored.id;
@@ -184,7 +215,7 @@ export function registerProtectedAuthRoutes(app: FastifyInstance): void {
     if (wouldOrphanSpace) throw conflict('cannot demote the last admin of this space');
 
     await store.setMembership(space, userId, body.role);
-    const { passwordHash: _passwordHash, googleSub: _googleSub, ...user } = stored;
+    const { passwordHash: _passwordHash, ...user } = stored;
     const info: SpaceMemberInfo = { user, role: body.role };
     return info;
   });
@@ -193,7 +224,7 @@ export function registerProtectedAuthRoutes(app: FastifyInstance): void {
     assertNotDemoAccount(request.authUser!, 'Removing a space member');
     session.requireCookieAuth(request);
     const { space, identifier } = request.params as { space: string; identifier: string };
-    await session.requireSpaceRole(request, space, 'admin');
+    await session.requireSpaceAdministrator(request, space);
     const userId = (await resolveUserIdentifier(identifier)).id;
 
     const currentRole = await store.getMembershipRole(space, userId);

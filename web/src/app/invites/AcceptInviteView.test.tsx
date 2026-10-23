@@ -27,7 +27,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const INVITE_INFO = { valid: true, email: null, spaces: [], invitedBy: 'Admin' };
+let INVITE_INFO: Record<string, unknown> = { valid: true, email: null, spaces: [], invitedBy: 'Admin' };
 
 function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: () => Promise.resolve(body) } as Response;
@@ -158,5 +158,36 @@ describe('AcceptInviteView — existing session', () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith('/api/invite/tok123/accept-existing', expect.anything()),
     );
+  });
+});
+
+describe('AcceptInviteView — single sign-on', () => {
+  afterEach(() => {
+    INVITE_INFO = { valid: true, email: null, spaces: [], invitedBy: 'Admin' };
+  });
+
+  it('an enforced domain: only "Accept with <provider>", no password form', async () => {
+    INVITE_INFO = { valid: true, email: 'ann@corp.test', spaces: [], invitedBy: 'Admin', sso: { slug: 'corp', name: 'Corp SSO', enforced: true } };
+    stubFetch();
+    renderView();
+    const link = await screen.findByRole('link', { name: 'Accept with Corp SSO' });
+    expect(link.getAttribute('href')).toBe('/api/auth/oidc/corp/start?invite=tok123&login_hint=ann%40corp.test');
+    expect(screen.queryByLabelText('Password (at least 8 characters)')).toBeNull();
+  });
+
+  it('a SAML provider: the invite is accepted through /api/auth/saml/<slug>/start', async () => {
+    INVITE_INFO = { valid: true, email: 'ann@corp.test', spaces: [], invitedBy: 'Admin', sso: { slug: 'corp-saml', name: 'Corp SAML', kind: 'saml', enforced: true } };
+    stubFetch();
+    renderView();
+    const link = await screen.findByRole('link', { name: 'Accept with Corp SAML' });
+    expect(link.getAttribute('href')).toBe('/api/auth/saml/corp-saml/start?invite=tok123');
+  });
+
+  it('a provider that does not enforce: both ways are offered', async () => {
+    INVITE_INFO = { valid: true, email: 'ann@corp.test', spaces: [], invitedBy: 'Admin', sso: { slug: 'corp', name: 'Corp SSO', enforced: false } };
+    stubFetch();
+    renderView();
+    await screen.findByRole('link', { name: 'Accept with Corp SSO' });
+    expect(screen.getByLabelText('Password (at least 8 characters)')).toBeTruthy();
   });
 });
